@@ -1,0 +1,19 @@
+# Render Blueprint -- https://render.com/docs/blueprint-spec
+#
+# Connect this repo to Render and it reads this file automatically to
+# provision the service. autoDeploy is deliberately OFF: deploys are
+# triggered only by the GitHub Actions workflow (.github/workflows/
+# ci-deploy.yml) after the test suite passes -- not on every push. That
+# keeps "approval to live" fast (per the Phase Two direction) without
+# skipping the test gate.
+
+services:
+  - type: web
+    name: dataos-2-0-pipeline
+    env: docker
+    plan: free
+    autoDeploy: false
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
