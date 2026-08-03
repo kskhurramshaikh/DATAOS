@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # DataOS 2.0 -- Pipeline Rails (Phase One Test)
 
 This is the first working slice of the DataOS 2.0 agentic pipeline:
@@ -110,3 +111,4 @@ so it's safe to push before Render is connected.
 5. Write tests proving it end to end, the same way
    `tests/test_pipeline.py` does for `validate_drift`.
 6. Push. CI tests it, then deploys it, automatically.
+=======
