@@ -42,4 +42,14 @@ CAPABILITY_REGISTRY = {
         "tool": "rapidfuzz_dob_clustering",
         "adapter": "app.adapters.dedup_adapter.find_duplicate_candidates",
     },
+    "confirm_high_confidence_duplicates": {
+        "capability": "bulk_confirm_duplicate_clusters",
+        "tool": "rapidfuzz_dob_clustering",
+        "adapter": "app.adapters.dedup_adapter.confirm_high_confidence",
+    },
+    "confirm_all_duplicates": {
+        "capability": "bulk_confirm_duplicate_clusters",
+        "tool": "rapidfuzz_dob_clustering",
+        "adapter": "app.adapters.dedup_adapter.confirm_all_pending",
+    },
 }

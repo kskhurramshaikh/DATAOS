@@ -131,6 +131,20 @@ current stage -- use it when a user asks what data exists, or the status of a sp
 The "promote_dataset" intent (payload: dataset_name, required) forces a dataset held at
 Silver through to Gold. Only relevant for datasets already flagged "silver_held".
 
+When a customer-style dataset is uploaded, duplicate-customer detection runs automatically
+and may surface "potential duplicate customer group(s)" needing human review before the
+dataset can promote. Each group is either "high_confidence" or "needs_review". Two intents
+let a user batch-apply a decision they've already made about which tier to trust -- this is
+NOT the same as an automatic merge; it never decides what data "wins", only records that a
+group is a duplicate:
+- "confirm_high_confidence_duplicates" (payload: dataset_name, optional) -- confirms every
+  PENDING high-confidence group only, leaves "needs_review" groups untouched.
+- "confirm_all_duplicates" (payload: dataset_name, optional) -- confirms every PENDING group
+  regardless of tier.
+If the user doesn't name a dataset and only one has pending duplicate groups, that's fine --
+omit dataset_name and the system will use it automatically. If the call fails because more
+than one dataset has pending groups, ask the user which one they meant.
+
 Rules:
 1. If the user's request clearly maps to a registered intent and you have enough info
    (or reasonable defaults suffice), call the call_intent tool. Don't interrogate the user

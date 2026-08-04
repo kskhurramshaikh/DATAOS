@@ -214,3 +214,67 @@ def get_pending_count(dataset_safe_name: str) -> int:
             (dataset_safe_name,),
         ).fetchone()
     return row["c"] if row else 0
+
+
+def _bulk_confirm(dataset_safe_name: str | None, tier: str | None) -> dict:
+    """
+    Applies 'confirmed_duplicate' to every PENDING cluster matching the
+    given tier ('high_confidence' or None/'all' for every pending
+    cluster regardless of tier). This is a batch-apply of a decision the
+    human has already made about which tier to trust -- not an
+    algorithmic merge decision. If dataset_safe_name isn't given and
+    exactly one dataset has pending clusters, that one is used
+    automatically; if more than one does, this raises so the caller can
+    ask which dataset was meant rather than guessing.
+    """
+    with get_conn() as conn:
+        if not dataset_safe_name:
+            rows = conn.execute(
+                "SELECT DISTINCT dataset_safe_name FROM duplicate_clusters WHERE status = 'pending'"
+            ).fetchall()
+            names = [r["dataset_safe_name"] for r in rows]
+            if len(names) == 0:
+                raise ValueError("There are no pending duplicate clusters for any dataset right now.")
+            if len(names) > 1:
+                raise ValueError(
+                    f"More than one dataset has pending duplicate clusters ({', '.join(names)}) -- "
+                    f"please say which one."
+                )
+            dataset_safe_name = names[0]
+
+        if tier and tier != "all":
+            rows = conn.execute(
+                "SELECT id FROM duplicate_clusters WHERE dataset_safe_name = ? AND status = 'pending' "
+                "AND confidence_tier = ?",
+                (dataset_safe_name, tier),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id FROM duplicate_clusters WHERE dataset_safe_name = ? AND status = 'pending'",
+                (dataset_safe_name,),
+            ).fetchall()
+        ids = [r["id"] for r in rows]
+
+        if ids:
+            placeholders = ",".join("?" * len(ids))
+            conn.execute(
+                f"UPDATE duplicate_clusters SET status = 'confirmed_duplicate', "
+                f"decided_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
+                ids,
+            )
+            conn.commit()
+
+    return {
+        "dataset_name": dataset_safe_name,
+        "tier_confirmed": tier or "all",
+        "clusters_confirmed": len(ids),
+        "clusters_remaining_pending": get_pending_count(dataset_safe_name),
+    }
+
+
+def confirm_high_confidence(payload: dict) -> dict:
+    return _bulk_confirm(payload.get("dataset_name"), tier="high_confidence")
+
+
+def confirm_all_pending(payload: dict) -> dict:
+    return _bulk_confirm(payload.get("dataset_name"), tier="all")

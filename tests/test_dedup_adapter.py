@@ -107,3 +107,78 @@ def test_decide_cluster_rejects_unknown_id(tmp_path, monkeypatch):
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+def _seed_clusters(tmp_path, monkeypatch, dataset_name="bulk_test"):
+    monkeypatch.setattr("app.db.DB_PATH", str(tmp_path / "test.db"))
+    from app.db import init_db
+    init_db()
+    # High-confidence pair (same name) + needs-review pair (different name, same DOB)
+    csv = (
+        "CUST_ID,FULL_NAME,DOB,PHONE\n"
+        "C1,Ahmed Al-Rashidi,1980-01-01,0501111111\n"
+        "C2,Ahmed Al-Rashidi,1980-01-01,0502222222\n"
+        "C3,Sara Al-Otaibi,1990-05-05,0503333333\n"
+        "C4,Noura Al-Harbi,1990-05-05,0504444444\n"
+    )
+    return dedup_adapter.find_duplicate_candidates({"csv_content": csv, "dataset_name": dataset_name})
+
+
+def test_confirm_high_confidence_only_confirms_that_tier(tmp_path, monkeypatch):
+    result = _seed_clusters(tmp_path, monkeypatch)
+    assert result["total_clusters"] == 2
+
+    outcome = dedup_adapter.confirm_high_confidence({"dataset_name": "bulk_test"})
+    assert outcome["clusters_confirmed"] == 1
+    assert outcome["clusters_remaining_pending"] == 1
+
+    pending = dedup_adapter.get_pending_clusters("bulk_test")
+    assert len(pending) == 1
+    assert pending[0]["confidence_tier"] == "needs_review"
+
+
+def test_confirm_all_confirms_every_pending_tier(tmp_path, monkeypatch):
+    _seed_clusters(tmp_path, monkeypatch)
+
+    outcome = dedup_adapter.confirm_all_pending({"dataset_name": "bulk_test"})
+    assert outcome["clusters_confirmed"] == 2
+    assert outcome["clusters_remaining_pending"] == 0
+    assert dedup_adapter.get_pending_clusters("bulk_test") == []
+
+
+def test_bulk_confirm_auto_detects_single_dataset_with_pending(tmp_path, monkeypatch):
+    _seed_clusters(tmp_path, monkeypatch, dataset_name="only_one")
+
+    outcome = dedup_adapter.confirm_all_pending({})  # no dataset_name given
+    assert outcome["dataset_name"] == "only_one"
+    assert outcome["clusters_confirmed"] == 2
+
+
+def test_bulk_confirm_raises_when_multiple_datasets_have_pending(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.db.DB_PATH", str(tmp_path / "test.db"))
+    from app.db import init_db
+    init_db()
+    csv = (
+        "CUST_ID,FULL_NAME,DOB,PHONE\n"
+        "C1,Ahmed Al-Rashidi,1980-01-01,0501111111\n"
+        "C2,Ahmed Al-Rashidi,1980-01-01,0502222222\n"
+    )
+    dedup_adapter.find_duplicate_candidates({"csv_content": csv, "dataset_name": "dataset_a"})
+    dedup_adapter.find_duplicate_candidates({"csv_content": csv, "dataset_name": "dataset_b"})
+
+    try:
+        dedup_adapter.confirm_all_pending({})
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "dataset_a" in str(e) and "dataset_b" in str(e)
+
+
+def test_bulk_confirm_raises_when_nothing_pending(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.db.DB_PATH", str(tmp_path / "test.db"))
+    from app.db import init_db
+    init_db()
+    try:
+        dedup_adapter.confirm_all_pending({})
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
