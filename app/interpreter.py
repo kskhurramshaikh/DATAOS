@@ -150,21 +150,34 @@ You ran the "{intent}" capability on their behalf. Here is the raw result from t
 
 {json.dumps(raw_result, indent=2)}
 
-Format your reply for readability -- never as one dense paragraph:
+Format your reply for readability -- never as one dense paragraph, but never at the cost
+of losing the actual substance either:
 1. Start with ONE short sentence stating the outcome (what happened, plain and direct).
-2. Then a markdown bullet list (each line starting with "- ") of the concrete facts and
-   numbers that matter, one per bullet, with the key number or word in **bold**. Keep each
-   bullet short -- a fact, not a sentence with three clauses.
+2. Then a markdown bullet list (each line starting with "- ") pulling out the CONCRETE
+   numbers and facts from the raw result above -- not a vague restatement of it. For a
+   drift check: how many metrics were checked, how many showed drift, the strongest
+   p-value or score you can find, which feature was tested. For a dataset: rows landed,
+   duplicates removed, which columns had nulls and how many, which columns were dropped
+   and why, final stage. Bold the key number or word in each bullet with **asterisks**.
 3. If stage is "silver_held", give the hold reason its own bullet stated plainly, and end
    with one short closing sentence inviting them to ask you to promote it anyway.
 
-No JSON, no code blocks, no tool/library names unless the user already used that name
-themselves. Aim for one intro sentence plus 3-6 bullets total -- scannable, not a wall of
-text."""
+Every bullet must be a COMPLETE sentence fragment on its own -- never end a bullet with
+just a dash and no content, never trail off. If you don't have 3-6 substantive bullets
+worth of real numbers to report, that's fine -- write fewer, but each one must be
+complete and specific. No JSON, no code blocks, no tool/library names unless the user
+already used that name themselves.
+
+Example of the right shape (for a drift check):
+"Drift check completed -- significant drift detected.
+- **21 of 32 metrics** showed statistically significant drift
+- Strongest signal: a p-value of **7.5e-92** on the shifted feature
+- Tested feature: **mean radius**, shifted 1.6x plus an offset of 3
+- This ran against the placeholder dataset, not live data yet\""""
 
     response = client.chat.completions.create(
         model=MODEL,
-        max_tokens=400,
+        max_tokens=600,
         messages=[{"role": "user", "content": prompt}],
     )
     return response.choices[0].message.content.strip()

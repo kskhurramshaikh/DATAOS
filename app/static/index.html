@@ -195,6 +195,18 @@ let conversationId = null;
 
 const $ = (id) => document.getElementById(id);
 
+// Setting scrollTop = scrollHeight immediately after a DOM change can
+// land just short of the real bottom, because the browser hasn't
+// finished laying out the new content yet at that exact instant.
+// Deferring to the next animation frame guarantees layout is settled
+// first, so this always actually reaches the bottom.
+function scrollMessagesToBottom() {
+  requestAnimationFrame(() => {
+    const el = $("messages");
+    el.scrollTop = el.scrollHeight;
+  });
+}
+
 function showSignup() {
   $("login-form").classList.add("hidden");
   $("signup-form").classList.remove("hidden");
@@ -282,6 +294,9 @@ function renderMarkdownLite(text) {
   for (const rawLine of lines) {
     const line = rawLine.trim();
     const isBullet = line.startsWith("- ") || line.startsWith("* ");
+    const isEmptyBulletMarker = line === "-" || line === "*";
+
+    if (isEmptyBulletMarker) continue; // stray/incomplete marker, e.g. a truncated reply
 
     if (isBullet && !inList) { html += "<ul>"; inList = true; }
     if (!isBullet && inList) { html += "</ul>"; inList = false; }
@@ -302,7 +317,7 @@ function addMessage(role, text) {
   div.className = "msg " + role;
   div.textContent = text;
   $("messages").appendChild(div);
-  $("messages").scrollTop = $("messages").scrollHeight;
+  scrollMessagesToBottom();
   return div;
 }
 
@@ -343,7 +358,7 @@ function addStreamingBotMessage() {
   div.appendChild(finalText);
   div.appendChild(details);
   $("messages").appendChild(div);
-  $("messages").scrollTop = $("messages").scrollHeight;
+  scrollMessagesToBottom();
 
   let stepNum = 0;
 
@@ -359,7 +374,7 @@ function addStreamingBotMessage() {
       line.className = "pipeline-log-line";
       line.textContent = `${stepNum}. ${label}`;
       pipelineLog.appendChild(line);
-      $("messages").scrollTop = $("messages").scrollHeight;
+      scrollMessagesToBottom();
     },
     addDetail(label, data) {
       details.classList.remove("hidden");
@@ -387,20 +402,20 @@ function addStreamingBotMessage() {
       entry.appendChild(pre);
 
       detailBody.appendChild(entry);
-      $("messages").scrollTop = $("messages").scrollHeight;
+      scrollMessagesToBottom();
     },
     setFinal(text) {
       statusLine.remove();
       finalText.innerHTML = renderMarkdownLite(text);
       finalText.classList.remove("hidden");
-      $("messages").scrollTop = $("messages").scrollHeight;
+      scrollMessagesToBottom();
     },
     setError(text) {
       statusLine.remove();
       finalText.textContent = text;
       finalText.classList.add("error-text");
       finalText.classList.remove("hidden");
-      $("messages").scrollTop = $("messages").scrollHeight;
+      scrollMessagesToBottom();
     },
   };
 }
