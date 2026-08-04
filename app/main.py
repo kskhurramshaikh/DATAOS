@@ -1,17 +1,29 @@
-# DataOS 2.0 -- Pipeline Rails, Phase One Test
+# DataOS 2.0 -- Pipeline Rails + Conversational Interface
 #
-# This is the single intent-capture surface: the only thing any client
-# (the DataOS 2.0 portal, eventually) ever talks to. Everything past this
-# point -- compliance, routing, the tool doing the actual work -- is
-# invisible on the other side of this one endpoint.
+# The raw intent pipeline (compliance -> router -> adapter) is unchanged
+# from Phase One -- POST /intent still exists exactly as before, for
+# direct/programmatic use. What's new is the layer in front of it: sign
+# up, log in, and talk to DataOS in plain English at "/". The chat
+# endpoint calls the exact same pipeline internally; nothing about the
+# governed rails changes underneath it.
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.compliance_agent import evaluate
 from app.router import route, NoCapabilityRegisteredError
+from app.capability_registry import CAPABILITY_REGISTRY
+from app.db import init_db
+from app import auth, chat_store
+from app.interpreter import interpret
 
-app = FastAPI(title="DataOS 2.0 -- Pipeline Rails (Phase One Test)")
+app = FastAPI(title="DataOS 2.0 -- Pipeline Rails")
+
+init_db()
+
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
 class IntentRequest(BaseModel):
@@ -20,10 +32,100 @@ class IntentRequest(BaseModel):
     payload: dict = {}
 
 
+class SignupRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    conversation_id: int | None = None
+
+
+# ---------------------------------------------------------------------
+# Landing page -- the chat UI is the actual front door now.
+# ---------------------------------------------------------------------
+
+@app.get("/")
+def root():
+    return FileResponse("app/static/index.html")
+
+
+@app.get("/api/info")
+def api_info():
+    return {
+        "service": "DataOS 2.0 -- Pipeline Rails",
+        "status": "ok",
+        "docs": "/docs",
+        "health": "/health",
+        "available_intents": list(CAPABILITY_REGISTRY.keys()),
+    }
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
+
+# ---------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------
+
+@app.post("/auth/signup")
+def signup(req: SignupRequest):
+    user = auth.create_user(req.email, req.name, req.password)
+    token = auth.issue_token(user)
+    return {"token": token, "user": {"id": user["id"], "name": user["name"], "email": user["email"]}}
+
+
+@app.post("/auth/login")
+def login(req: LoginRequest):
+    user = auth.authenticate_user(req.email, req.password)
+    token = auth.issue_token(user)
+    return {"token": token, "user": {"id": user["id"], "name": user["name"], "email": user["email"]}}
+
+
+# ---------------------------------------------------------------------
+# Chat -- natural language front door onto the existing pipeline
+# ---------------------------------------------------------------------
+
+@app.post("/chat")
+def chat(req: ChatRequest, user: dict = Depends(auth.get_current_user)):
+    if req.conversation_id is None:
+        conversation_id = chat_store.create_conversation(user["id"])
+    else:
+        owner_id = chat_store.get_conversation_owner(req.conversation_id)
+        if owner_id != user["id"]:
+            conversation_id = chat_store.create_conversation(user["id"])
+        else:
+            conversation_id = req.conversation_id
+
+    history = chat_store.get_history(conversation_id)
+    try:
+        result = interpret(history, req.message)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    chat_store.add_message(conversation_id, "user", req.message)
+    chat_store.add_message(conversation_id, "assistant", result["reply"])
+
+    return {
+        "reply": result["reply"],
+        "conversation_id": conversation_id,
+        "ran_intent": result["ran_intent"],
+    }
+
+
+# ---------------------------------------------------------------------
+# Raw intent pipeline -- unchanged from Phase One, kept for direct/
+# programmatic access alongside the chat interface.
+# ---------------------------------------------------------------------
 
 @app.post("/intent")
 def handle_intent(req: IntentRequest):

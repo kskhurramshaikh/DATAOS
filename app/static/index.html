@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DataOS 2.0</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #2a2e38; --text: #e8e9ed;
+    --muted: #8a8f9c; --accent: #5b8cff; --accent-dim: #2b3a5e;
+    --user-bubble: #2b3a5e; --bot-bubble: #1f232c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text); height: 100vh; display: flex;
+    align-items: center; justify-content: center;
+  }
+  .hidden { display: none !important; }
+
+  /* Auth screen */
+  #auth-screen { width: 360px; }
+  #auth-screen h1 { font-size: 22px; margin-bottom: 4px; }
+  #auth-screen p.sub { color: var(--muted); margin-top: 0; margin-bottom: 24px; font-size: 14px; }
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .field input {
+    width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--text); font-size: 14px;
+  }
+  .field input:focus { outline: none; border-color: var(--accent); }
+  button.primary {
+    width: 100%; padding: 11px; border-radius: 8px; border: none; background: var(--accent);
+    color: white; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 6px;
+  }
+  button.primary:hover { opacity: 0.9; }
+  button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .toggle-row { text-align: center; margin-top: 16px; font-size: 13px; color: var(--muted); }
+  .toggle-row a { color: var(--accent); cursor: pointer; text-decoration: none; }
+  .error-msg { color: #ff6b6b; font-size: 13px; margin-top: 8px; min-height: 16px; }
+
+  /* Chat screen */
+  #chat-screen {
+    width: 100%; max-width: 720px; height: 100vh; display: flex; flex-direction: column;
+  }
+  #chat-header {
+    padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex;
+    justify-content: space-between; align-items: center;
+  }
+  #chat-header .title { font-weight: 700; font-size: 15px; }
+  #chat-header .sub { color: var(--muted); font-size: 12px; }
+  #logout-btn { background: none; border: 1px solid var(--border); color: var(--muted);
+    padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  #logout-btn:hover { color: var(--text); border-color: var(--muted); }
+
+  #messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+  .msg { max-width: 78%; padding: 10px 14px; border-radius: 14px; font-size: 14px; line-height: 1.5; }
+  .msg.user { align-self: flex-end; background: var(--user-bubble); border-bottom-right-radius: 4px; }
+  .msg.bot { align-self: flex-start; background: var(--bot-bubble); border-bottom-left-radius: 4px; }
+  .msg.typing { color: var(--muted); font-style: italic; }
+
+  #composer { padding: 16px 20px; border-top: 1px solid var(--border); display: flex; gap: 10px; }
+  #composer input {
+    flex: 1; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--text); font-size: 14px;
+  }
+  #composer input:focus { outline: none; border-color: var(--accent); }
+  #composer button {
+    padding: 0 18px; border-radius: 10px; border: none; background: var(--accent);
+    color: white; font-weight: 600; cursor: pointer; font-size: 14px;
+  }
+  #composer button:disabled { opacity: 0.5; cursor: not-allowed; }
+</style>
+</head>
+<body>
+
+<div id="auth-screen">
+  <h1>DataOS 2.0</h1>
+  <p class="sub" id="auth-sub">Sign in to start.</p>
+
+  <div id="login-form">
+    <div class="field"><label>Email</label><input type="email" id="login-email"></div>
+    <div class="field"><label>Password</label><input type="password" id="login-password"></div>
+    <button class="primary" id="login-btn">Log in</button>
+    <div class="error-msg" id="login-error"></div>
+    <div class="toggle-row">New here? <a id="show-signup">Create an account</a></div>
+  </div>
+
+  <div id="signup-form" class="hidden">
+    <div class="field"><label>Name</label><input type="text" id="signup-name"></div>
+    <div class="field"><label>Email</label><input type="email" id="signup-email"></div>
+    <div class="field"><label>Password</label><input type="password" id="signup-password"></div>
+    <button class="primary" id="signup-btn">Sign up</button>
+    <div class="error-msg" id="signup-error"></div>
+    <div class="toggle-row">Already have an account? <a id="show-login">Log in</a></div>
+  </div>
+</div>
+
+<div id="chat-screen" class="hidden">
+  <div id="chat-header">
+    <div>
+      <div class="title">DataOS 2.0</div>
+      <div class="sub" id="user-greeting"></div>
+    </div>
+    <button id="logout-btn">Log out</button>
+  </div>
+  <div id="messages"></div>
+  <div id="composer">
+    <input type="text" id="chat-input" placeholder="Ask DataOS anything...">
+    <button id="send-btn">Send</button>
+  </div>
+</div>
+
+<script>
+const API = "";
+let token = null;
+let conversationId = null;
+
+const $ = (id) => document.getElementById(id);
+
+function showSignup() {
+  $("login-form").classList.add("hidden");
+  $("signup-form").classList.remove("hidden");
+}
+function showLogin() {
+  $("signup-form").classList.add("hidden");
+  $("login-form").classList.remove("hidden");
+}
+$("show-signup").onclick = showSignup;
+$("show-login").onclick = showLogin;
+
+async function api(path, body, useAuth) {
+  const headers = { "Content-Type": "application/json" };
+  if (useAuth && token) headers["Authorization"] = "Bearer " + token;
+  const res = await fetch(API + path, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || "Something went wrong.");
+  return data;
+}
+
+$("signup-btn").onclick = async () => {
+  $("signup-error").textContent = "";
+  try {
+    const data = await api("/auth/signup", {
+      name: $("signup-name").value,
+      email: $("signup-email").value,
+      password: $("signup-password").value,
+    });
+    onAuthed(data.token, data.user);
+  } catch (e) {
+    $("signup-error").textContent = e.message;
+  }
+};
+
+$("login-btn").onclick = async () => {
+  $("login-error").textContent = "";
+  try {
+    const data = await api("/auth/login", {
+      email: $("login-email").value,
+      password: $("login-password").value,
+    });
+    onAuthed(data.token, data.user);
+  } catch (e) {
+    $("login-error").textContent = e.message;
+  }
+};
+
+function onAuthed(t, user) {
+  token = t;
+  localStorage.setItem("dataos_token", t);
+  $("auth-screen").classList.add("hidden");
+  $("chat-screen").classList.remove("hidden");
+  $("user-greeting").textContent = "Signed in as " + user.name;
+  addMessage("bot", "Hi " + user.name + " — I'm the DataOS assistant. Tell me what you'd like to do, in plain English. Right now I can check for data/model drift — try something like \"check for drift in the mean radius feature.\"");
+}
+
+$("logout-btn").onclick = () => {
+  token = null;
+  conversationId = null;
+  localStorage.removeItem("dataos_token");
+  $("messages").innerHTML = "";
+  $("chat-screen").classList.add("hidden");
+  $("auth-screen").classList.remove("hidden");
+};
+
+function addMessage(role, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  div.textContent = text;
+  $("messages").appendChild(div);
+  $("messages").scrollTop = $("messages").scrollHeight;
+  return div;
+}
+
+async function sendMessage() {
+  const input = $("chat-input");
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+  $("send-btn").disabled = true;
+
+  addMessage("user", text);
+  const typing = addMessage("bot typing", "thinking...");
+
+  try {
+    const data = await api("/chat", { message: text, conversation_id: conversationId }, true);
+    conversationId = data.conversation_id;
+    typing.remove();
+    addMessage("bot", data.reply);
+  } catch (e) {
+    typing.remove();
+    addMessage("bot", "Something went wrong: " + e.message);
+  } finally {
+    $("send-btn").disabled = false;
+    input.focus();
+  }
+}
+
+$("send-btn").onclick = sendMessage;
+$("chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter") sendMessage(); });
+
+// Resume a saved session if there is one
+const saved = localStorage.getItem("dataos_token");
+if (saved) {
+  token = saved;
+  $("auth-screen").classList.add("hidden");
+  $("chat-screen").classList.remove("hidden");
+  $("user-greeting").textContent = "Welcome back";
+  addMessage("bot", "Welcome back — what would you like to do?");
+}
+</script>
+</body>
+</html>
