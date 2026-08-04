@@ -150,10 +150,17 @@ You ran the "{intent}" capability on their behalf. Here is the raw result from t
 
 {json.dumps(raw_result, indent=2)}
 
-Explain this back to the user in 2-4 friendly, plain-English sentences. Mention the
-concrete numbers that matter. If stage is "silver_held", clearly explain why it's being
-held and that they can ask to promote it anyway. No JSON, no code, no tool/library names
-unless the user already used that name themselves."""
+Format your reply for readability -- never as one dense paragraph:
+1. Start with ONE short sentence stating the outcome (what happened, plain and direct).
+2. Then a markdown bullet list (each line starting with "- ") of the concrete facts and
+   numbers that matter, one per bullet, with the key number or word in **bold**. Keep each
+   bullet short -- a fact, not a sentence with three clauses.
+3. If stage is "silver_held", give the hold reason its own bullet stated plainly, and end
+   with one short closing sentence inviting them to ask you to promote it anyway.
+
+No JSON, no code blocks, no tool/library names unless the user already used that name
+themselves. Aim for one intro sentence plus 3-6 bullets total -- scannable, not a wall of
+text."""
 
     response = client.chat.completions.create(
         model=MODEL,

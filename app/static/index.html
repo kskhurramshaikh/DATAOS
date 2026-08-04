@@ -75,6 +75,13 @@
 
   .final-text { margin-top: 6px; }
   .final-text:first-child { margin-top: 0; }
+  .final-text p { margin: 0 0 8px 0; }
+  .final-text p:last-child { margin-bottom: 0; }
+  .final-text ul { margin: 2px 0 10px 0; padding-left: 20px; }
+  .final-text ul:last-child { margin-bottom: 0; }
+  .final-text li { margin-bottom: 5px; }
+  .final-text li:last-child { margin-bottom: 0; }
+  .final-text strong { color: #fff; font-weight: 700; }
 
   /* Expandable "show your work" tree */
   .tool-details { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; }
@@ -94,6 +101,17 @@
     max-height: 260px; overflow-y: auto;
   }
   .error-text { color: #ff6b6b; }
+
+  /* Pipeline log -- the permanent trail of every stage the request
+     actually went through (compliance -> routing -> tool, or
+     Bronze -> Silver -> Gold), kept visible after the reply lands. */
+  .pipeline-log { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+  .pipeline-log-line {
+    font-size: 12px; color: var(--muted); font-family: "SF Mono", Consolas, Monaco, monospace;
+  }
+  .route-callout {
+    font-size: 12px; color: var(--accent); margin-bottom: 6px; font-weight: 600;
+  }
 
   #composer { padding: 16px 20px; border-top: 1px solid var(--border); display: flex; gap: 10px; position: relative; }
   #composer input {
@@ -246,6 +264,39 @@ $("logout-btn").onclick = () => {
   $("auth-screen").classList.remove("hidden");
 };
 
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// Lightweight markdown -> HTML: bold and bullet lists only, which is
+// all the reply-formatting prompt ever asks the model to use. Escapes
+// first so nothing in the text can inject markup.
+function renderMarkdownLite(text) {
+  const escaped = escapeHtml(text);
+  const lines = escaped.split("\n");
+  let html = "";
+  let inList = false;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    const isBullet = line.startsWith("- ") || line.startsWith("* ");
+
+    if (isBullet && !inList) { html += "<ul>"; inList = true; }
+    if (!isBullet && inList) { html += "</ul>"; inList = false; }
+
+    if (isBullet) {
+      html += "<li>" + line.slice(2) + "</li>";
+    } else if (line !== "") {
+      html += "<p>" + line + "</p>";
+    }
+  }
+  if (inList) html += "</ul>";
+
+  return html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+}
+
 function addMessage(role, text) {
   const div = document.createElement("div");
   div.className = "msg " + role;
@@ -256,8 +307,11 @@ function addMessage(role, text) {
 }
 
 // Creates a bot message bubble that streams: animated dots + a status
-// label that updates live, an expandable "show your work" tree fed by
-// tool_call/tool_result events, and finally the plain-English reply.
+// label that updates live, an expandable "show your work" tree that
+// keeps every stage the pipeline actually went through (Bronze ->
+// Silver -> Gold, or compliance -> routing -> tool), not just the
+// final blob -- DataOS is fundamentally about tool orchestration, so
+// the orchestration itself has to stay visible after the fact.
 function addStreamingBotMessage() {
   const div = document.createElement("div");
   div.className = "msg bot";
@@ -275,8 +329,14 @@ function addStreamingBotMessage() {
   details.className = "tool-details hidden";
   const summary = document.createElement("summary");
   summary.textContent = "View details";
+
+  const pipelineLog = document.createElement("div");
+  pipelineLog.className = "pipeline-log";
+
   const detailBody = document.createElement("div");
+
   details.appendChild(summary);
+  details.appendChild(pipelineLog);
   details.appendChild(detailBody);
 
   div.appendChild(statusLine);
@@ -285,27 +345,53 @@ function addStreamingBotMessage() {
   $("messages").appendChild(div);
   $("messages").scrollTop = $("messages").scrollHeight;
 
+  let stepNum = 0;
+
   return {
     setStatus(label) {
       statusLine.querySelector(".status-text").textContent = label;
+
+      // Every stage the pipeline actually passes through gets logged
+      // here permanently, in order -- this is the orchestration trail.
+      details.classList.remove("hidden");
+      stepNum += 1;
+      const line = document.createElement("div");
+      line.className = "pipeline-log-line";
+      line.textContent = `${stepNum}. ${label}`;
+      pipelineLog.appendChild(line);
+      $("messages").scrollTop = $("messages").scrollHeight;
     },
     addDetail(label, data) {
       details.classList.remove("hidden");
       const entry = document.createElement("div");
       entry.className = "tool-entry";
+
       const entryLabel = document.createElement("div");
       entryLabel.className = "tool-entry-label";
       entryLabel.textContent = label;
+      entry.appendChild(entryLabel);
+
+      // If this result carries routing info (which real capability and
+      // tool actually ran), call that out as its own visible line --
+      // not something you have to go hunting for inside the raw JSON.
+      const routing = data && data.routing;
+      if (routing) {
+        const routeLine = document.createElement("div");
+        routeLine.className = "route-callout";
+        routeLine.textContent = `→ Routed to capability "${routing.capability}", tool "${routing.tool}"`;
+        entry.appendChild(routeLine);
+      }
+
       const pre = document.createElement("pre");
       pre.textContent = JSON.stringify(data, null, 2);
-      entry.appendChild(entryLabel);
       entry.appendChild(pre);
+
       detailBody.appendChild(entry);
       $("messages").scrollTop = $("messages").scrollHeight;
     },
     setFinal(text) {
       statusLine.remove();
-      finalText.textContent = text;
+      finalText.innerHTML = renderMarkdownLite(text);
       finalText.classList.remove("hidden");
       $("messages").scrollTop = $("messages").scrollHeight;
     },
@@ -323,7 +409,7 @@ function handleStreamEvent(bubble, eventType, data) {
   if (eventType === "status") {
     bubble.setStatus(data.label);
   } else if (eventType === "tool_call") {
-    bubble.addDetail("Calling: " + data.name, data.input);
+    bubble.addDetail("Calling intent: " + data.name, data.input);
   } else if (eventType === "tool_result") {
     bubble.addDetail("Result", data.data);
   } else if (eventType === "final") {
