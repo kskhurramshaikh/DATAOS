@@ -182,7 +182,7 @@
     <div id="plus-menu" class="hidden">
       <div class="menu-item" id="add-dataset-item">📊 Add dataset</div>
     </div>
-    <input type="file" id="dataset-file-input" accept=".csv" class="hidden">
+    <input type="file" id="dataset-file-input" accept=".csv,.xlsx,.xls" class="hidden">
     <input type="text" id="chat-input" placeholder="Ask DataOS anything...">
     <button id="send-btn">Send</button>
   </div>
@@ -531,7 +531,7 @@ $("dataset-file-input").addEventListener("change", async () => {
   const file = input.files[0];
   if (!file) return;
 
-  const defaultName = file.name.replace(/\.csv$/i, "");
+  const defaultName = file.name.replace(/\.(csv|xlsx|xls)$/i, "");
   const datasetName = window.prompt("Name this dataset:", defaultName);
   input.value = ""; // allow re-selecting the same file later
 

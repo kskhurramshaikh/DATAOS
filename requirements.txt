@@ -7,4 +7,5 @@ pytest
 httpx
 openai
 PyJWT
+openpyxl
 python-multipart

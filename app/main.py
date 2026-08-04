@@ -191,14 +191,12 @@ async def chat_upload(
 
     raw_bytes = await file.read()
     try:
-        csv_content = raw_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(
-            status_code=400,
-            detail="Could not read the file as UTF-8 text. Please upload a plain CSV file.",
-        )
+        csv_content, sheet_used = dataset_adapter.extract_csv_content(file.filename, raw_bytes)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-    user_message = f'Uploaded a dataset file ({file.filename}) to add as "{dataset_name}".'
+    sheet_note = f' (sheet: "{sheet_used}")' if sheet_used else ""
+    user_message = f'Uploaded a dataset file ({file.filename}{sheet_note}) to add as "{dataset_name}".'
 
     decision = evaluate("add_dataset", {})
     if not decision.allowed:
@@ -254,8 +252,9 @@ def _text_chat_events(history: list[dict], message: str, conv_id: int):
     yield {"type": "final", "reply": reply, "conversation_id": conv_id, "ran_intent": ran_intent}
 
 
-def _dataset_upload_events(dataset_name: str, csv_content: str, filename: str, user_id: int, conv_id: int):
-    user_message = f'Uploaded a dataset file ({filename}) to add as "{dataset_name}".'
+def _dataset_upload_events(dataset_name: str, csv_content: str, filename: str, sheet_used: str | None, user_id: int, conv_id: int):
+    sheet_note = f' (sheet: "{sheet_used}")' if sheet_used else ""
+    user_message = f'Uploaded a dataset file ({filename}{sheet_note}) to add as "{dataset_name}".'
 
     yield {"type": "status", "stage": "compliance", "label": "Checking compliance rules..."}
     decision = evaluate("add_dataset", {})
@@ -338,19 +337,20 @@ async def chat_stream(
     conv_id = _resolve_conversation(conversation_id, user["id"])
     csv_content = None
     filename = None
+    sheet_used = None
 
     if file is not None:
         raw_bytes = await file.read()
         filename = file.filename
         try:
-            csv_content = raw_bytes.decode("utf-8")
-        except UnicodeDecodeError:
+            csv_content, sheet_used = dataset_adapter.extract_csv_content(filename, raw_bytes)
+        except ValueError as e:
             async def error_only():
-                yield _sse("error", {"detail": "Could not read the file as UTF-8 text. Please upload a plain CSV file."})
+                yield _sse("error", {"detail": str(e)})
             return StreamingResponse(error_only(), media_type="text/event-stream")
 
     if csv_content is not None:
-        sync_gen = _dataset_upload_events(dataset_name, csv_content, filename, user["id"], conv_id)
+        sync_gen = _dataset_upload_events(dataset_name, csv_content, filename, sheet_used, user["id"], conv_id)
     else:
         if not message:
             async def error_only2():

@@ -52,6 +52,43 @@ def _safe_name(name: str) -> str:
     return cleaned or "unnamed_dataset"
 
 
+def extract_csv_content(filename: str, raw_bytes: bytes) -> tuple[str, str | None]:
+    """
+    Accepts raw upload bytes and returns (csv_content, sheet_used).
+
+    CSV passes through as-is (decoded UTF-8). Excel (.xlsx/.xls) is read
+    via pandas/openpyxl -- if the workbook has multiple sheets, one whose
+    name contains "customer" is preferred, since that's the raw
+    transactional data a medallion pipeline actually ingests. Scorecard/
+    summary sheets in the same workbook (an assessment scorecard, an
+    executive rollup) aren't meant to land through Bronze/Silver/Gold the
+    same way real records are -- they're computed outputs, not source
+    data. Falls back to the first sheet if no "customer" match exists.
+    """
+    is_excel = filename.lower().endswith((".xlsx", ".xls"))
+
+    if not is_excel:
+        try:
+            return raw_bytes.decode("utf-8"), None
+        except UnicodeDecodeError as e:
+            raise ValueError(f"Could not read the file as UTF-8 text: {e}")
+
+    try:
+        sheets = pd.read_excel(io.BytesIO(raw_bytes), sheet_name=None, engine="openpyxl")
+    except Exception as e:
+        raise ValueError(f"Could not read the Excel file: {e}")
+
+    if not sheets:
+        raise ValueError("The Excel file has no sheets.")
+
+    sheet_name = next(
+        (name for name in sheets if "customer" in name.lower()),
+        next(iter(sheets)),
+    )
+    df = sheets[sheet_name]
+    return df.to_csv(index=False), sheet_name
+
+
 def _numeric_summary(df: pd.DataFrame) -> dict:
     numeric_cols = df.select_dtypes(include="number").columns
     summary = {}
