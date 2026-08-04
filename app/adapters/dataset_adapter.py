@@ -93,6 +93,20 @@ def _read_sheet_with_header_detection(raw_bytes: bytes, sheet_name: str) -> pd.D
     return best_df.dropna(how="all").reset_index(drop=True)
 
 
+def list_excel_sheet_names(raw_bytes: bytes) -> list[str]:
+    """List sheet names in an Excel workbook without fully reading any of them."""
+    try:
+        return pd.ExcelFile(io.BytesIO(raw_bytes), engine="openpyxl").sheet_names
+    except Exception:
+        return []
+
+
+def extract_specific_sheet_csv(raw_bytes: bytes, sheet_name: str) -> str:
+    """Read one named sheet (with header-row auto-detection) and return it as CSV text."""
+    df = _read_sheet_with_header_detection(raw_bytes, sheet_name)
+    return df.to_csv(index=False)
+
+
 def extract_csv_content(filename: str, raw_bytes: bytes) -> tuple[str, str | None]:
     """
     Accepts raw upload bytes and returns (csv_content, sheet_used).

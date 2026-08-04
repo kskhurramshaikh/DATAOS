@@ -27,4 +27,14 @@ CAPABILITY_REGISTRY = {
         "tool": "pandas_medallion_pipeline",
         "adapter": "app.adapters.dataset_adapter.promote_dataset",
     },
+    "assess_ndi_readiness": {
+        "capability": "assess_data_governance_readiness",
+        "tool": "ndi_scorecard_engine",
+        "adapter": "app.adapters.banking_adapter.run_ndi",
+    },
+    "compute_ifrs9_ecl": {
+        "capability": "compute_expected_credit_loss",
+        "tool": "ifrs9_ecl_engine",
+        "adapter": "app.adapters.banking_adapter.run_ifrs9",
+    },
 }

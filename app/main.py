@@ -35,7 +35,7 @@ from app.router import route, NoCapabilityRegisteredError
 from app.capability_registry import CAPABILITY_REGISTRY
 from app.db import init_db
 from app import auth, chat_store
-from app.adapters import dataset_adapter
+from app.adapters import dataset_adapter, banking_adapter
 from app.interpreter import interpret, interpret_stream, explain_result
 
 app = FastAPI(title="DataOS 2.0 -- Pipeline Rails")
@@ -252,7 +252,7 @@ def _text_chat_events(history: list[dict], message: str, conv_id: int):
     yield {"type": "final", "reply": reply, "conversation_id": conv_id, "ran_intent": ran_intent}
 
 
-def _dataset_upload_events(dataset_name: str, csv_content: str, filename: str, sheet_used: str | None, user_id: int, conv_id: int):
+def _dataset_upload_events(dataset_name: str, raw_bytes: bytes, csv_content: str, filename: str, sheet_used: str | None, user_id: int, conv_id: int):
     sheet_note = f' (sheet: "{sheet_used}")' if sheet_used else ""
     user_message = f'Uploaded a dataset file ({filename}{sheet_note}) to add as "{dataset_name}".'
 
@@ -318,8 +318,44 @@ def _dataset_upload_events(dataset_name: str, csv_content: str, filename: str, s
             ran_intent = None
 
     yield {"type": "tool_result", "data": raw_result}
+
+    # If this was an Excel workbook, check for NDI/IFRS9 sheets alongside
+    # the primary one and run those computations too -- one upload,
+    # every relevant analysis the workbook actually supports, combined
+    # into a single reply rather than making the user upload three times.
+    extra_results = {}
+    if filename and filename.lower().endswith((".xlsx", ".xls")):
+        sheet_names = dataset_adapter.list_excel_sheet_names(raw_bytes)
+
+        ndi_sheet = next((s for s in sheet_names if "ndi" in s.lower()), None)
+        if ndi_sheet:
+            yield {"type": "status", "stage": "ndi", "label": "Assessing NDI data-governance readiness..."}
+            try:
+                ndi_csv = dataset_adapter.extract_specific_sheet_csv(raw_bytes, ndi_sheet)
+                ndi_result = banking_adapter.run_ndi({"csv_content": ndi_csv})
+                extra_results["ndi_readiness"] = ndi_result
+                yield {"type": "tool_result", "data": {"ndi_readiness": ndi_result}}
+            except ValueError as e:
+                extra_results["ndi_readiness_error"] = str(e)
+
+        ifrs9_sheet = next((s for s in sheet_names if "ifrs" in s.lower()), None)
+        if ifrs9_sheet:
+            yield {"type": "status", "stage": "ifrs9", "label": "Computing IFRS 9 expected credit loss..."}
+            try:
+                ifrs9_csv = dataset_adapter.extract_specific_sheet_csv(raw_bytes, ifrs9_sheet)
+                ifrs9_result = banking_adapter.run_ifrs9({"csv_content": ifrs9_csv})
+                extra_results["ifrs9_ecl"] = ifrs9_result
+                yield {"type": "tool_result", "data": {"ifrs9_ecl": ifrs9_result}}
+            except ValueError as e:
+                extra_results["ifrs9_ecl_error"] = str(e)
+
     yield {"type": "status", "stage": "explaining", "label": "Writing a plain-English summary..."}
-    reply = explain_result(user_message, "add_dataset", raw_result)  # may raise RuntimeError -- caught by the caller
+
+    combined_result = dict(raw_result)
+    if extra_results:
+        combined_result["additional_analyses"] = extra_results
+
+    reply = explain_result(user_message, "add_dataset", combined_result)  # may raise RuntimeError -- caught by the caller
 
     chat_store.add_message(conv_id, "user", user_message)
     chat_store.add_message(conv_id, "assistant", reply)
@@ -350,7 +386,7 @@ async def chat_stream(
             return StreamingResponse(error_only(), media_type="text/event-stream")
 
     if csv_content is not None:
-        sync_gen = _dataset_upload_events(dataset_name, csv_content, filename, sheet_used, user["id"], conv_id)
+        sync_gen = _dataset_upload_events(dataset_name, raw_bytes, csv_content, filename, sheet_used, user["id"], conv_id)
     else:
         if not message:
             async def error_only2():
