@@ -62,7 +62,7 @@ def test_chat_without_api_key_returns_clean_503():
         json={"message": "check for drift"},
         headers={"Authorization": f"Bearer {token}"},
     )
-    # No ANTHROPIC_API_KEY in the test environment -- this should fail
+    # No OPENROUTER_API_KEY in the test environment -- this should fail
     # cleanly (503) rather than crash (500) or silently succeed.
     assert r.status_code == 503
-    assert "ANTHROPIC_API_KEY" in r.json()["detail"]
+    assert "OPENROUTER_API_KEY" in r.json()["detail"]

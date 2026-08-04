@@ -7,65 +7,73 @@
 # question back, or a call into the existing pipeline followed by a
 # plain-English explanation of the result.
 #
-# Model: Claude Sonnet 5. Swap to Haiku 4.5 here if cost matters more
-# than interpretation quality once this is past the demo stage.
+# Routed through OpenRouter (OpenAI-compatible API) rather than calling
+# Anthropic directly, so this reuses the same OpenRouter account/billing
+# already used elsewhere -- one API key to manage, not two.
+#
+# Model: anthropic/claude-sonnet-5 via OpenRouter. Swap to a cheaper
+# model slug here if cost matters more than interpretation quality once
+# this is past the demo stage.
 
 import json
 import os
 
-import anthropic
+from openai import OpenAI
 
 from app.capability_registry import CAPABILITY_REGISTRY
 from app.compliance_agent import evaluate
 from app.router import route, NoCapabilityRegisteredError
 
-MODEL = "claude-sonnet-5"
+MODEL = "anthropic/claude-sonnet-5"
 
 _client = None
 
 
-def _get_client() -> anthropic.Anthropic:
+def _get_client() -> OpenAI:
     global _client
     if _client is None:
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        api_key = os.environ.get("OPENROUTER_API_KEY")
         if not api_key:
             raise RuntimeError(
-                "ANTHROPIC_API_KEY is not set. The chat interface needs this to interpret "
+                "OPENROUTER_API_KEY is not set. The chat interface needs this to interpret "
                 "natural-language messages."
             )
-        _client = anthropic.Anthropic(api_key=api_key)
+        _client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
     return _client
 
 
 CALL_INTENT_TOOL = {
-    "name": "call_intent",
-    "description": (
-        "Call this once you have enough information to run a registered DataOS intent on "
-        "the user's behalf. Only call it for intents that are actually registered -- if the "
-        "user asks for something that isn't registered yet, say so in plain text instead."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "intent": {
-                "type": "string",
-                "description": "The exact registered intent key to run.",
-                "enum": list(CAPABILITY_REGISTRY.keys()),
+    "type": "function",
+    "function": {
+        "name": "call_intent",
+        "description": (
+            "Call this once you have enough information to run a registered DataOS intent on "
+            "the user's behalf. Only call it for intents that are actually registered -- if the "
+            "user asks for something that isn't registered yet, say so in plain text instead."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "intent": {
+                    "type": "string",
+                    "description": "The exact registered intent key to run.",
+                    "enum": list(CAPABILITY_REGISTRY.keys()),
+                },
+                "context": {
+                    "type": "object",
+                    "description": (
+                        "Governance context for the compliance check, e.g. "
+                        "{\"dataset_classification\": \"PUBLIC\"}. Default to an empty object "
+                        "if the user hasn't said anything about data classification."
+                    ),
+                },
+                "payload": {
+                    "type": "object",
+                    "description": "The parameters the intent's adapter needs, gathered from the conversation.",
+                },
             },
-            "context": {
-                "type": "object",
-                "description": (
-                    "Governance context for the compliance check, e.g. "
-                    "{\"dataset_classification\": \"PUBLIC\"}. Default to an empty object "
-                    "if the user hasn't said anything about data classification."
-                ),
-            },
-            "payload": {
-                "type": "object",
-                "description": "The parameters the intent's adapter needs, gathered from the conversation.",
-            },
+            "required": ["intent"],
         },
-        "required": ["intent"],
     },
 }
 
@@ -102,13 +110,12 @@ Rules:
 """
 
 
-def _explain_result(user_message: str, tool_input: dict, raw_result: dict) -> str:
+def _explain_result(user_message: str, intent: str, raw_result: dict) -> str:
     """Second short call: turn the raw pipeline JSON into a plain-English reply."""
     client = _get_client()
     prompt = f"""The user asked: "{user_message}"
 
-You ran the "{tool_input.get('intent')}" capability on their behalf. Here is the raw
-result from the system:
+You ran the "{intent}" capability on their behalf. Here is the raw result from the system:
 
 {json.dumps(raw_result, indent=2)}
 
@@ -117,12 +124,12 @@ concrete numbers that matter (e.g. how many metrics, whether drift was found, wh
 it was blocked by a compliance rule). No JSON, no code, no tool/library names unless the
 user already used that name themselves."""
 
-    response = client.messages.create(
+    response = client.chat.completions.create(
         model=MODEL,
         max_tokens=400,
         messages=[{"role": "user", "content": prompt}],
     )
-    return "".join(block.text for block in response.content if block.type == "text").strip()
+    return response.choices[0].message.content.strip()
 
 
 def interpret(conversation_history: list[dict], user_message: str) -> dict:
@@ -132,24 +139,28 @@ def interpret(conversation_history: list[dict], user_message: str) -> dict:
     """
     client = _get_client()
 
-    messages = conversation_history + [{"role": "user", "content": user_message}]
+    messages = (
+        [{"role": "system", "content": _system_prompt()}]
+        + conversation_history
+        + [{"role": "user", "content": user_message}]
+    )
 
-    response = client.messages.create(
+    response = client.chat.completions.create(
         model=MODEL,
         max_tokens=600,
-        system=_system_prompt(),
         tools=[CALL_INTENT_TOOL],
         messages=messages,
     )
 
-    tool_use = next((b for b in response.content if b.type == "tool_use"), None)
+    message = response.choices[0].message
+    tool_calls = message.tool_calls or []
 
-    if tool_use is None:
+    if not tool_calls:
         # No tool call -- Claude is asking a clarifying question or explaining a gap.
-        reply = "".join(b.text for b in response.content if b.type == "text").strip()
-        return {"reply": reply, "ran_intent": None}
+        return {"reply": (message.content or "").strip(), "ran_intent": None}
 
-    tool_input = tool_use.input
+    call = tool_calls[0]
+    tool_input = json.loads(call.function.arguments)
     intent = tool_input.get("intent")
     context = tool_input.get("context") or {}
     payload = tool_input.get("payload") or {}
@@ -169,5 +180,5 @@ def interpret(conversation_history: list[dict], user_message: str) -> dict:
         except NoCapabilityRegisteredError as e:
             raw_result = {"status": "error", "compliance": decision.to_dict(), "error": str(e)}
 
-    reply = _explain_result(user_message, tool_input, raw_result)
+    reply = _explain_result(user_message, intent, raw_result)
     return {"reply": reply, "ran_intent": intent}
