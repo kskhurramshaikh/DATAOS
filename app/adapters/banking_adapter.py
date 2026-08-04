@@ -23,6 +23,14 @@ import io
 import pandas as pd
 
 
+def _find_column(columns, keywords: list[str]):
+    for c in columns:
+        low = str(c).lower()
+        if any(k in low for k in keywords):
+            return c
+    return None
+
+
 def run_ndi(payload: dict) -> dict:
     csv_content = payload.get("csv_content")
     if not csv_content:
@@ -30,9 +38,32 @@ def run_ndi(payload: dict) -> dict:
 
     df = pd.read_csv(io.StringIO(csv_content))
 
-    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-    if len(numeric_cols) < 2:
-        raise ValueError("Could not identify current/target score columns in this sheet.")
+    # Prefer matching columns BY NAME first (English "current"/"target" or
+    # Arabic "الحالي"/"مستهدف") -- this is the reliable path. Only fall
+    # back to "guess by numeric column position" if no name match is
+    # found, and even then, exclude columns that are obviously something
+    # else (an index/row-number column, a gap column, a priority score)
+    # so the fallback doesn't silently pick the wrong pair. If neither
+    # path finds a confident answer, this raises rather than guessing.
+    current_col = _find_column(df.columns, ["current", "الحالي"])
+    target_col = _find_column(df.columns, ["target", "مستهدف", "هدف"])
+
+    if current_col is None or target_col is None:
+        numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+        exclude_keywords = ["#", "index", "no.", "gap", "فجو", "priority", "أولوي"]
+        candidate_cols = [
+            c for c in numeric_cols if not any(k in str(c).lower() for k in exclude_keywords)
+        ]
+        if len(candidate_cols) != 2:
+            raise ValueError(
+                "Could not confidently identify current/target score columns in this sheet -- "
+                "expected columns named with 'current'/'target' (or Arabic equivalents), or "
+                "exactly two unambiguous numeric score columns."
+            )
+        current_col, target_col = candidate_cols[0], candidate_cols[1]
+
+    if not pd.api.types.is_numeric_dtype(df[current_col]) or not pd.api.types.is_numeric_dtype(df[target_col]):
+        raise ValueError(f"Columns '{current_col}' and '{target_col}' were identified but are not numeric.")
 
     text_cols = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
     domain_col = next((c for c in text_cols if "english" in str(c).lower()), text_cols[-1] if text_cols else None)
@@ -43,7 +74,9 @@ def run_ndi(payload: dict) -> dict:
     if domains_df.empty:
         raise ValueError("No domain rows found after filtering out summary/total rows.")
 
-    current_col, target_col = numeric_cols[0], numeric_cols[1]
+    # Sanity check: if the detected "current" column averages higher than
+    # "target", they're almost certainly swapped -- fix rather than report
+    # a nonsensical negative gap.
     if domains_df[current_col].mean() > domains_df[target_col].mean():
         current_col, target_col = target_col, current_col
 
