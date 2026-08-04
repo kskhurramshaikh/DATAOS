@@ -8,4 +8,5 @@ httpx
 openai
 PyJWT
 openpyxl
+rapidfuzz
 python-multipart

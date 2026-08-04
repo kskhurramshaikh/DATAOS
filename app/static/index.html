@@ -113,6 +113,27 @@
   .chart-block canvas { max-height: 220px; }
   .chart-alt-note { font-size: 11px; color: var(--muted); margin-top: 8px; font-style: italic; }
 
+  /* Duplicate review table -- Tabulator-powered, human-in-the-loop */
+  .review-container { margin-top: 4px; }
+  .review-header { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  .tier-badge { padding: 3px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+  .tier-high { background: rgba(91, 220, 140, 0.18); color: #5bdc8c; }
+  .tier-review { background: rgba(255, 190, 90, 0.18); color: #ffbe5a; }
+  .review-btn {
+    padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--text); font-size: 11px; cursor: pointer; margin: 0 3px;
+  }
+  .review-btn.confirm:hover { border-color: #5bdc8c; color: #5bdc8c; }
+  .review-btn.reject:hover { border-color: var(--muted); }
+  .review-btn:disabled { opacity: 0.5; cursor: wait; }
+  .decision-done { font-size: 11px; color: #5bdc8c; }
+  .review-container .tabulator { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; font-size: 12px; }
+  .review-container .tabulator-header { background: var(--bot-bubble); border-color: var(--border); }
+  .review-container .tabulator-col { background: var(--bot-bubble); border-color: var(--border); color: var(--muted); }
+  .review-container .tabulator-row { background: var(--panel); border-color: var(--border); color: var(--text); }
+  .review-container .tabulator-row.tabulator-row-even { background: #1b1e26; }
+  .review-container .tabulator-cell { border-color: var(--border); }
+
   /* Pipeline log -- the permanent trail of every stage the request
      actually went through (compliance -> routing -> tool, or
      Bronze -> Silver -> Gold), kept visible after the reply lands. */
@@ -354,6 +375,9 @@ function addStreamingBotMessage() {
   const chartsContainer = document.createElement("div");
   chartsContainer.className = "charts-container hidden";
 
+  const reviewContainer = document.createElement("div");
+  reviewContainer.className = "review-container hidden";
+
   const details = document.createElement("details");
   details.className = "tool-details hidden";
   const summary = document.createElement("summary");
@@ -369,6 +393,7 @@ function addStreamingBotMessage() {
   details.appendChild(detailBody);
 
   div.appendChild(statusLine);
+  div.appendChild(reviewContainer);
   div.appendChild(chartsContainer);
   div.appendChild(finalText);
   div.appendChild(details);
@@ -458,6 +483,79 @@ function addStreamingBotMessage() {
       }
       scrollMessagesToBottom();
     },
+    addDuplicateReview(datasetName, clusters) {
+      reviewContainer.classList.remove("hidden");
+
+      const header = document.createElement("div");
+      header.className = "review-header";
+      header.textContent = `${clusters.length} potential duplicate customer group(s) found -- review below`;
+      reviewContainer.appendChild(header);
+
+      const tableEl = document.createElement("div");
+      reviewContainer.appendChild(tableEl);
+
+      const tableData = clusters.map((c) => ({
+        id: c.id,
+        confidence_tier: c.confidence_tier === "high_confidence" ? "High confidence" : "Needs review",
+        size: c.size,
+        names: [...new Set(c.members.map((m) => m.name))].join(" / "),
+        dob: c.members[0] ? c.members[0].dob : "",
+        row_ids: c.members.map((m) => m.row_id).join(", "),
+        status: "pending",
+      }));
+
+      new Tabulator(tableEl, {
+        data: tableData,
+        layout: "fitColumns",
+        columns: [
+          {
+            title: "Confidence", field: "confidence_tier", width: 130,
+            formatter: (cell) => {
+              const v = cell.getValue();
+              const cls = v === "High confidence" ? "tier-high" : "tier-review";
+              return `<span class="tier-badge ${cls}">${v}</span>`;
+            },
+          },
+          { title: "Records", field: "size", width: 80, hozAlign: "center" },
+          { title: "Name(s)", field: "names" },
+          { title: "DOB", field: "dob", width: 100 },
+          { title: "Row IDs", field: "row_ids" },
+          {
+            title: "Action", field: "status", width: 220, hozAlign: "center",
+            formatter: (cell) => {
+              const status = cell.getValue();
+              if (status !== "pending") {
+                const label = status === "confirmed_duplicate" ? "✓ Confirmed duplicate" : "✓ Not a duplicate";
+                return `<span class="decision-done">${label}</span>`;
+              }
+              return '<button class="review-btn confirm">Confirm duplicate</button>' +
+                     '<button class="review-btn reject">Not a duplicate</button>';
+            },
+            cellClick: async (e, cell) => {
+              const target = e.target;
+              if (!target.classList.contains("review-btn")) return;
+              const rowData = cell.getRow().getData();
+              const newStatus = target.classList.contains("confirm") ? "confirmed_duplicate" : "not_duplicate";
+              target.disabled = true;
+              try {
+                const res = await fetch(API + "/duplicates/decide", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+                  body: JSON.stringify({ cluster_id: rowData.id, status: newStatus }),
+                });
+                if (!res.ok) throw new Error("Failed to save decision");
+                cell.getRow().update({ status: newStatus });
+              } catch (err) {
+                target.disabled = false;
+                alert("Could not save this decision: " + err.message);
+              }
+            },
+          },
+        ],
+      });
+
+      scrollMessagesToBottom();
+    },
     setFinal(text) {
       statusLine.remove();
       finalText.innerHTML = renderMarkdownLite(text);
@@ -483,6 +581,8 @@ function handleStreamEvent(bubble, eventType, data) {
     bubble.addDetail("Result", data.data);
   } else if (eventType === "visualization") {
     bubble.addCharts(data.charts);
+  } else if (eventType === "duplicate_review") {
+    bubble.addDuplicateReview(data.dataset_name, data.clusters);
   } else if (eventType === "final") {
     conversationId = data.conversation_id;
     bubble.setFinal(data.reply);

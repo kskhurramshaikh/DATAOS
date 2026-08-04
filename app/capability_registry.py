@@ -37,4 +37,9 @@ CAPABILITY_REGISTRY = {
         "tool": "ifrs9_ecl_engine",
         "adapter": "app.adapters.banking_adapter.run_ifrs9",
     },
+    "find_duplicate_candidates": {
+        "capability": "detect_entity_duplicates",
+        "tool": "rapidfuzz_dob_clustering",
+        "adapter": "app.adapters.dedup_adapter.find_duplicate_candidates",
+    },
 }

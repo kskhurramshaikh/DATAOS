@@ -35,7 +35,7 @@ from app.router import route, NoCapabilityRegisteredError
 from app.capability_registry import CAPABILITY_REGISTRY
 from app.db import init_db
 from app import auth, chat_store
-from app.adapters import dataset_adapter, banking_adapter
+from app.adapters import dataset_adapter, banking_adapter, dedup_adapter
 from app.visualization import suggest_visualization
 from app.interpreter import interpret, interpret_stream, explain_result
 
@@ -271,6 +271,21 @@ def _dataset_upload_events(dataset_name: str, raw_bytes: bytes, csv_content: str
             yield {"type": "status", "stage": "silver", "label": "Cleaning and deduplicating into Silver..."}
             silver = dataset_adapter.clean_to_silver(bronze["safe_name"], bronze["df"])
 
+            yield {"type": "status", "stage": "dedup", "label": "Checking for duplicate customer records..."}
+            silver_csv = silver["silver_df"].to_csv(index=False)
+            dedup_result = dedup_adapter.find_duplicate_candidates({
+                "csv_content": silver_csv,
+                "dataset_name": bronze["safe_name"],
+            })
+            pending_duplicate_clusters = dedup_result.get("total_clusters", 0) if dedup_result.get("applicable") else 0
+
+            if pending_duplicate_clusters > 0:
+                yield {
+                    "type": "duplicate_review",
+                    "dataset_name": bronze["safe_name"],
+                    "clusters": dedup_result["clusters"],
+                }
+
             output = {
                 "dataset_name": bronze["safe_name"],
                 "rows": len(silver["silver_df"]),
@@ -279,11 +294,25 @@ def _dataset_upload_events(dataset_name: str, raw_bytes: bytes, csv_content: str
                 "null_counts": silver["null_counts"],
                 "storage": {"bronze": bronze["bronze_path"], "silver": silver["silver_path"], "gold": None},
             }
+            if dedup_result.get("applicable"):
+                output["duplicate_detection"] = dedup_result
 
-            if silver["held"]:
+            should_hold = silver["held"] or pending_duplicate_clusters > 0
+
+            if should_hold:
                 yield {"type": "status", "stage": "held", "label": "Data quality check: holding at Silver..."}
+                hold_reasons = []
+                if silver["held"]:
+                    hold_reasons.append(silver["hold_reason"])
+                if pending_duplicate_clusters > 0:
+                    hc = dedup_result.get("high_confidence_clusters", 0)
+                    nr = dedup_result.get("needs_review_clusters", 0)
+                    hold_reasons.append(
+                        f"{pending_duplicate_clusters} potential duplicate customer group(s) found "
+                        f"({hc} high-confidence, {nr} needing review) -- unresolved, pending human decision"
+                    )
                 output["stage"] = "silver_held"
-                output["hold_reason"] = silver["hold_reason"]
+                output["hold_reason"] = "; ".join(hold_reasons)
                 output["numeric_summary"] = {}
                 output["top_categories"] = {}
                 output["dropped_columns"] = []
@@ -416,6 +445,32 @@ async def chat_stream(
 # Raw intent pipeline -- unchanged from Phase One, kept for direct/
 # programmatic access alongside the chat interface.
 # ---------------------------------------------------------------------
+
+# ---------------------------------------------------------------------
+# Duplicate review -- the human-in-the-loop actions the Tabulator review
+# table in chat calls. Recording a decision here does not merge or
+# modify any record -- v1 tracks the decision only (see dedup_adapter.py
+# module docstring for why merge execution is deliberately deferred).
+# ---------------------------------------------------------------------
+
+class DuplicateDecisionRequest(BaseModel):
+    cluster_id: int
+    status: str  # "confirmed_duplicate" | "not_duplicate"
+
+
+@app.post("/duplicates/decide")
+def decide_duplicate(req: DuplicateDecisionRequest, user: dict = Depends(auth.get_current_user)):
+    try:
+        result = dedup_adapter.decide_cluster(req.cluster_id, req.status)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
+
+
+@app.get("/duplicates/pending")
+def list_pending_duplicates(dataset_name: str, user: dict = Depends(auth.get_current_user)):
+    return {"dataset_name": dataset_name, "clusters": dedup_adapter.get_pending_clusters(dataset_name)}
+
 
 @app.post("/intent")
 def handle_intent(req: IntentRequest):

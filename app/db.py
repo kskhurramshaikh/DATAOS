@@ -72,6 +72,22 @@ def init_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS duplicate_clusters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset_safe_name TEXT NOT NULL,
+                cluster_index INTEGER NOT NULL,
+                member_row_ids_json TEXT NOT NULL,
+                member_summary_json TEXT NOT NULL,
+                confidence_tier TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                decided_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         conn.commit()
 
 

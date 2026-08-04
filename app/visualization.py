@@ -42,6 +42,16 @@ def suggest_visualization(intent: str, raw_result: dict) -> list[dict] | None:
                 "values": list(counts.values()),
             })
 
+    if intent == "add_dataset" and output.get("duplicate_detection", {}).get("applicable"):
+        dd = output["duplicate_detection"]
+        if dd.get("total_clusters", 0) > 0:
+            charts.append({
+                "type": "bar",
+                "title": "Potential duplicate customer groups by confidence",
+                "labels": ["High confidence", "Needs review"],
+                "values": [dd.get("high_confidence_clusters", 0), dd.get("needs_review_clusters", 0)],
+            })
+
     extra = raw_result.get("additional_analyses")
     if isinstance(extra, dict):
         ndi = extra.get("ndi_readiness")
