@@ -113,26 +113,47 @@
   .chart-block canvas { max-height: 220px; }
   .chart-alt-note { font-size: 11px; color: var(--muted); margin-top: 8px; font-style: italic; }
 
-  /* Duplicate review table -- Tabulator-powered, human-in-the-loop */
+  /* Duplicate review -- cards with native <details> expand, same
+     pattern as the "View details" panel elsewhere in this UI. Chosen
+     over the Tabulator grid for this specific view because a fixed-
+     width column layout squeezed action buttons in the narrow chat
+     bubble; Tabulator stays available for a future full-width table
+     view (e.g. browsing all datasets). */
   .review-container { margin-top: 4px; }
-  .review-header { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
-  .tier-badge { padding: 3px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+  .review-header { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+  .review-list { display: flex; flex-direction: column; gap: 8px; }
+  .review-card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+  }
+  .review-card-summary {
+    cursor: pointer; list-style: none; display: flex; align-items: center; gap: 10px;
+    font-size: 13px;
+  }
+  .review-card-summary::-webkit-details-marker { display: none; }
+  .review-card-summary::before { content: "▸ "; color: var(--muted); }
+  .review-card[open] .review-card-summary::before { content: "▾ "; }
+  .review-card-info { color: var(--text); }
+  .tier-badge { padding: 3px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; flex-shrink: 0; }
   .tier-high { background: rgba(91, 220, 140, 0.18); color: #5bdc8c; }
   .tier-review { background: rgba(255, 190, 90, 0.18); color: #ffbe5a; }
+  .member-table {
+    width: 100%; margin-top: 10px; border-collapse: collapse; font-size: 12px;
+  }
+  .member-table th {
+    text-align: left; color: var(--muted); font-weight: 600; padding: 6px 8px;
+    border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase;
+  }
+  .member-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); color: var(--text); }
+  .member-table tr:last-child td { border-bottom: none; }
+  .review-actions { margin-top: 12px; display: flex; gap: 8px; align-items: center; }
   .review-btn {
-    padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border);
-    background: var(--panel); color: var(--text); font-size: 11px; cursor: pointer; margin: 0 3px;
+    padding: 7px 14px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 12px; cursor: pointer;
   }
   .review-btn.confirm:hover { border-color: #5bdc8c; color: #5bdc8c; }
   .review-btn.reject:hover { border-color: var(--muted); }
   .review-btn:disabled { opacity: 0.5; cursor: wait; }
-  .decision-done { font-size: 11px; color: #5bdc8c; }
-  .review-container .tabulator { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; font-size: 12px; }
-  .review-container .tabulator-header { background: var(--bot-bubble); border-color: var(--border); }
-  .review-container .tabulator-col { background: var(--bot-bubble); border-color: var(--border); color: var(--muted); }
-  .review-container .tabulator-row { background: var(--panel); border-color: var(--border); color: var(--text); }
-  .review-container .tabulator-row.tabulator-row-even { background: #1b1e26; }
-  .review-container .tabulator-cell { border-color: var(--border); }
+  .decision-done { font-size: 12px; color: #5bdc8c; font-weight: 600; }
 
   /* Pipeline log -- the permanent trail of every stage the request
      actually went through (compliance -> routing -> tool, or
@@ -491,68 +512,92 @@ function addStreamingBotMessage() {
       header.textContent = `${clusters.length} potential duplicate customer group(s) found -- review below`;
       reviewContainer.appendChild(header);
 
-      const tableEl = document.createElement("div");
-      reviewContainer.appendChild(tableEl);
+      const list = document.createElement("div");
+      list.className = "review-list";
+      reviewContainer.appendChild(list);
 
-      const tableData = clusters.map((c) => ({
-        id: c.id,
-        confidence_tier: c.confidence_tier === "high_confidence" ? "High confidence" : "Needs review",
-        size: c.size,
-        names: [...new Set(c.members.map((m) => m.name))].join(" / "),
-        dob: c.members[0] ? c.members[0].dob : "",
-        row_ids: c.members.map((m) => m.row_id).join(", "),
-        status: "pending",
-      }));
+      for (const cluster of clusters) {
+        const card = document.createElement("details");
+        card.className = "review-card";
 
-      new Tabulator(tableEl, {
-        data: tableData,
-        layout: "fitColumns",
-        columns: [
-          {
-            title: "Confidence", field: "confidence_tier", width: 130,
-            formatter: (cell) => {
-              const v = cell.getValue();
-              const cls = v === "High confidence" ? "tier-high" : "tier-review";
-              return `<span class="tier-badge ${cls}">${v}</span>`;
-            },
-          },
-          { title: "Records", field: "size", width: 80, hozAlign: "center" },
-          { title: "Name(s)", field: "names" },
-          { title: "DOB", field: "dob", width: 100 },
-          { title: "Row IDs", field: "row_ids" },
-          {
-            title: "Action", field: "status", width: 220, hozAlign: "center",
-            formatter: (cell) => {
-              const status = cell.getValue();
-              if (status !== "pending") {
-                const label = status === "confirmed_duplicate" ? "✓ Confirmed duplicate" : "✓ Not a duplicate";
-                return `<span class="decision-done">${label}</span>`;
-              }
-              return '<button class="review-btn confirm">Confirm duplicate</button>' +
-                     '<button class="review-btn reject">Not a duplicate</button>';
-            },
-            cellClick: async (e, cell) => {
-              const target = e.target;
-              if (!target.classList.contains("review-btn")) return;
-              const rowData = cell.getRow().getData();
-              const newStatus = target.classList.contains("confirm") ? "confirmed_duplicate" : "not_duplicate";
-              target.disabled = true;
-              try {
-                const res = await fetch(API + "/duplicates/decide", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
-                  body: JSON.stringify({ cluster_id: rowData.id, status: newStatus }),
-                });
-                if (!res.ok) throw new Error("Failed to save decision");
-                cell.getRow().update({ status: newStatus });
-              } catch (err) {
-                target.disabled = false;
-                alert("Could not save this decision: " + err.message);
-              }
-            },
-          },
-        ],
-      });
+        const summary = document.createElement("summary");
+        summary.className = "review-card-summary";
+
+        const tierBadge = document.createElement("span");
+        const isHigh = cluster.confidence_tier === "high_confidence";
+        tierBadge.className = "tier-badge " + (isHigh ? "tier-high" : "tier-review");
+        tierBadge.textContent = isHigh ? "High confidence" : "Needs review";
+
+        const uniqueNames = [...new Set(cluster.members.map((m) => m.name))].join(" / ");
+        const infoSpan = document.createElement("span");
+        infoSpan.className = "review-card-info";
+        infoSpan.textContent = `${cluster.size} records -- ${uniqueNames}`;
+
+        summary.appendChild(tierBadge);
+        summary.appendChild(infoSpan);
+        card.appendChild(summary);
+
+        const memberTable = document.createElement("table");
+        memberTable.className = "member-table";
+        const thead = document.createElement("thead");
+        thead.innerHTML = "<tr><th>Row ID</th><th>Name</th><th>DOB</th><th>Phone</th></tr>";
+        const tbody = document.createElement("tbody");
+        for (const m of cluster.members) {
+          const tr = document.createElement("tr");
+          tr.innerHTML =
+            `<td>${escapeHtml(m.row_id)}</td><td>${escapeHtml(m.name)}</td>` +
+            `<td>${escapeHtml(m.dob)}</td><td>${escapeHtml(m.phone || "")}</td>`;
+          tbody.appendChild(tr);
+        }
+        memberTable.appendChild(thead);
+        memberTable.appendChild(tbody);
+        card.appendChild(memberTable);
+
+        const actions = document.createElement("div");
+        actions.className = "review-actions";
+
+        const confirmBtn = document.createElement("button");
+        confirmBtn.className = "review-btn confirm";
+        confirmBtn.textContent = "Confirm duplicate";
+
+        const rejectBtn = document.createElement("button");
+        rejectBtn.className = "review-btn reject";
+        rejectBtn.textContent = "Not a duplicate";
+
+        const statusSpan = document.createElement("span");
+        statusSpan.className = "decision-done hidden";
+
+        const decide = async (status, label) => {
+          confirmBtn.disabled = true;
+          rejectBtn.disabled = true;
+          try {
+            const res = await fetch(API + "/duplicates/decide", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+              body: JSON.stringify({ cluster_id: cluster.id, status }),
+            });
+            if (!res.ok) throw new Error("Failed to save decision");
+            confirmBtn.remove();
+            rejectBtn.remove();
+            statusSpan.textContent = "✓ " + label;
+            statusSpan.classList.remove("hidden");
+          } catch (err) {
+            confirmBtn.disabled = false;
+            rejectBtn.disabled = false;
+            alert("Could not save this decision: " + err.message);
+          }
+        };
+
+        confirmBtn.onclick = () => decide("confirmed_duplicate", "Confirmed duplicate");
+        rejectBtn.onclick = () => decide("not_duplicate", "Not a duplicate");
+
+        actions.appendChild(confirmBtn);
+        actions.appendChild(rejectBtn);
+        actions.appendChild(statusSpan);
+        card.appendChild(actions);
+
+        list.appendChild(card);
+      }
 
       scrollMessagesToBottom();
     },
