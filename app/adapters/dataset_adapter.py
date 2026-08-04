@@ -52,6 +52,47 @@ def _safe_name(name: str) -> str:
     return cleaned or "unnamed_dataset"
 
 
+def _read_sheet_with_header_detection(raw_bytes: bytes, sheet_name: str) -> pd.DataFrame:
+    """
+    Real-world exported workbooks often have a title/report-name row (or
+    two) sitting above the actual column headers -- a merged "Report
+    Name" cell, a generation-date line, etc. Naively reading with
+    header=0 in that case grabs the title as the header and produces
+    "Unnamed: N" columns with the real headers stuck in row 1 as data.
+
+    Try the first several rows as the header candidate and keep whichever
+    produces the fewest "Unnamed" columns -- that's the real header row.
+    """
+    best_df = None
+    best_unnamed_ratio = 1.0
+
+    for header_row in range(5):
+        try:
+            df = pd.read_excel(
+                io.BytesIO(raw_bytes), sheet_name=sheet_name, header=header_row, engine="openpyxl"
+            )
+        except Exception:
+            continue
+        if df.empty or len(df.columns) == 0:
+            continue
+
+        unnamed_count = sum(1 for c in df.columns if str(c).startswith("Unnamed"))
+        unnamed_ratio = unnamed_count / len(df.columns)
+
+        if unnamed_ratio < best_unnamed_ratio:
+            best_unnamed_ratio = unnamed_ratio
+            best_df = df
+        if unnamed_ratio == 0:
+            break
+
+    if best_df is None:
+        raise ValueError(f"Could not find a usable header row in sheet '{sheet_name}'.")
+
+    # Drop rows that are entirely empty -- can happen when a stray blank
+    # row sits between the detected header and the real data.
+    return best_df.dropna(how="all").reset_index(drop=True)
+
+
 def extract_csv_content(filename: str, raw_bytes: bytes) -> tuple[str, str | None]:
     """
     Accepts raw upload bytes and returns (csv_content, sheet_used).
@@ -64,6 +105,9 @@ def extract_csv_content(filename: str, raw_bytes: bytes) -> tuple[str, str | Non
     executive rollup) aren't meant to land through Bronze/Silver/Gold the
     same way real records are -- they're computed outputs, not source
     data. Falls back to the first sheet if no "customer" match exists.
+
+    Header row is auto-detected per _read_sheet_with_header_detection --
+    see that function for why this matters.
     """
     is_excel = filename.lower().endswith((".xlsx", ".xls"))
 
@@ -74,18 +118,19 @@ def extract_csv_content(filename: str, raw_bytes: bytes) -> tuple[str, str | Non
             raise ValueError(f"Could not read the file as UTF-8 text: {e}")
 
     try:
-        sheets = pd.read_excel(io.BytesIO(raw_bytes), sheet_name=None, engine="openpyxl")
+        sheet_names = pd.ExcelFile(io.BytesIO(raw_bytes), engine="openpyxl").sheet_names
     except Exception as e:
         raise ValueError(f"Could not read the Excel file: {e}")
 
-    if not sheets:
+    if not sheet_names:
         raise ValueError("The Excel file has no sheets.")
 
     sheet_name = next(
-        (name for name in sheets if "customer" in name.lower()),
-        next(iter(sheets)),
+        (name for name in sheet_names if "customer" in name.lower()),
+        sheet_names[0],
     )
-    df = sheets[sheet_name]
+
+    df = _read_sheet_with_header_detection(raw_bytes, sheet_name)
     return df.to_csv(index=False), sheet_name
 
 
