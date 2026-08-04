@@ -11,8 +11,19 @@
 # for programmatic use and tests. /chat/stream is what the UI actually
 # uses now -- same logic, but reports real progress as it happens via
 # Server-Sent Events, instead of one blocking request/response.
+#
+# IMPORTANT: the streaming work (OpenRouter calls, pandas, sqlite) runs
+# in a background thread, not directly on the event loop. Render's
+# health check hits this same process -- if a slow OpenRouter call had
+# blocked the event loop for several seconds, Render would see /health
+# time out, conclude the instance died, and restart it mid-request.
+# That's a real failure that happened during testing, not a theoretical
+# one -- see _run_in_thread() below.
 
+import asyncio
 import json as json_lib
+import queue
+import threading
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, StreamingResponse
@@ -67,6 +78,39 @@ def _resolve_conversation(conversation_id: int | None, user_id: int) -> int:
     if owner_id != user_id:
         return chat_store.create_conversation(user_id)
     return conversation_id
+
+
+async def _run_in_thread(sync_generator):
+    """
+    Runs a blocking sync generator (OpenRouter calls, pandas, sqlite --
+    anything that isn't safe to await directly) on a background thread,
+    yielding its items back asynchronously. Each wait for the next item
+    goes through run_in_executor, so the event loop is genuinely free
+    the whole time -- Render's health check and any other request keep
+    getting served while this is in flight.
+    """
+    q: queue.Queue = queue.Queue()
+    DONE = object()
+
+    def worker():
+        try:
+            for item in sync_generator:
+                q.put(("item", item))
+        except Exception as e:  # noqa: BLE001 -- deliberately broad, re-raised below
+            q.put(("error", e))
+        finally:
+            q.put(("done", DONE))
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    loop = asyncio.get_event_loop()
+    while True:
+        kind, payload = await loop.run_in_executor(None, q.get)
+        if kind == "done":
+            return
+        if kind == "error":
+            raise payload
+        yield payload
 
 
 # ---------------------------------------------------------------------
@@ -189,16 +233,99 @@ async def chat_upload(
 
 
 # ---------------------------------------------------------------------
-# Chat (streaming) -- what the UI actually calls. Handles both a plain
-# text message and a file upload through the same endpoint (the "+"
-# button posts a file; the composer posts just a message) since both
-# need the same staged-progress treatment.
-#
-# NOTE: the generator below makes blocking calls (OpenRouter, pandas,
-# sqlite) directly on the event loop rather than in a worker thread.
-# Accepted tradeoff for demo-scale traffic -- worth moving to a thread
-# if this needs to handle concurrent users for real.
+# Chat (streaming) -- what the UI actually calls. Both branches below
+# are plain sync generators (no "async def") -- they run entirely on
+# the background thread via _run_in_thread(), never touching the event
+# loop directly. That's what keeps /health responsive during a request.
 # ---------------------------------------------------------------------
+
+def _text_chat_events(history: list[dict], message: str, conv_id: int):
+    reply = None
+    ran_intent = None
+    for event in interpret_stream(history, message):
+        if event["type"] == "final":
+            reply = event["reply"]
+            ran_intent = event["ran_intent"]
+        else:
+            yield event
+
+    chat_store.add_message(conv_id, "user", message)
+    chat_store.add_message(conv_id, "assistant", reply)
+    yield {"type": "final", "reply": reply, "conversation_id": conv_id, "ran_intent": ran_intent}
+
+
+def _dataset_upload_events(dataset_name: str, csv_content: str, filename: str, user_id: int, conv_id: int):
+    user_message = f'Uploaded a dataset file ({filename}) to add as "{dataset_name}".'
+
+    yield {"type": "status", "stage": "compliance", "label": "Checking compliance rules..."}
+    decision = evaluate("add_dataset", {})
+
+    if not decision.allowed:
+        raw_result = {"status": "blocked", "compliance": decision.to_dict()}
+        ran_intent = None
+    else:
+        try:
+            yield {"type": "status", "stage": "bronze", "label": "Landing raw data into Bronze..."}
+            bronze = dataset_adapter.land_bronze(dataset_name, csv_content)
+
+            yield {"type": "status", "stage": "silver", "label": "Cleaning and deduplicating into Silver..."}
+            silver = dataset_adapter.clean_to_silver(bronze["safe_name"], bronze["df"])
+
+            output = {
+                "dataset_name": bronze["safe_name"],
+                "rows": len(silver["silver_df"]),
+                "columns": list(silver["silver_df"].columns),
+                "duplicate_rows_removed": silver["duplicate_rows_removed"],
+                "null_counts": silver["null_counts"],
+                "storage": {"bronze": bronze["bronze_path"], "silver": silver["silver_path"], "gold": None},
+            }
+
+            if silver["held"]:
+                yield {"type": "status", "stage": "held", "label": "Data quality check: holding at Silver..."}
+                output["stage"] = "silver_held"
+                output["hold_reason"] = silver["hold_reason"]
+                output["numeric_summary"] = {}
+                output["top_categories"] = {}
+                output["dropped_columns"] = []
+                dataset_adapter._upsert_dataset_record(
+                    bronze["safe_name"], bronze["display_name"], user_id, "silver_held",
+                    output["rows"], output["columns"], [], output["duplicate_rows_removed"],
+                    output["null_counts"], bronze["bronze_path"], silver["silver_path"], None,
+                )
+            else:
+                yield {"type": "status", "stage": "gold", "label": "Promoting to Gold..."}
+                gold = dataset_adapter.promote_to_gold(bronze["safe_name"], silver["silver_df"])
+                output["stage"] = "gold"
+                output["numeric_summary"] = gold["numeric_summary"]
+                output["top_categories"] = gold["top_categories"]
+                output["dropped_columns"] = gold["dropped_columns"]
+                output["storage"]["gold"] = gold["gold_path"]
+                dataset_adapter._upsert_dataset_record(
+                    bronze["safe_name"], bronze["display_name"], user_id, "gold",
+                    output["rows"], output["columns"], gold["dropped_columns"],
+                    output["duplicate_rows_removed"], output["null_counts"],
+                    bronze["bronze_path"], silver["silver_path"], gold["gold_path"],
+                )
+
+            raw_result = {
+                "status": "completed",
+                "compliance": decision.to_dict(),
+                "routing": {"capability": "ingest_dataset_to_medallion", "tool": "pandas_medallion_pipeline"},
+                "output": output,
+            }
+            ran_intent = "add_dataset"
+        except ValueError as e:
+            raw_result = {"status": "error", "compliance": decision.to_dict(), "error": str(e)}
+            ran_intent = None
+
+    yield {"type": "tool_result", "data": raw_result}
+    yield {"type": "status", "stage": "explaining", "label": "Writing a plain-English summary..."}
+    reply = explain_result(user_message, "add_dataset", raw_result)  # may raise RuntimeError -- caught by the caller
+
+    chat_store.add_message(conv_id, "user", user_message)
+    chat_store.add_message(conv_id, "assistant", reply)
+    yield {"type": "final", "reply": reply, "conversation_id": conv_id, "ran_intent": ran_intent}
+
 
 @app.post("/chat/stream")
 async def chat_stream(
@@ -222,109 +349,23 @@ async def chat_stream(
                 yield _sse("error", {"detail": "Could not read the file as UTF-8 text. Please upload a plain CSV file."})
             return StreamingResponse(error_only(), media_type="text/event-stream")
 
+    if csv_content is not None:
+        sync_gen = _dataset_upload_events(dataset_name, csv_content, filename, user["id"], conv_id)
+    else:
+        if not message:
+            async def error_only2():
+                yield _sse("error", {"detail": "No message or file provided."})
+            return StreamingResponse(error_only2(), media_type="text/event-stream")
+        history = chat_store.get_history(conv_id)
+        sync_gen = _text_chat_events(history, message, conv_id)
+
     async def event_generator():
         try:
-            if csv_content is not None:
-                # --- Dataset upload: deterministic, staged, real progress ---
-                user_message = f'Uploaded a dataset file ({filename}) to add as "{dataset_name}".'
-
-                yield _sse("status", {"stage": "compliance", "label": "Checking compliance rules..."})
-                decision = evaluate("add_dataset", {})
-
-                if not decision.allowed:
-                    raw_result = {"status": "blocked", "compliance": decision.to_dict()}
-                    ran_intent = None
-                else:
-                    try:
-                        yield _sse("status", {"stage": "bronze", "label": "Landing raw data into Bronze..."})
-                        bronze = dataset_adapter.land_bronze(dataset_name, csv_content)
-
-                        yield _sse("status", {"stage": "silver", "label": "Cleaning and deduplicating into Silver..."})
-                        silver = dataset_adapter.clean_to_silver(bronze["safe_name"], bronze["df"])
-
-                        output = {
-                            "dataset_name": bronze["safe_name"],
-                            "rows": len(silver["silver_df"]),
-                            "columns": list(silver["silver_df"].columns),
-                            "duplicate_rows_removed": silver["duplicate_rows_removed"],
-                            "null_counts": silver["null_counts"],
-                            "storage": {"bronze": bronze["bronze_path"], "silver": silver["silver_path"], "gold": None},
-                        }
-
-                        if silver["held"]:
-                            yield _sse("status", {"stage": "held", "label": "Data quality check: holding at Silver..."})
-                            output["stage"] = "silver_held"
-                            output["hold_reason"] = silver["hold_reason"]
-                            output["numeric_summary"] = {}
-                            output["top_categories"] = {}
-                            output["dropped_columns"] = []
-                            dataset_adapter._upsert_dataset_record(
-                                bronze["safe_name"], bronze["display_name"], user["id"], "silver_held",
-                                output["rows"], output["columns"], [], output["duplicate_rows_removed"],
-                                output["null_counts"], bronze["bronze_path"], silver["silver_path"], None,
-                            )
-                        else:
-                            yield _sse("status", {"stage": "gold", "label": "Promoting to Gold..."})
-                            gold = dataset_adapter.promote_to_gold(bronze["safe_name"], silver["silver_df"])
-                            output["stage"] = "gold"
-                            output["numeric_summary"] = gold["numeric_summary"]
-                            output["top_categories"] = gold["top_categories"]
-                            output["dropped_columns"] = gold["dropped_columns"]
-                            output["storage"]["gold"] = gold["gold_path"]
-                            dataset_adapter._upsert_dataset_record(
-                                bronze["safe_name"], bronze["display_name"], user["id"], "gold",
-                                output["rows"], output["columns"], gold["dropped_columns"],
-                                output["duplicate_rows_removed"], output["null_counts"],
-                                bronze["bronze_path"], silver["silver_path"], gold["gold_path"],
-                            )
-
-                        raw_result = {
-                            "status": "completed",
-                            "compliance": decision.to_dict(),
-                            "routing": {"capability": "ingest_dataset_to_medallion", "tool": "pandas_medallion_pipeline"},
-                            "output": output,
-                        }
-                        ran_intent = "add_dataset"
-                    except ValueError as e:
-                        raw_result = {"status": "error", "compliance": decision.to_dict(), "error": str(e)}
-                        ran_intent = None
-
-                yield _sse("tool_result", {"data": raw_result})
-                yield _sse("status", {"stage": "explaining", "label": "Writing a plain-English summary..."})
-                try:
-                    reply = explain_result(user_message, "add_dataset", raw_result)
-                except RuntimeError as e:
-                    yield _sse("error", {"detail": str(e)})
-                    return
-
-                chat_store.add_message(conv_id, "user", user_message)
-
-            else:
-                # --- Plain text message: goes through the LLM interpreter ---
-                if not message:
-                    yield _sse("error", {"detail": "No message or file provided."})
-                    return
-
-                history = chat_store.get_history(conv_id)
-                reply = None
-                ran_intent = None
-                try:
-                    for event in interpret_stream(history, message):
-                        if event["type"] == "final":
-                            reply = event["reply"]
-                            ran_intent = event["ran_intent"]
-                        else:
-                            yield _sse(event["type"], event)
-                except RuntimeError as e:
-                    yield _sse("error", {"detail": str(e)})
-                    return
-
-                chat_store.add_message(conv_id, "user", message)
-
-            chat_store.add_message(conv_id, "assistant", reply)
-            yield _sse("final", {"reply": reply, "conversation_id": conv_id, "ran_intent": ran_intent})
-
-        except Exception as e:
+            async for event in _run_in_thread(sync_gen):
+                yield _sse(event["type"], event)
+        except RuntimeError as e:
+            yield _sse("error", {"detail": str(e)})
+        except Exception as e:  # noqa: BLE001 -- last-resort guard so a bug never hangs the UI silently
             yield _sse("error", {"detail": f"Unexpected error: {e}"})
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
