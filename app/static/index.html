@@ -59,7 +59,7 @@
   .msg.bot { align-self: flex-start; background: var(--bot-bubble); border-bottom-left-radius: 4px; }
   .msg.typing { color: var(--muted); font-style: italic; }
 
-  #composer { padding: 16px 20px; border-top: 1px solid var(--border); display: flex; gap: 10px; }
+  #composer { padding: 16px 20px; border-top: 1px solid var(--border); display: flex; gap: 10px; position: relative; }
   #composer input {
     flex: 1; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border);
     background: var(--panel); color: var(--text); font-size: 14px;
@@ -70,6 +70,24 @@
     color: white; font-weight: 600; cursor: pointer; font-size: 14px;
   }
   #composer button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  #plus-btn {
+    width: 44px; padding: 0; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--text); font-size: 20px; font-weight: 400;
+    cursor: pointer; flex-shrink: 0;
+  }
+  #plus-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  #plus-menu {
+    position: absolute; bottom: 62px; left: 20px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 10px; padding: 6px;
+    min-width: 180px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+  #plus-menu .menu-item {
+    padding: 10px 12px; border-radius: 6px; cursor: pointer; font-size: 14px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  #plus-menu .menu-item:hover { background: var(--accent-dim); }
 </style>
 </head>
 <body>
@@ -106,6 +124,11 @@
   </div>
   <div id="messages"></div>
   <div id="composer">
+    <button id="plus-btn" title="Add">+</button>
+    <div id="plus-menu" class="hidden">
+      <div class="menu-item" id="add-dataset-item">📊 Add dataset</div>
+    </div>
+    <input type="file" id="dataset-file-input" accept=".csv" class="hidden">
     <input type="text" id="chat-input" placeholder="Ask DataOS anything...">
     <button id="send-btn">Send</button>
   </div>
@@ -222,6 +245,62 @@ async function sendMessage() {
 
 $("send-btn").onclick = sendMessage;
 $("chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter") sendMessage(); });
+
+// "+" menu -- just like a chat app's attach menu
+$("plus-btn").onclick = (e) => {
+  e.stopPropagation();
+  $("plus-menu").classList.toggle("hidden");
+};
+document.addEventListener("click", (e) => {
+  if (!$("plus-menu").contains(e.target) && e.target !== $("plus-btn")) {
+    $("plus-menu").classList.add("hidden");
+  }
+});
+
+$("add-dataset-item").onclick = () => {
+  $("plus-menu").classList.add("hidden");
+  $("dataset-file-input").click();
+};
+
+$("dataset-file-input").addEventListener("change", async () => {
+  const input = $("dataset-file-input");
+  const file = input.files[0];
+  if (!file) return;
+
+  const defaultName = file.name.replace(/\.csv$/i, "");
+  const datasetName = window.prompt("Name this dataset:", defaultName);
+  input.value = ""; // allow re-selecting the same file later
+
+  if (!datasetName) return; // user cancelled
+
+  addMessage("user", `Uploaded ${file.name} as dataset "${datasetName}"`);
+  const typing = addMessage("bot typing", "processing dataset...");
+  $("send-btn").disabled = true;
+
+  try {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("dataset_name", datasetName);
+    if (conversationId) form.append("conversation_id", conversationId);
+
+    const res = await fetch(API + "/chat/upload", {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + token },
+      body: form,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Upload failed.");
+
+    conversationId = data.conversation_id;
+    typing.remove();
+    addMessage("bot", data.reply);
+  } catch (e) {
+    typing.remove();
+    addMessage("bot", "Something went wrong: " + e.message);
+  } finally {
+    $("send-btn").disabled = false;
+  }
+});
 
 // Resume a saved session if there is one
 const saved = localStorage.getItem("dataos_token");

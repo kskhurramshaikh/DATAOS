@@ -16,4 +16,9 @@ CAPABILITY_REGISTRY = {
         "tool": "evidently_ai",
         "adapter": "app.adapters.evidently_adapter.run",
     },
+    "add_dataset": {
+        "capability": "ingest_dataset_to_medallion",
+        "tool": "pandas_medallion_pipeline",
+        "adapter": "app.adapters.dataset_adapter.run",
+    },
 }

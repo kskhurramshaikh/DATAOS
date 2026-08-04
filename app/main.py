@@ -7,7 +7,7 @@
 # endpoint calls the exact same pipeline internally; nothing about the
 # governed rails changes underneath it.
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -17,7 +17,7 @@ from app.router import route, NoCapabilityRegisteredError
 from app.capability_registry import CAPABILITY_REGISTRY
 from app.db import init_db
 from app import auth, chat_store
-from app.interpreter import interpret
+from app.interpreter import interpret, explain_result
 
 app = FastAPI(title="DataOS 2.0 -- Pipeline Rails")
 
@@ -120,6 +120,69 @@ def chat(req: ChatRequest, user: dict = Depends(auth.get_current_user)):
         "conversation_id": conversation_id,
         "ran_intent": result["ran_intent"],
     }
+
+
+# ---------------------------------------------------------------------
+# Dataset upload -- the "+" button's "Add dataset" action. This bypasses
+# the LLM's tool-selection step on purpose: attaching a file through a
+# dedicated UI action is already an unambiguous, deterministic intent,
+# so there's nothing for the interpreter to disambiguate. It still goes
+# through the same compliance check as everything else, and reuses the
+# same explain_result step to reply in plain English.
+# ---------------------------------------------------------------------
+
+@app.post("/chat/upload")
+async def chat_upload(
+    file: UploadFile = File(...),
+    dataset_name: str = Form(...),
+    conversation_id: int | None = Form(None),
+    user: dict = Depends(auth.get_current_user),
+):
+    if conversation_id is None:
+        conversation_id = chat_store.create_conversation(user["id"])
+    else:
+        owner_id = chat_store.get_conversation_owner(conversation_id)
+        if owner_id != user["id"]:
+            conversation_id = chat_store.create_conversation(user["id"])
+
+    raw_bytes = await file.read()
+    try:
+        csv_content = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not read the file as UTF-8 text. Please upload a plain CSV file.",
+        )
+
+    user_message = f'Uploaded a dataset file ({file.filename}) to add as "{dataset_name}".'
+
+    decision = evaluate("add_dataset", {})
+    if not decision.allowed:
+        raw_result = {"status": "blocked", "compliance": decision.to_dict()}
+        ran_intent = None
+    else:
+        try:
+            routed = route("add_dataset", {"dataset_name": dataset_name, "csv_content": csv_content})
+            raw_result = {
+                "status": "completed",
+                "compliance": decision.to_dict(),
+                "routing": {"capability": routed["capability"], "tool": routed["tool"]},
+                "output": routed["result"],
+            }
+            ran_intent = "add_dataset"
+        except (NoCapabilityRegisteredError, ValueError) as e:
+            raw_result = {"status": "error", "compliance": decision.to_dict(), "error": str(e)}
+            ran_intent = None
+
+    try:
+        reply = explain_result(user_message, "add_dataset", raw_result)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    chat_store.add_message(conversation_id, "user", user_message)
+    chat_store.add_message(conversation_id, "assistant", reply)
+
+    return {"reply": reply, "conversation_id": conversation_id, "ran_intent": ran_intent}
 
 
 # ---------------------------------------------------------------------

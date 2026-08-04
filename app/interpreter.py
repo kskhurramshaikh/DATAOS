@@ -97,6 +97,13 @@ diagnostic data), not a real DataOS dataset yet -- if a user asks to check drift
 run it directly using sensible defaults unless they've specified particular values. It's
 fine to just run it with defaults if the user doesn't care about specifics.
 
+The "add_dataset" intent requires an actual file, uploaded through the "+" button next to
+the chat input -- it is never something you can call yourself from a text-only message,
+because there's no file content to work with. If a user asks about adding, uploading, or
+registering a dataset without having attached one, tell them (briefly, warmly) to use the
+"+" button next to the message box and choose "Add dataset" -- don't call the tool and
+don't pretend to have run it.
+
 Rules:
 1. If the user's request clearly maps to a registered intent and you have enough info
    (or reasonable defaults suffice), call the call_intent tool. Don't interrogate the user
@@ -110,8 +117,13 @@ Rules:
 """
 
 
-def _explain_result(user_message: str, intent: str, raw_result: dict) -> str:
-    """Second short call: turn the raw pipeline JSON into a plain-English reply."""
+def explain_result(user_message: str, intent: str, raw_result: dict) -> str:
+    """
+    Turn a raw pipeline result into a plain-English reply. Public because
+    deterministic UI actions (like a file upload through the "+" button)
+    call the pipeline directly, bypassing tool-selection, but still want
+    the same natural-language explanation step this module provides.
+    """
     client = _get_client()
     prompt = f"""The user asked: "{user_message}"
 
@@ -180,5 +192,5 @@ def interpret(conversation_history: list[dict], user_message: str) -> dict:
         except NoCapabilityRegisteredError as e:
             raw_result = {"status": "error", "compliance": decision.to_dict(), "error": str(e)}
 
-    reply = _explain_result(user_message, intent, raw_result)
+    reply = explain_result(user_message, intent, raw_result)
     return {"reply": reply, "ran_intent": intent}

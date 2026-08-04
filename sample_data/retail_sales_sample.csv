@@ -1,0 +1,506 @@
+date,product,category,quantity,unit_price,region,customer_segment
+2025-11-01,Yoga Mat,Sports,4,20.57,East,Wholesale
+2025-11-01,Throw Pillow,Home & Kitchen,8,40.73,Central,Online
+2025-11-01,Smart Watch,Electronics,2,41.1,North,Retail
+2025-11-01,Yoga Mat,Sports,6,18.59,East,Online
+2025-11-01,Air Fryer,Home & Kitchen,8,35.69,Central,Retail
+2025-11-01,Laptop Stand,Electronics,7,43.16,Central,Online
+2025-11-01,Bluetooth Speaker,Electronics,13,44.17,North,Retail
+2025-11-02,Wool Sweater,Apparel,13,29.66,South,Retail
+2025-11-02,Table Lamp,Home & Kitchen,13,35.31,South,Retail
+2025-11-02,Air Fryer,Home & Kitchen,10,29.33,North,Retail
+2025-11-02,Wireless Earbuds,Electronics,3,46.81,Central,Wholesale
+2025-11-03,Sports Cap,Apparel,14,24.78,Central,Online
+2025-11-04,Dumbbell Set,Sports,14,19.92,North,Retail
+2025-11-04,Sunscreen SPF50,Beauty,14,11.4,North,Retail
+2025-11-04,Bluetooth Speaker,Electronics,10,52.14,South,Retail
+2025-11-04,Wool Sweater,Apparel,4,26.78,South,Wholesale
+2025-11-05,Resistance Bands,Sports,7,19.0,West,Wholesale
+2025-11-05,Running Shoes,Apparel,7,30.25,South,Online
+2025-11-05,Denim Jacket,Apparel,4,24.72,West,Retail
+2025-11-05,Resistance Bands,Sports,5,23.74,South,Retail
+2025-11-05,Body Lotion,Beauty,4,15.16,North,Wholesale
+2025-11-05,Coffee Maker,Home & Kitchen,10,30.91,East,Retail
+2025-11-05,Bluetooth Speaker,Electronics,10,50.99,South,Retail
+2025-11-05,Body Lotion,Beauty,6,16.44,West,Online
+2025-11-05,Wireless Earbuds,Electronics,4,36.34,East,Retail
+2025-11-05,Laptop Stand,Electronics,3,53.69,East,Retail
+2025-11-06,Sunscreen SPF50,Beauty,6,15.42,South,Wholesale
+2025-11-06,Sunscreen SPF50,Beauty,3,16.36,East,Retail
+2025-11-06,Running Shoes,Apparel,5,30.33,North,Online
+2025-11-06,Coffee Maker,Home & Kitchen,9,37.93,Central,Retail
+2025-11-06,Cotton T-Shirt,Apparel,5,25.06,West,Retail
+2025-11-06,Cutlery Set,Home & Kitchen,9,33.56,North,Online
+2025-11-06,Face Serum,Beauty,12,13.81,East,Wholesale
+2025-11-07,Running Belt,Sports,4,25.76,East,Retail
+2025-11-07,Dumbbell Set,Sports,3,22.37,East,Wholesale
+2025-11-07,Smart Watch,Electronics,4,51.45,East,Retail
+2025-11-07,Bluetooth Speaker,Electronics,12,45.71,North,Wholesale
+2025-11-07,Shampoo Bar,Beauty,10,11.24,South,Retail
+2025-11-07,Lip Balm Set,Beauty,11,17.1,West,Wholesale
+2025-11-07,Cutlery Set,Home & Kitchen,3,39.32,South,Online
+2025-11-07,Bluetooth Speaker,Electronics,6,58.72,South,Online
+2025-11-07,Water Bottle,Sports,3,18.65,Central,Retail
+2025-11-07,Lip Balm Set,Beauty,5,14.34,North,Wholesale
+2025-11-08,Dumbbell Set,Sports,8,23.81,Central,Retail
+2025-11-08,Body Lotion,Beauty,7,,West,Online
+2025-11-08,Wool Sweater,Apparel,2,27.25,Central,Wholesale
+2025-11-08,Wool Sweater,Apparel,6,23.02,West,Wholesale
+2025-11-08,Sunscreen SPF50,Beauty,12,16.02,East,Online
+2025-11-08,Denim Jacket,Apparel,13,21.27,South,Wholesale
+2025-11-08,Resistance Bands,Sports,2,17.34,North,Retail
+2025-11-08,Yoga Mat,Sports,14,20.7,West,Wholesale
+2025-11-09,Denim Jacket,Apparel,10,24.89,Central,Wholesale
+2025-11-09,Bluetooth Speaker,Electronics,3,39.8,West,Retail
+2025-11-09,Resistance Bands,Sports,6,18.28,Central,Retail
+2025-11-09,Lip Balm Set,Beauty,2,16.1,Central,Online
+2025-11-10,Dumbbell Set,Sports,5,22.16,East,Wholesale
+2025-11-10,Shampoo Bar,Beauty,6,14.01,South,Wholesale
+2025-11-11,USB-C Hub,Electronics,11,38.48,East,Retail
+2025-11-11,Shampoo Bar,Beauty,9,11.64,Central,Retail
+2025-11-11,Running Belt,Sports,1,17.78,East,Online
+2025-11-11,Laptop Stand,Electronics,1,47.68,North,Retail
+2025-11-11,Running Belt,Sports,7,20.81,West,Retail
+2025-11-11,Table Lamp,Home & Kitchen,6,38.99,Central,Online
+2025-11-11,Smart Watch,Electronics,2,31.39,Central,Online
+2025-11-11,Body Lotion,Beauty,10,18.97,South,Online
+2025-11-11,Body Lotion,Beauty,9,11.97,East,Wholesale
+2025-11-12,USB-C Hub,Electronics,6,43.51,East,Retail
+2025-11-12,Sunscreen SPF50,Beauty,7,14.66,South,Retail
+2025-11-12,Dumbbell Set,Sports,1,20.25,East,Wholesale
+2025-11-12,Air Fryer,Home & Kitchen,7,25.87,South,Wholesale
+2025-11-13,Table Lamp,Home & Kitchen,2,43.24,West,Wholesale
+2025-11-13,Cotton T-Shirt,Apparel,9,,South,Wholesale
+2025-11-13,Lip Balm Set,Beauty,2,9.31,North,Online
+2025-11-13,Running Belt,Sports,2,20.97,West,Online
+2025-11-13,Yoga Mat,Sports,13,13.8,North,Wholesale
+2025-11-14,Wireless Earbuds,Electronics,1,53.1,North,Online
+2025-11-14,Smart Watch,Electronics,6,39.5,Central,Wholesale
+2025-11-14,Running Belt,Sports,8,21.14,North,Wholesale
+2025-11-14,USB-C Hub,Electronics,12,55.67,East,Retail
+2025-11-14,Running Belt,Sports,3,20.38,West,Wholesale
+2025-11-14,Running Belt,Sports,3,20.38,West,Wholesale
+2025-11-14,Laptop Stand,Electronics,1,54.38,Central,Online
+2025-11-14,Wool Sweater,Apparel,14,15.21,Central,Retail
+2025-11-15,Cotton T-Shirt,Apparel,10,33.44,South,Retail
+2025-11-15,Air Fryer,Home & Kitchen,1,29.67,South,Online
+2025-11-15,Cutlery Set,Home & Kitchen,6,26.59,West,Retail
+2025-11-15,Body Lotion,Beauty,9,12.33,West,Retail
+2025-11-15,Laptop Stand,Electronics,9,38.34,South,Online
+2025-11-15,Water Bottle,Sports,11,,South,Wholesale
+2025-11-15,Running Belt,Sports,11,21.42,South,Online
+2025-11-15,Denim Jacket,Apparel,2,25.38,East,Retail
+2025-11-16,Face Serum,Beauty,13,15.85,Central,Online
+2025-11-16,Smart Watch,Electronics,5,41.7,South,Online
+2025-11-16,Lip Balm Set,Beauty,2,15.0,South,Wholesale
+2025-11-16,Dumbbell Set,Sports,8,25.45,West,Retail
+2025-11-16,USB-C Hub,Electronics,12,49.78,West,Retail
+2025-11-17,Face Serum,Beauty,9,13.37,East,Wholesale
+2025-11-17,Coffee Maker,Home & Kitchen,8,38.95,Central,Online
+2025-11-17,Denim Jacket,Apparel,13,26.52,Central,Wholesale
+2025-11-17,Cutlery Set,Home & Kitchen,6,42.36,East,Online
+2025-11-17,Laptop Stand,Electronics,12,49.25,West,Online
+2025-11-17,Laptop Stand,Electronics,7,37.06,North,Retail
+2025-11-17,Yoga Mat,Sports,13,24.33,Central,Online
+2025-11-17,Coffee Maker,Home & Kitchen,12,37.23,North,Wholesale
+2025-11-17,Smart Watch,Electronics,12,34.72,East,Online
+2025-11-17,Resistance Bands,Sports,7,20.85,East,Online
+2025-11-17,Face Serum,Beauty,9,14.56,Central,Retail
+2025-11-17,Coffee Maker,Home & Kitchen,7,38.39,South,Online
+2025-11-18,Cotton T-Shirt,Apparel,8,25.91,East,Retail
+2025-11-18,Wireless Earbuds,Electronics,4,50.22,Central,Retail
+2025-11-18,USB-C Hub,Electronics,4,30.75,South,Online
+2025-11-18,Laptop Stand,Electronics,3,52.26,Central,Wholesale
+2025-11-18,Throw Pillow,Home & Kitchen,10,28.86,North,Online
+2025-11-18,Dumbbell Set,Sports,2,21.61,West,Wholesale
+2025-11-19,Table Lamp,Home & Kitchen,10,32.84,Central,Retail
+2025-11-19,Bluetooth Speaker,Electronics,2,48.31,South,Retail
+2025-11-19,Smart Watch,Electronics,7,47.24,South,Wholesale
+2025-11-19,Denim Jacket,Apparel,12,22.42,West,Online
+2025-11-19,Water Bottle,Sports,4,22.95,North,Wholesale
+2025-11-19,Lip Balm Set,Beauty,1,22.32,West,Retail
+2025-11-19,Running Shoes,Apparel,5,29.53,East,Online
+2025-11-19,Lip Balm Set,Beauty,11,13.21,Central,Online
+2025-11-20,Resistance Bands,Sports,12,15.31,Central,Wholesale
+2025-11-20,Wool Sweater,Apparel,3,25.5,East,Online
+2025-11-20,Laptop Stand,Electronics,11,50.95,West,Online
+2025-11-20,USB-C Hub,Electronics,10,39.5,West,Wholesale
+2025-11-20,Yoga Mat,Sports,2,17.68,South,Wholesale
+2025-11-20,Bluetooth Speaker,Electronics,12,42.91,Central,Retail
+2025-11-20,Face Serum,Beauty,11,16.43,East,Retail
+2025-11-21,Table Lamp,Home & Kitchen,7,32.2,East,Online
+2025-11-21,Sports Cap,Apparel,11,25.42,Central,Retail
+2025-11-21,Sunscreen SPF50,Beauty,14,18.18,Central,Wholesale
+2025-11-21,Sports Cap,Apparel,5,18.65,West,Retail
+2025-11-21,Laptop Stand,Electronics,12,35.76,East,Online
+2025-11-22,Running Shoes,Apparel,5,28.91,North,Online
+2025-11-22,Yoga Mat,Sports,4,19.95,Central,Wholesale
+2025-11-22,Running Belt,Sports,8,19.77,North,Retail
+2025-11-22,Laptop Stand,Electronics,1,40.78,South,Wholesale
+2025-11-22,Bluetooth Speaker,Electronics,8,52.53,Central,Online
+2025-11-22,Shampoo Bar,Beauty,13,13.09,East,Online
+2025-11-22,Sunscreen SPF50,Beauty,4,16.17,West,Online
+2025-11-23,Coffee Maker,Home & Kitchen,6,37.21,North,Retail
+2025-11-23,Running Belt,Sports,7,24.43,West,Retail
+2025-11-23,Running Shoes,Apparel,8,22.44,West,Retail
+2025-11-23,Cutlery Set,Home & Kitchen,7,41.33,East,Wholesale
+2025-11-23,Wool Sweater,Apparel,3,29.29,South,Wholesale
+2025-11-23,Resistance Bands,Sports,14,11.31,Central,Wholesale
+2025-11-24,Yoga Mat,Sports,4,17.46,East,Retail
+2025-11-24,Sunscreen SPF50,Beauty,2,18.33,North,Wholesale
+2025-11-25,Running Belt,Sports,13,20.61,East,Wholesale
+2025-11-25,Table Lamp,Home & Kitchen,7,35.87,Central,Online
+2025-11-25,Running Shoes,Apparel,3,27.92,West,Retail
+2025-11-25,Throw Pillow,Home & Kitchen,10,31.69,East,Wholesale
+2025-11-25,Running Shoes,Apparel,10,25.66,Central,Wholesale
+2025-11-25,Wool Sweater,Apparel,1,23.69,South,Online
+2025-11-25,Body Lotion,Beauty,5,15.18,South,Wholesale
+2025-11-25,Running Shoes,Apparel,10,25.66,Central,Wholesale
+2025-11-25,Wireless Earbuds,Electronics,1,43.39,Central,Online
+2025-11-26,Throw Pillow,Home & Kitchen,3,43.67,Central,Wholesale
+2025-11-26,Running Belt,Sports,9,20.1,West,Retail
+2025-11-26,USB-C Hub,Electronics,6,,South,Wholesale
+2025-11-26,Wool Sweater,Apparel,1,22.42,South,Retail
+2025-11-26,Cotton T-Shirt,Apparel,9,26.47,East,Retail
+2025-11-26,Bluetooth Speaker,Electronics,8,34.55,West,Wholesale
+2025-11-26,Air Fryer,Home & Kitchen,10,28.43,Central,Online
+2025-11-26,Water Bottle,Sports,13,17.82,Central,Online
+2025-11-26,Face Serum,Beauty,4,12.97,North,Retail
+2025-11-27,Sports Cap,Apparel,9,24.84,East,Online
+2025-11-27,Smart Watch,Electronics,10,45.3,East,Retail
+2025-11-27,Face Serum,Beauty,4,17.18,North,Wholesale
+2025-11-28,Sports Cap,Apparel,8,22.87,South,Wholesale
+2025-11-28,Body Lotion,Beauty,11,18.18,East,Retail
+2025-11-28,Laptop Stand,Electronics,9,33.95,West,Retail
+2025-11-29,Water Bottle,Sports,10,23.93,East,Online
+2025-11-29,Body Lotion,Beauty,6,13.06,South,Retail
+2025-11-29,Water Bottle,Sports,12,14.26,West,Wholesale
+2025-11-29,Yoga Mat,Sports,13,13.14,East,Online
+2025-11-29,Resistance Bands,Sports,11,24.08,East,Retail
+2025-11-29,Face Serum,Beauty,2,13.5,South,Retail
+2025-11-30,Sunscreen SPF50,Beauty,8,14.68,East,Wholesale
+2025-11-30,Sports Cap,Apparel,1,24.01,Central,Retail
+2025-11-30,Dumbbell Set,Sports,3,22.49,North,Online
+2025-11-30,Cutlery Set,Home & Kitchen,14,33.02,South,Wholesale
+2025-11-30,Face Serum,Beauty,1,14.27,North,Wholesale
+2025-12-01,Sunscreen SPF50,Beauty,2,16.4,East,Wholesale
+2025-12-01,USB-C Hub,Electronics,4,60.24,Central,Retail
+2025-12-01,Shampoo Bar,Beauty,7,15.52,South,Wholesale
+2025-12-01,Bluetooth Speaker,Electronics,8,41.71,Central,Online
+2025-12-02,Throw Pillow,Home & Kitchen,2,34.07,West,Wholesale
+2025-12-02,Air Fryer,Home & Kitchen,14,34.12,Central,Wholesale
+2025-12-03,Laptop Stand,Electronics,1,46.13,East,Online
+2025-12-03,Laptop Stand,Electronics,4,31.94,North,Wholesale
+2025-12-03,Resistance Bands,Sports,10,20.19,North,Retail
+2025-12-03,Face Serum,Beauty,2,14.92,Central,Online
+2025-12-03,Coffee Maker,Home & Kitchen,8,29.27,Central,Online
+2025-12-03,Table Lamp,Home & Kitchen,6,35.19,East,Retail
+2025-12-03,Yoga Mat,Sports,8,18.9,South,Retail
+2025-12-03,Throw Pillow,Home & Kitchen,5,40.12,North,Retail
+2025-12-03,Dumbbell Set,Sports,7,16.29,Central,Retail
+2025-12-03,Table Lamp,Home & Kitchen,1,44.01,West,Retail
+2025-12-04,Lip Balm Set,Beauty,14,18.44,Central,Retail
+2025-12-05,USB-C Hub,Electronics,4,46.68,South,Wholesale
+2025-12-05,Dumbbell Set,Sports,8,14.36,East,Retail
+2025-12-05,Laptop Stand,Electronics,11,,North,Online
+2025-12-05,Throw Pillow,Home & Kitchen,1,49.28,North,Wholesale
+2025-12-05,USB-C Hub,Electronics,2,42.07,West,Wholesale
+2025-12-05,Sports Cap,Apparel,7,21.74,North,Wholesale
+2025-12-05,Water Bottle,Sports,1,19.44,East,Retail
+2025-12-05,Face Serum,Beauty,6,14.92,Central,Retail
+2025-12-06,Sunscreen SPF50,Beauty,10,18.78,East,Retail
+2025-12-06,Running Shoes,Apparel,10,33.34,North,Online
+2025-12-06,Coffee Maker,Home & Kitchen,9,31.78,Central,Retail
+2025-12-06,Running Belt,Sports,3,24.89,North,Retail
+2025-12-06,Wool Sweater,Apparel,10,19.93,West,Retail
+2025-12-06,Yoga Mat,Sports,5,17.07,East,Online
+2025-12-06,Cutlery Set,Home & Kitchen,4,38.77,West,Online
+2025-12-07,Shampoo Bar,Beauty,10,13.93,West,Wholesale
+2025-12-07,Smart Watch,Electronics,6,52.41,Central,Retail
+2025-12-07,Running Belt,Sports,11,18.2,East,Online
+2025-12-07,Air Fryer,Home & Kitchen,6,43.83,Central,Wholesale
+2025-12-08,Denim Jacket,Apparel,11,27.95,North,Online
+2025-12-08,Smart Watch,Electronics,2,36.55,West,Online
+2025-12-08,Wireless Earbuds,Electronics,5,45.47,East,Retail
+2025-12-08,Water Bottle,Sports,12,,Central,Online
+2025-12-08,Throw Pillow,Home & Kitchen,2,42.19,South,Wholesale
+2025-12-09,Sports Cap,Apparel,4,27.9,North,Wholesale
+2025-12-09,Shampoo Bar,Beauty,3,17.11,North,Wholesale
+2025-12-09,Wireless Earbuds,Electronics,12,51.17,East,Wholesale
+2025-12-09,Dumbbell Set,Sports,3,22.49,Central,Online
+2025-12-09,Air Fryer,Home & Kitchen,9,37.99,Central,Wholesale
+2025-12-10,Lip Balm Set,Beauty,10,14.41,North,Retail
+2025-12-10,Wireless Earbuds,Electronics,10,40.48,West,Online
+2025-12-10,Face Serum,Beauty,12,16.3,Central,Retail
+2025-12-10,Resistance Bands,Sports,1,18.32,Central,Online
+2025-12-11,Resistance Bands,Sports,13,21.75,East,Online
+2025-12-11,Face Serum,Beauty,1,14.28,North,Online
+2025-12-11,Running Shoes,Apparel,12,23.61,West,Online
+2025-12-12,Running Belt,Sports,10,15.31,North,Retail
+2025-12-12,Throw Pillow,Home & Kitchen,4,32.28,North,Online
+2025-12-12,Smart Watch,Electronics,12,40.23,West,Wholesale
+2025-12-12,Wool Sweater,Apparel,13,25.19,Central,Retail
+2025-12-13,USB-C Hub,Electronics,8,42.63,South,Retail
+2025-12-13,Running Shoes,Apparel,14,27.89,South,Retail
+2025-12-14,Throw Pillow,Home & Kitchen,9,36.6,East,Wholesale
+2025-12-14,Bluetooth Speaker,Electronics,6,30.44,South,Online
+2025-12-14,Cutlery Set,Home & Kitchen,3,38.26,East,Retail
+2025-12-14,Sports Cap,Apparel,10,24.09,West,Online
+2025-12-14,Wireless Earbuds,Electronics,8,53.14,West,Online
+2025-12-14,Throw Pillow,Home & Kitchen,9,42.53,East,Wholesale
+2025-12-14,Running Belt,Sports,3,16.69,North,Retail
+2025-12-15,Throw Pillow,Home & Kitchen,8,34.02,East,Wholesale
+2025-12-15,Shampoo Bar,Beauty,1,16.9,South,Retail
+2025-12-15,Laptop Stand,Electronics,10,46.67,West,Retail
+2025-12-16,Denim Jacket,Apparel,11,30.88,West,Wholesale
+2025-12-16,Sports Cap,Apparel,7,23.41,East,Online
+2025-12-16,Smart Watch,Electronics,14,33.93,East,Online
+2025-12-16,Dumbbell Set,Sports,2,21.55,East,Retail
+2025-12-16,Throw Pillow,Home & Kitchen,9,39.92,North,Wholesale
+2025-12-16,Denim Jacket,Apparel,2,20.39,Central,Retail
+2025-12-16,Dumbbell Set,Sports,2,18.53,North,Wholesale
+2025-12-16,Resistance Bands,Sports,9,21.5,East,Wholesale
+2025-12-16,Cutlery Set,Home & Kitchen,6,38.92,West,Retail
+2025-12-17,Wireless Earbuds,Electronics,12,52.19,Central,Retail
+2025-12-17,Bluetooth Speaker,Electronics,2,27.11,South,Wholesale
+2025-12-17,Body Lotion,Beauty,3,18.07,Central,Wholesale
+2025-12-17,Throw Pillow,Home & Kitchen,7,36.7,North,Retail
+2025-12-18,Bluetooth Speaker,Electronics,8,62.59,South,Online
+2025-12-18,Bluetooth Speaker,Electronics,7,51.11,East,Wholesale
+2025-12-18,Lip Balm Set,Beauty,9,11.15,West,Retail
+2025-12-18,USB-C Hub,Electronics,7,25.88,South,Wholesale
+2025-12-18,Cutlery Set,Home & Kitchen,9,28.86,Central,Wholesale
+2025-12-18,Water Bottle,Sports,13,,West,Wholesale
+2025-12-19,Face Serum,Beauty,6,15.52,Central,Wholesale
+2025-12-19,Cutlery Set,Home & Kitchen,1,42.33,Central,Wholesale
+2025-12-19,Body Lotion,Beauty,5,16.19,South,Retail
+2025-12-19,Cutlery Set,Home & Kitchen,13,36.15,Central,Online
+2025-12-19,Water Bottle,Sports,13,15.29,North,Wholesale
+2025-12-19,Denim Jacket,Apparel,13,26.49,West,Wholesale
+2025-12-20,Coffee Maker,Home & Kitchen,6,26.56,Central,Wholesale
+2025-12-20,Laptop Stand,Electronics,8,47.52,West,Wholesale
+2025-12-21,Bluetooth Speaker,Electronics,3,44.89,South,Online
+2025-12-21,Shampoo Bar,Beauty,3,17.15,Central,Retail
+2025-12-21,Cutlery Set,Home & Kitchen,2,35.51,East,Retail
+2025-12-21,USB-C Hub,Electronics,11,51.97,Central,Online
+2025-12-21,Table Lamp,Home & Kitchen,6,40.8,East,Online
+2025-12-21,Face Serum,Beauty,10,13.86,West,Online
+2025-12-21,Sports Cap,Apparel,10,24.37,West,Retail
+2025-12-21,Laptop Stand,Electronics,5,49.98,North,Online
+2025-12-22,Wool Sweater,Apparel,6,18.35,East,Retail
+2025-12-22,Coffee Maker,Home & Kitchen,1,34.92,West,Wholesale
+2025-12-22,Resistance Bands,Sports,4,12.34,Central,Online
+2025-12-22,Resistance Bands,Sports,4,12.34,Central,Online
+2025-12-22,Wireless Earbuds,Electronics,9,50.03,North,Online
+2025-12-22,Table Lamp,Home & Kitchen,8,47.46,South,Retail
+2025-12-23,Lip Balm Set,Beauty,3,13.08,North,Online
+2025-12-23,Wool Sweater,Apparel,8,26.96,West,Retail
+2025-12-23,Lip Balm Set,Beauty,7,13.91,Central,Retail
+2025-12-23,Face Serum,Beauty,6,14.4,South,Online
+2025-12-23,Bluetooth Speaker,Electronics,14,30.15,West,Online
+2025-12-23,Face Serum,Beauty,9,16.39,South,Retail
+2025-12-23,USB-C Hub,Electronics,14,36.82,West,Wholesale
+2025-12-24,Running Shoes,Apparel,14,18.27,North,Retail
+2025-12-24,Wool Sweater,Apparel,13,27.77,West,Retail
+2025-12-24,Running Belt,Sports,11,22.2,South,Online
+2025-12-24,Yoga Mat,Sports,14,25.32,West,Retail
+2025-12-24,Cotton T-Shirt,Apparel,10,27.38,South,Online
+2025-12-25,Throw Pillow,Home & Kitchen,4,32.75,North,Online
+2025-12-25,Dumbbell Set,Sports,3,20.25,East,Online
+2025-12-25,Throw Pillow,Home & Kitchen,7,38.33,West,Wholesale
+2025-12-26,Running Belt,Sports,1,18.77,North,Online
+2025-12-26,Shampoo Bar,Beauty,4,12.0,West,Wholesale
+2025-12-26,Laptop Stand,Electronics,4,43.01,Central,Online
+2025-12-26,Resistance Bands,Sports,9,19.81,Central,Wholesale
+2025-12-26,Running Shoes,Apparel,3,,East,Online
+2025-12-26,Running Shoes,Apparel,1,24.9,East,Retail
+2025-12-27,Face Serum,Beauty,7,18.94,East,Online
+2025-12-27,Shampoo Bar,Beauty,10,16.11,North,Retail
+2025-12-27,Throw Pillow,Home & Kitchen,9,36.08,South,Online
+2025-12-27,Sports Cap,Apparel,7,28.74,South,Online
+2025-12-27,Water Bottle,Sports,5,20.73,East,Online
+2025-12-27,Lip Balm Set,Beauty,6,12.96,Central,Retail
+2025-12-27,Resistance Bands,Sports,13,17.75,West,Retail
+2025-12-27,Body Lotion,Beauty,8,13.48,North,Online
+2025-12-28,Throw Pillow,Home & Kitchen,7,31.15,North,Retail
+2025-12-28,Running Belt,Sports,14,20.28,West,Online
+2025-12-28,Running Shoes,Apparel,6,20.21,South,Retail
+2025-12-28,Smart Watch,Electronics,12,46.12,Central,Online
+2025-12-28,Wool Sweater,Apparel,11,34.99,North,Online
+2025-12-28,Throw Pillow,Home & Kitchen,9,31.88,Central,Online
+2025-12-29,Resistance Bands,Sports,7,21.17,East,Retail
+2025-12-29,Wireless Earbuds,Electronics,10,45.35,West,Online
+2025-12-29,Throw Pillow,Home & Kitchen,7,37.84,Central,Retail
+2025-12-29,Wireless Earbuds,Electronics,6,35.54,Central,Online
+2025-12-29,Resistance Bands,Sports,4,20.03,East,Online
+2025-12-29,Wireless Earbuds,Electronics,14,58.88,West,Wholesale
+2025-12-30,Coffee Maker,Home & Kitchen,10,22.35,North,Online
+2025-12-30,Coffee Maker,Home & Kitchen,10,22.35,North,Online
+2025-12-30,Throw Pillow,Home & Kitchen,13,,South,Online
+2025-12-30,Resistance Bands,Sports,7,23.39,East,Wholesale
+2025-12-30,Throw Pillow,Home & Kitchen,7,31.36,South,Retail
+2025-12-30,USB-C Hub,Electronics,10,40.92,North,Retail
+2025-12-30,Dumbbell Set,Sports,1,15.67,South,Retail
+2025-12-30,Dumbbell Set,Sports,6,,Central,Online
+2025-12-30,Yoga Mat,Sports,11,21.54,Central,Online
+2025-12-31,Table Lamp,Home & Kitchen,1,25.03,East,Online
+2025-12-31,Body Lotion,Beauty,1,15.78,Central,Wholesale
+2025-12-31,Sports Cap,Apparel,5,20.47,East,Wholesale
+2025-12-31,Water Bottle,Sports,4,19.79,Central,Wholesale
+2025-12-31,Lip Balm Set,Beauty,12,15.61,South,Wholesale
+2025-12-31,Running Belt,Sports,4,18.42,North,Wholesale
+2026-01-01,Smart Watch,Electronics,2,39.06,South,Retail
+2026-01-01,USB-C Hub,Electronics,12,61.43,West,Wholesale
+2026-01-01,USB-C Hub,Electronics,1,41.23,East,Wholesale
+2026-01-01,Yoga Mat,Sports,1,21.54,North,Retail
+2026-01-01,Body Lotion,Beauty,9,13.14,West,Retail
+2026-01-01,Running Belt,Sports,1,23.2,Central,Wholesale
+2026-01-02,USB-C Hub,Electronics,11,38.13,West,Retail
+2026-01-02,Cutlery Set,Home & Kitchen,2,36.05,West,Wholesale
+2026-01-02,Air Fryer,Home & Kitchen,12,27.91,West,Online
+2026-01-03,Denim Jacket,Apparel,14,,North,Online
+2026-01-03,Cutlery Set,Home & Kitchen,9,41.63,East,Wholesale
+2026-01-03,Laptop Stand,Electronics,11,41.23,North,Retail
+2026-01-03,Sports Cap,Apparel,1,26.74,South,Retail
+2026-01-03,Running Shoes,Apparel,13,23.26,North,Retail
+2026-01-04,Running Belt,Sports,14,15.44,North,Online
+2026-01-04,Resistance Bands,Sports,4,16.66,South,Online
+2026-01-04,Body Lotion,Beauty,7,14.42,Central,Retail
+2026-01-04,Wool Sweater,Apparel,6,32.68,West,Retail
+2026-01-04,Shampoo Bar,Beauty,7,13.18,South,Online
+2026-01-05,Air Fryer,Home & Kitchen,14,51.5,South,Wholesale
+2026-01-05,Cotton T-Shirt,Apparel,10,14.04,South,Online
+2026-01-05,Dumbbell Set,Sports,10,17.55,Central,Online
+2026-01-05,Cotton T-Shirt,Apparel,9,22.96,Central,Wholesale
+2026-01-05,Coffee Maker,Home & Kitchen,11,36.44,South,Online
+2026-01-05,Sports Cap,Apparel,9,28.59,Central,Wholesale
+2026-01-06,Running Belt,Sports,6,17.31,East,Online
+2026-01-06,Air Fryer,Home & Kitchen,6,35.4,South,Wholesale
+2026-01-06,Denim Jacket,Apparel,1,21.77,North,Retail
+2026-01-06,Cutlery Set,Home & Kitchen,1,37.26,Central,Online
+2026-01-06,Shampoo Bar,Beauty,6,15.08,West,Retail
+2026-01-07,Coffee Maker,Home & Kitchen,13,31.02,Central,Online
+2026-01-07,Shampoo Bar,Beauty,2,17.63,East,Retail
+2026-01-07,Water Bottle,Sports,3,18.58,North,Online
+2026-01-07,Sports Cap,Apparel,9,24.59,West,Retail
+2026-01-07,Shampoo Bar,Beauty,2,10.65,West,Online
+2026-01-08,Dumbbell Set,Sports,8,,North,Online
+2026-01-08,Running Shoes,Apparel,9,26.84,South,Wholesale
+2026-01-08,Sports Cap,Apparel,3,24.51,West,Retail
+2026-01-09,Denim Jacket,Apparel,5,21.8,West,Retail
+2026-01-09,Cutlery Set,Home & Kitchen,5,27.74,North,Retail
+2026-01-09,Wool Sweater,Apparel,1,23.71,East,Online
+2026-01-09,Resistance Bands,Sports,12,13.89,South,Online
+2026-01-09,Sunscreen SPF50,Beauty,6,13.54,East,Wholesale
+2026-01-09,Throw Pillow,Home & Kitchen,9,35.25,East,Retail
+2026-01-09,Lip Balm Set,Beauty,1,12.48,East,Retail
+2026-01-09,Wireless Earbuds,Electronics,14,37.76,Central,Retail
+2026-01-09,Body Lotion,Beauty,6,16.76,South,Online
+2026-01-09,Body Lotion,Beauty,14,15.05,North,Online
+2026-01-09,Water Bottle,Sports,2,22.16,East,Retail
+2026-01-10,Coffee Maker,Home & Kitchen,4,39.07,Central,Retail
+2026-01-10,Air Fryer,Home & Kitchen,3,31.59,West,Wholesale
+2026-01-10,Cotton T-Shirt,Apparel,6,28.82,Central,Retail
+2026-01-10,Throw Pillow,Home & Kitchen,9,35.09,Central,Wholesale
+2026-01-10,Laptop Stand,Electronics,5,50.91,North,Retail
+2026-01-11,Wool Sweater,Apparel,7,25.91,East,Online
+2026-01-11,Table Lamp,Home & Kitchen,6,39.27,East,Retail
+2026-01-11,Denim Jacket,Apparel,6,26.26,West,Wholesale
+2026-01-11,Shampoo Bar,Beauty,8,12.2,Central,Wholesale
+2026-01-11,Wireless Earbuds,Electronics,3,37.56,Central,Retail
+2026-01-11,Wireless Earbuds,Electronics,7,38.72,North,Wholesale
+2026-01-11,Yoga Mat,Sports,12,18.56,Central,Online
+2026-01-12,Bluetooth Speaker,Electronics,10,30.69,North,Retail
+2026-01-12,Resistance Bands,Sports,5,22.21,West,Wholesale
+2026-01-12,Body Lotion,Beauty,13,17.37,Central,Wholesale
+2026-01-12,Coffee Maker,Home & Kitchen,1,30.55,South,Wholesale
+2026-01-13,Throw Pillow,Home & Kitchen,3,32.36,North,Online
+2026-01-13,Air Fryer,Home & Kitchen,3,29.17,West,Wholesale
+2026-01-13,Shampoo Bar,Beauty,3,14.3,North,Online
+2026-01-13,Shampoo Bar,Beauty,10,12.21,West,Wholesale
+2026-01-13,Body Lotion,Beauty,7,11.27,North,Retail
+2026-01-13,Face Serum,Beauty,2,15.52,South,Online
+2026-01-14,Shampoo Bar,Beauty,13,13.14,West,Retail
+2026-01-14,Face Serum,Beauty,4,14.43,South,Retail
+2026-01-14,Body Lotion,Beauty,6,15.64,East,Retail
+2026-01-15,Coffee Maker,Home & Kitchen,10,31.24,North,Online
+2026-01-15,Bluetooth Speaker,Electronics,9,47.19,West,Online
+2026-01-15,Face Serum,Beauty,7,12.8,Central,Wholesale
+2026-01-15,Running Shoes,Apparel,1,22.65,North,Online
+2026-01-15,Body Lotion,Beauty,13,12.9,South,Online
+2026-01-15,Smart Watch,Electronics,8,45.99,West,Wholesale
+2026-01-16,Throw Pillow,Home & Kitchen,13,26.43,South,Retail
+2026-01-16,Throw Pillow,Home & Kitchen,11,25.92,South,Retail
+2026-01-16,Denim Jacket,Apparel,3,21.84,North,Retail
+2026-01-16,Running Belt,Sports,1,22.72,East,Wholesale
+2026-01-16,Coffee Maker,Home & Kitchen,9,30.43,East,Retail
+2026-01-16,Running Belt,Sports,13,17.03,South,Wholesale
+2026-01-17,Yoga Mat,Sports,14,20.04,North,Wholesale
+2026-01-17,Table Lamp,Home & Kitchen,8,33.27,South,Wholesale
+2026-01-17,USB-C Hub,Electronics,12,48.0,West,Wholesale
+2026-01-18,Running Belt,Sports,6,18.51,Central,Retail
+2026-01-18,Sports Cap,Apparel,12,15.94,South,Online
+2026-01-18,Dumbbell Set,Sports,2,26.01,West,Wholesale
+2026-01-19,Running Shoes,Apparel,7,24.63,West,Wholesale
+2026-01-19,Dumbbell Set,Sports,6,17.32,South,Retail
+2026-01-20,Running Shoes,Apparel,5,16.86,Central,Wholesale
+2026-01-20,Coffee Maker,Home & Kitchen,14,39.57,North,Online
+2026-01-20,Wool Sweater,Apparel,8,23.36,North,Retail
+2026-01-20,Yoga Mat,Sports,11,23.37,Central,Wholesale
+2026-01-21,Sunscreen SPF50,Beauty,5,15.39,South,Retail
+2026-01-21,Throw Pillow,Home & Kitchen,1,25.16,Central,Retail
+2026-01-21,Resistance Bands,Sports,3,17.54,Central,Online
+2026-01-21,Denim Jacket,Apparel,1,25.69,North,Online
+2026-01-21,Throw Pillow,Home & Kitchen,1,25.16,Central,Retail
+2026-01-21,Sports Cap,Apparel,5,23.02,East,Online
+2026-01-21,Smart Watch,Electronics,2,58.64,West,Retail
+2026-01-21,Laptop Stand,Electronics,5,43.57,West,Retail
+2026-01-21,USB-C Hub,Electronics,1,45.91,Central,Wholesale
+2026-01-21,Face Serum,Beauty,9,15.27,West,Online
+2026-01-22,Water Bottle,Sports,12,20.47,Central,Wholesale
+2026-01-22,Laptop Stand,Electronics,10,39.09,South,Wholesale
+2026-01-22,Sunscreen SPF50,Beauty,11,16.67,North,Retail
+2026-01-23,Laptop Stand,Electronics,13,51.0,West,Online
+2026-01-23,Cutlery Set,Home & Kitchen,4,37.74,South,Wholesale
+2026-01-23,USB-C Hub,Electronics,13,38.94,East,Retail
+2026-01-24,Shampoo Bar,Beauty,14,10.59,North,Wholesale
+2026-01-24,Yoga Mat,Sports,10,20.63,Central,Retail
+2026-01-24,Bluetooth Speaker,Electronics,10,41.98,North,Wholesale
+2026-01-24,Water Bottle,Sports,4,25.44,West,Retail
+2026-01-24,Running Belt,Sports,7,14.17,North,Online
+2026-01-25,Running Shoes,Apparel,6,24.46,North,Online
+2026-01-25,Cutlery Set,Home & Kitchen,12,32.28,South,Wholesale
+2026-01-25,Dumbbell Set,Sports,9,19.14,South,Online
+2026-01-25,Sunscreen SPF50,Beauty,5,14.93,East,Retail
+2026-01-25,Running Shoes,Apparel,8,26.37,Central,Online
+2026-01-25,Water Bottle,Sports,12,13.49,North,Wholesale
+2026-01-25,Denim Jacket,Apparel,1,21.65,North,Retail
+2026-01-25,Laptop Stand,Electronics,12,48.49,Central,Retail
+2026-01-26,Coffee Maker,Home & Kitchen,9,30.09,East,Online
+2026-01-26,Shampoo Bar,Beauty,10,14.61,Central,Retail
+2026-01-26,USB-C Hub,Electronics,3,46.34,Central,Retail
+2026-01-26,Shampoo Bar,Beauty,5,15.44,South,Retail
+2026-01-26,Laptop Stand,Electronics,13,37.31,Central,Wholesale
+2026-01-26,Sunscreen SPF50,Beauty,3,15.89,East,Wholesale
+2026-01-27,Body Lotion,Beauty,8,14.32,East,Online
+2026-01-27,Cutlery Set,Home & Kitchen,5,42.18,West,Online
+2026-01-27,Shampoo Bar,Beauty,12,15.05,South,Online
+2026-01-27,Sports Cap,Apparel,1,26.75,West,Retail
+2026-01-27,Laptop Stand,Electronics,6,51.66,North,Wholesale
+2026-01-27,Coffee Maker,Home & Kitchen,14,38.34,North,Retail
+2026-01-28,Shampoo Bar,Beauty,1,15.25,West,Retail
+2026-01-28,Table Lamp,Home & Kitchen,9,32.0,West,Wholesale
+2026-01-28,Bluetooth Speaker,Electronics,9,52.07,Central,Online
+2026-01-28,Resistance Bands,Sports,3,19.57,East,Retail
+2026-01-29,Sunscreen SPF50,Beauty,14,17.26,North,Retail
+2026-01-29,Resistance Bands,Sports,4,21.61,West,Wholesale
+2026-01-29,Sunscreen SPF50,Beauty,2,12.31,Central,Retail
+2026-01-30,Denim Jacket,Apparel,2,25.61,East,Online
+2026-01-30,Resistance Bands,Sports,8,19.89,West,Wholesale
+2026-01-31,Wool Sweater,Apparel,8,26.21,North,Online
+2026-01-31,Denim Jacket,Apparel,6,24.7,North,Online
+2026-01-31,Shampoo Bar,Beauty,10,16.63,North,Wholesale
+2026-01-31,Lip Balm Set,Beauty,7,11.54,Central,Retail
+2026-01-31,Wool Sweater,Apparel,11,25.89,North,Wholesale
+2026-01-31,Dumbbell Set,Sports,11,21.82,East,Retail
+2026-01-31,Yoga Mat,Sports,10,20.69,South,Online
