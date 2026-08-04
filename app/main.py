@@ -36,6 +36,7 @@ from app.capability_registry import CAPABILITY_REGISTRY
 from app.db import init_db
 from app import auth, chat_store
 from app.adapters import dataset_adapter, banking_adapter
+from app.visualization import suggest_visualization
 from app.interpreter import interpret, interpret_stream, explain_result
 
 app = FastAPI(title="DataOS 2.0 -- Pipeline Rails")
@@ -355,7 +356,11 @@ def _dataset_upload_events(dataset_name: str, raw_bytes: bytes, csv_content: str
     if extra_results:
         combined_result["additional_analyses"] = extra_results
 
-    reply = explain_result(user_message, "add_dataset", combined_result)  # may raise RuntimeError -- caught by the caller
+    charts = suggest_visualization("add_dataset", combined_result)
+    if charts:
+        yield {"type": "visualization", "charts": charts}
+
+    reply = explain_result(user_message, "add_dataset", combined_result, has_visualization=bool(charts))  # may raise RuntimeError -- caught by the caller
 
     chat_store.add_message(conv_id, "user", user_message)
     chat_store.add_message(conv_id, "assistant", reply)

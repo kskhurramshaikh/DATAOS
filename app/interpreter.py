@@ -29,6 +29,7 @@ from openai import OpenAI
 from app.capability_registry import CAPABILITY_REGISTRY
 from app.compliance_agent import evaluate
 from app.router import route, NoCapabilityRegisteredError
+from app.visualization import suggest_visualization
 
 MODEL = "anthropic/claude-sonnet-5"
 
@@ -143,14 +144,29 @@ Rules:
 """
 
 
-def explain_result(user_message: str, intent: str, raw_result: dict) -> str:
+def explain_result(user_message: str, intent: str, raw_result: dict, has_visualization: bool = False) -> str:
     """
     Turn a raw pipeline result into a plain-English reply. Public because
     deterministic UI actions (like a file upload through the "+" button)
     call the pipeline directly, bypassing tool-selection, but still want
     the same natural-language explanation step this module provides.
+
+    has_visualization: True when a chart has already been rendered
+    alongside this reply (see app/visualization.py) -- changes the
+    closing instruction so the model doesn't redundantly describe the
+    chart's contents in prose, and tells the user what else they can ask
+    for instead.
     """
     client = _get_client()
+    visualization_note = (
+        """
+5. A chart has already been rendered above this text for the relevant data -- do not
+   describe its contents in prose (no "as you can see in the chart above"). End your reply
+   with ONE short line telling the user they can ask for this as a table instead, or ask
+   for it not to be charted at all -- state plainly how to ask, don't just imply it."""
+        if has_visualization
+        else ""
+    )
     prompt = f"""The user asked: "{user_message}"
 
 You ran the "{intent}" capability on their behalf. Here is the raw result from the system:
@@ -173,10 +189,10 @@ of losing the actual substance either:
    one its own short bold label line (e.g. "**NDI Readiness:**") followed by its own
    bullets, clearly separated from the primary result's bullets. If a computed figure was
    cross-checked against a value already in the source data (e.g. "matches_source_figure"),
-   say so explicitly -- that's a meaningful, honest detail, not filler. If an
+   say so explicitly -- that's a meaningful, honest detail, not filler. If a
    "methodology_note" field explains the number isn't a reproduction of an official
    index/standard, include that caveat plainly rather than omitting it -- never imply more
-   certainty than the data supports.
+   certainty than the data supports.{visualization_note}
 
 Every bullet must be a COMPLETE sentence fragment on its own -- never end a bullet with
 just a dash and no content, never trail off. If you don't have 3-6 substantive bullets
@@ -193,7 +209,7 @@ Example of the right shape (for a drift check):
 
     response = client.chat.completions.create(
         model=MODEL,
-        max_tokens=600,
+        max_tokens=1500,  # combined multi-analysis replies (dataset + NDI + IFRS9) need real room
         messages=[{"role": "user", "content": prompt}],
     )
     return response.choices[0].message.content.strip()
@@ -264,8 +280,12 @@ def interpret_stream(conversation_history: list[dict], user_message: str):
 
     yield {"type": "tool_result", "data": raw_result}
 
+    charts = suggest_visualization(intent, raw_result)
+    if charts:
+        yield {"type": "visualization", "charts": charts}
+
     yield {"type": "status", "stage": "explaining", "label": "Writing a plain-English summary..."}
-    reply = explain_result(user_message, intent, raw_result)
+    reply = explain_result(user_message, intent, raw_result, has_visualization=bool(charts))
 
     yield {"type": "final", "reply": reply, "ran_intent": intent}
 

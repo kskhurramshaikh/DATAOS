@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DataOS 2.0</title>
+<link rel="stylesheet" href="/static/vendor/tabulator.min.css">
+<script src="/static/vendor/chart.min.js"></script>
+<script src="/static/vendor/tabulator.min.js"></script>
+<script src="/static/vendor/alpine.min.js" defer></script>
 <style>
   :root {
     --bg: #0f1115; --panel: #171a21; --border: #2a2e38; --text: #e8e9ed;
@@ -101,6 +105,13 @@
     max-height: 260px; overflow-y: auto;
   }
   .error-text { color: #ff6b6b; }
+
+  /* Charts -- rendered inline, always visible, never buried in details */
+  .chart-block { margin-top: 12px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px; }
+  .chart-title { font-size: 12px; color: var(--muted); margin-bottom: 8px; font-weight: 600; }
+  .chart-block canvas { max-height: 220px; }
+  .chart-alt-note { font-size: 11px; color: var(--muted); margin-top: 8px; font-style: italic; }
 
   /* Pipeline log -- the permanent trail of every stage the request
      actually went through (compliance -> routing -> tool, or
@@ -340,6 +351,9 @@ function addStreamingBotMessage() {
   const finalText = document.createElement("div");
   finalText.className = "final-text hidden";
 
+  const chartsContainer = document.createElement("div");
+  chartsContainer.className = "charts-container hidden";
+
   const details = document.createElement("details");
   details.className = "tool-details hidden";
   const summary = document.createElement("summary");
@@ -355,12 +369,14 @@ function addStreamingBotMessage() {
   details.appendChild(detailBody);
 
   div.appendChild(statusLine);
+  div.appendChild(chartsContainer);
   div.appendChild(finalText);
   div.appendChild(details);
   $("messages").appendChild(div);
   scrollMessagesToBottom();
 
   let stepNum = 0;
+  let chartCounter = 0;
 
   return {
     setStatus(label) {
@@ -404,6 +420,44 @@ function addStreamingBotMessage() {
       detailBody.appendChild(entry);
       scrollMessagesToBottom();
     },
+    addCharts(charts) {
+      chartsContainer.classList.remove("hidden");
+      for (const spec of charts) {
+        chartCounter += 1;
+        const block = document.createElement("div");
+        block.className = "chart-block";
+
+        const title = document.createElement("div");
+        title.className = "chart-title";
+        title.textContent = spec.title || "Chart";
+        block.appendChild(title);
+
+        const canvas = document.createElement("canvas");
+        canvas.id = `chart-${Date.now()}-${chartCounter}`;
+        block.appendChild(canvas);
+
+        chartsContainer.appendChild(block);
+
+        new Chart(canvas.getContext("2d"), {
+          type: spec.type || "bar",
+          data: {
+            labels: spec.labels || [],
+            datasets: [{
+              data: spec.values || [],
+              backgroundColor: "rgba(91, 140, 255, 0.55)",
+              borderColor: "rgba(91, 140, 255, 1)",
+              borderWidth: 1,
+            }],
+          },
+          options: {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: { y: { beginAtZero: true } },
+          },
+        });
+      }
+      scrollMessagesToBottom();
+    },
     setFinal(text) {
       statusLine.remove();
       finalText.innerHTML = renderMarkdownLite(text);
@@ -427,6 +481,8 @@ function handleStreamEvent(bubble, eventType, data) {
     bubble.addDetail("Calling intent: " + data.name, data.input);
   } else if (eventType === "tool_result") {
     bubble.addDetail("Result", data.data);
+  } else if (eventType === "visualization") {
+    bubble.addCharts(data.charts);
   } else if (eventType === "final") {
     conversationId = data.conversation_id;
     bubble.setFinal(data.reply);
