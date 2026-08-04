@@ -5,10 +5,6 @@
 # Inventory doc, Section 5). Each entry names the capability it maps to,
 # which tool delivers it, and which adapter function performs the actual
 # work.
-#
-# Starting deliberately small: one intent, one capability, one tool. Every
-# future intent gets added here the same way, one at a time, once its own
-# adapter is built and tested -- not before.
 
 CAPABILITY_REGISTRY = {
     "validate_drift": {
@@ -20,5 +16,15 @@ CAPABILITY_REGISTRY = {
         "capability": "ingest_dataset_to_medallion",
         "tool": "pandas_medallion_pipeline",
         "adapter": "app.adapters.dataset_adapter.run",
+    },
+    "list_datasets": {
+        "capability": "list_registered_datasets",
+        "tool": "dataset_metadata_store",
+        "adapter": "app.adapters.dataset_adapter.list_datasets",
+    },
+    "promote_dataset": {
+        "capability": "promote_dataset_to_gold",
+        "tool": "pandas_medallion_pipeline",
+        "adapter": "app.adapters.dataset_adapter.promote_dataset",
     },
 }

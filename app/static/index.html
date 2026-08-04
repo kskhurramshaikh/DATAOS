@@ -54,10 +54,46 @@
   #logout-btn:hover { color: var(--text); border-color: var(--muted); }
 
   #messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
-  .msg { max-width: 78%; padding: 10px 14px; border-radius: 14px; font-size: 14px; line-height: 1.5; }
+  .msg { max-width: 82%; padding: 10px 14px; border-radius: 14px; font-size: 14px; line-height: 1.5; }
   .msg.user { align-self: flex-end; background: var(--user-bubble); border-bottom-right-radius: 4px; }
-  .msg.bot { align-self: flex-start; background: var(--bot-bubble); border-bottom-left-radius: 4px; }
-  .msg.typing { color: var(--muted); font-style: italic; }
+  .msg.bot { align-self: flex-start; background: var(--bot-bubble); border-bottom-left-radius: 4px; max-width: 88%; }
+
+  /* Animated status line while work is happening */
+  .status-line { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+  .status-text { transition: opacity 0.15s ease; }
+  .typing-dots { display: inline-flex; gap: 3px; }
+  .typing-dots span {
+    width: 5px; height: 5px; border-radius: 50%; background: var(--muted);
+    animation: dot-pulse 1.2s infinite ease-in-out;
+  }
+  .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+  .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes dot-pulse {
+    0%, 60%, 100% { opacity: 0.25; transform: scale(0.85); }
+    30% { opacity: 1; transform: scale(1); }
+  }
+
+  .final-text { margin-top: 6px; }
+  .final-text:first-child { margin-top: 0; }
+
+  /* Expandable "show your work" tree */
+  .tool-details { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; }
+  .tool-details summary {
+    cursor: pointer; font-size: 12px; color: var(--muted); user-select: none; list-style: none;
+  }
+  .tool-details summary::-webkit-details-marker { display: none; }
+  .tool-details summary::before { content: "▸ "; }
+  .tool-details[open] summary::before { content: "▾ "; }
+  .tool-details summary:hover { color: var(--text); }
+  .tool-entry { margin-top: 8px; }
+  .tool-entry-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .tool-entry pre {
+    margin: 0; background: #0a0b0e; border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; font-size: 12px; line-height: 1.5; overflow-x: auto;
+    font-family: "SF Mono", Consolas, Monaco, monospace; color: #b8c4d9;
+    max-height: 260px; overflow-y: auto;
+  }
+  .error-text { color: #ff6b6b; }
 
   #composer { padding: 16px 20px; border-top: 1px solid var(--border); display: flex; gap: 10px; position: relative; }
   #composer input {
@@ -198,7 +234,7 @@ function onAuthed(t, user) {
   $("auth-screen").classList.add("hidden");
   $("chat-screen").classList.remove("hidden");
   $("user-greeting").textContent = "Signed in as " + user.name;
-  addMessage("bot", "Hi " + user.name + " — I'm the DataOS assistant. Tell me what you'd like to do, in plain English. Right now I can check for data/model drift — try something like \"check for drift in the mean radius feature.\"");
+  addMessage("bot", "Hi " + user.name + " — I'm the DataOS assistant. Tell me what you'd like to do, in plain English. Right now I can check for data/model drift, add a dataset (use the + button), or ask what's already been added.");
 }
 
 $("logout-btn").onclick = () => {
@@ -219,28 +255,155 @@ function addMessage(role, text) {
   return div;
 }
 
+// Creates a bot message bubble that streams: animated dots + a status
+// label that updates live, an expandable "show your work" tree fed by
+// tool_call/tool_result events, and finally the plain-English reply.
+function addStreamingBotMessage() {
+  const div = document.createElement("div");
+  div.className = "msg bot";
+
+  const statusLine = document.createElement("div");
+  statusLine.className = "status-line";
+  statusLine.innerHTML =
+    '<span class="typing-dots"><span></span><span></span><span></span></span>' +
+    '<span class="status-text">Thinking...</span>';
+
+  const finalText = document.createElement("div");
+  finalText.className = "final-text hidden";
+
+  const details = document.createElement("details");
+  details.className = "tool-details hidden";
+  const summary = document.createElement("summary");
+  summary.textContent = "View details";
+  const detailBody = document.createElement("div");
+  details.appendChild(summary);
+  details.appendChild(detailBody);
+
+  div.appendChild(statusLine);
+  div.appendChild(finalText);
+  div.appendChild(details);
+  $("messages").appendChild(div);
+  $("messages").scrollTop = $("messages").scrollHeight;
+
+  return {
+    setStatus(label) {
+      statusLine.querySelector(".status-text").textContent = label;
+    },
+    addDetail(label, data) {
+      details.classList.remove("hidden");
+      const entry = document.createElement("div");
+      entry.className = "tool-entry";
+      const entryLabel = document.createElement("div");
+      entryLabel.className = "tool-entry-label";
+      entryLabel.textContent = label;
+      const pre = document.createElement("pre");
+      pre.textContent = JSON.stringify(data, null, 2);
+      entry.appendChild(entryLabel);
+      entry.appendChild(pre);
+      detailBody.appendChild(entry);
+      $("messages").scrollTop = $("messages").scrollHeight;
+    },
+    setFinal(text) {
+      statusLine.remove();
+      finalText.textContent = text;
+      finalText.classList.remove("hidden");
+      $("messages").scrollTop = $("messages").scrollHeight;
+    },
+    setError(text) {
+      statusLine.remove();
+      finalText.textContent = text;
+      finalText.classList.add("error-text");
+      finalText.classList.remove("hidden");
+      $("messages").scrollTop = $("messages").scrollHeight;
+    },
+  };
+}
+
+function handleStreamEvent(bubble, eventType, data) {
+  if (eventType === "status") {
+    bubble.setStatus(data.label);
+  } else if (eventType === "tool_call") {
+    bubble.addDetail("Calling: " + data.name, data.input);
+  } else if (eventType === "tool_result") {
+    bubble.addDetail("Result", data.data);
+  } else if (eventType === "final") {
+    conversationId = data.conversation_id;
+    bubble.setFinal(data.reply);
+  } else if (eventType === "error") {
+    bubble.setError("Something went wrong: " + data.detail);
+  }
+}
+
+// Unified SSE request -- handles both a plain text message and a file
+// upload through the same streaming endpoint. Manually parses SSE
+// frames from a fetch ReadableStream, since EventSource can't POST
+// with auth headers or multipart bodies.
+async function streamRequest({ message, file, dataset_name }) {
+  const bubble = addStreamingBotMessage();
+  $("send-btn").disabled = true;
+
+  try {
+    const form = new FormData();
+    if (message) form.append("message", message);
+    if (file) form.append("file", file);
+    if (dataset_name) form.append("dataset_name", dataset_name);
+    if (conversationId) form.append("conversation_id", conversationId);
+
+    const res = await fetch(API + "/chat/stream", {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + token },
+      body: form,
+    });
+
+    if (!res.ok || !res.body) {
+      let detail = "Something went wrong.";
+      try { detail = (await res.json()).detail || detail; } catch (e) {}
+      bubble.setError(detail);
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const frames = buffer.split("\n\n");
+      buffer = frames.pop(); // keep the possibly-incomplete last frame
+
+      for (const frame of frames) {
+        if (!frame.trim()) continue;
+        let eventType = "message";
+        let dataStr = "";
+        for (const line of frame.split("\n")) {
+          if (line.startsWith("event: ")) eventType = line.slice(7);
+          else if (line.startsWith("data: ")) dataStr += line.slice(6);
+        }
+        if (!dataStr) continue;
+        try {
+          handleStreamEvent(bubble, eventType, JSON.parse(dataStr));
+        } catch (e) { /* ignore malformed frame */ }
+      }
+    }
+  } catch (e) {
+    bubble.setError(e.message);
+  } finally {
+    $("send-btn").disabled = false;
+  }
+}
+
 async function sendMessage() {
   const input = $("chat-input");
   const text = input.value.trim();
   if (!text) return;
   input.value = "";
-  $("send-btn").disabled = true;
 
   addMessage("user", text);
-  const typing = addMessage("bot typing", "thinking...");
-
-  try {
-    const data = await api("/chat", { message: text, conversation_id: conversationId }, true);
-    conversationId = data.conversation_id;
-    typing.remove();
-    addMessage("bot", data.reply);
-  } catch (e) {
-    typing.remove();
-    addMessage("bot", "Something went wrong: " + e.message);
-  } finally {
-    $("send-btn").disabled = false;
-    input.focus();
-  }
+  await streamRequest({ message: text });
+  input.focus();
 }
 
 $("send-btn").onclick = sendMessage;
@@ -274,32 +437,7 @@ $("dataset-file-input").addEventListener("change", async () => {
   if (!datasetName) return; // user cancelled
 
   addMessage("user", `Uploaded ${file.name} as dataset "${datasetName}"`);
-  const typing = addMessage("bot typing", "processing dataset...");
-  $("send-btn").disabled = true;
-
-  try {
-    const form = new FormData();
-    form.append("file", file);
-    form.append("dataset_name", datasetName);
-    if (conversationId) form.append("conversation_id", conversationId);
-
-    const res = await fetch(API + "/chat/upload", {
-      method: "POST",
-      headers: { "Authorization": "Bearer " + token },
-      body: form,
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "Upload failed.");
-
-    conversationId = data.conversation_id;
-    typing.remove();
-    addMessage("bot", data.reply);
-  } catch (e) {
-    typing.remove();
-    addMessage("bot", "Something went wrong: " + e.message);
-  } finally {
-    $("send-btn").disabled = false;
-  }
+  await streamRequest({ file, dataset_name: datasetName });
 });
 
 // Resume a saved session if there is one

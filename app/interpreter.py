@@ -7,6 +7,12 @@
 # question back, or a call into the existing pipeline followed by a
 # plain-English explanation of the result.
 #
+# interpret_stream() is the real implementation -- a generator that
+# yields status/tool_call/tool_result events as each step of real work
+# actually starts, so the chat UI can show live progress instead of a
+# single spinner. interpret() is a thin wrapper around it for callers
+# (tests, programmatic use) that just want the end result.
+#
 # Routed through OpenRouter (OpenAI-compatible API) rather than calling
 # Anthropic directly, so this reuses the same OpenRouter account/billing
 # already used elsewhere -- one API key to manage, not two.
@@ -94,8 +100,7 @@ For the "validate_drift" intent specifically, the payload the adapter accepts is
 
 validate_drift currently runs against a placeholder reference dataset (breast cancer
 diagnostic data), not a real DataOS dataset yet -- if a user asks to check drift, you can
-run it directly using sensible defaults unless they've specified particular values. It's
-fine to just run it with defaults if the user doesn't care about specifics.
+run it directly using sensible defaults unless they've specified particular values.
 
 The "add_dataset" intent requires an actual file, uploaded through the "+" button next to
 the chat input -- it is never something you can call yourself from a text-only message,
@@ -104,13 +109,27 @@ registering a dataset without having attached one, tell them (briefly, warmly) t
 "+" button next to the message box and choose "Add dataset" -- don't call the tool and
 don't pretend to have run it.
 
+When a dataset is added, it goes through Bronze (raw landing), Silver (duplicates removed,
+missing values reported honestly), then Gold (curated for business use -- any column that's
+mostly empty gets dropped rather than kept unreliable) -- UNLESS a column in Silver is more
+than 10% null, in which case the dataset is deliberately HELD at Silver rather than
+auto-promoted, pending a decision. If you see stage "silver_held" in a result, explain
+clearly why it's being held and mention the "promote_dataset" intent as the way to push it
+through anyway if the user wants to.
+
+The "list_datasets" intent (payload: optional dataset_name) shows what's been added and its
+current stage -- use it when a user asks what data exists, or the status of a specific one.
+
+The "promote_dataset" intent (payload: dataset_name, required) forces a dataset held at
+Silver through to Gold. Only relevant for datasets already flagged "silver_held".
+
 Rules:
 1. If the user's request clearly maps to a registered intent and you have enough info
    (or reasonable defaults suffice), call the call_intent tool. Don't interrogate the user
    for parameters they haven't offered an opinion on -- use defaults.
-2. If the user asks for something that maps to a capability that ISN'T registered yet
-   (e.g. adding a dataset, training a model), say plainly that it's not built yet and
-   briefly what's coming, without inventing a fake result.
+2. If the user asks for something that maps to a capability that ISN'T registered yet,
+   say plainly that it's not built yet and briefly what's coming, without inventing a
+   fake result.
 3. If the user's message is genuinely ambiguous about WHICH registered intent they mean,
    ask ONE short clarifying question -- don't call the tool speculatively.
 4. Keep replies short, warm, and non-technical. No JSON, no code blocks, no tool names.
@@ -132,9 +151,9 @@ You ran the "{intent}" capability on their behalf. Here is the raw result from t
 {json.dumps(raw_result, indent=2)}
 
 Explain this back to the user in 2-4 friendly, plain-English sentences. Mention the
-concrete numbers that matter (e.g. how many metrics, whether drift was found, whether
-it was blocked by a compliance rule). No JSON, no code, no tool/library names unless the
-user already used that name themselves."""
+concrete numbers that matter. If stage is "silver_held", clearly explain why it's being
+held and that they can ask to promote it anyway. No JSON, no code, no tool/library names
+unless the user already used that name themselves."""
 
     response = client.chat.completions.create(
         model=MODEL,
@@ -144,10 +163,16 @@ user already used that name themselves."""
     return response.choices[0].message.content.strip()
 
 
-def interpret(conversation_history: list[dict], user_message: str) -> dict:
+def interpret_stream(conversation_history: list[dict], user_message: str):
     """
+    Generator: yields dicts describing each real step as it starts --
+    {"type": "status", "stage": ..., "label": ...}
+    {"type": "tool_call", "name": ..., "input": ...}
+    {"type": "tool_result", "data": ...}
+    -- and finally exactly one:
+    {"type": "final", "reply": ..., "ran_intent": ...}
+
     conversation_history: list of {"role": "user"|"assistant", "content": str}, oldest first.
-    Returns: {"reply": str, "ran_intent": str | None}
     """
     client = _get_client()
 
@@ -156,6 +181,8 @@ def interpret(conversation_history: list[dict], user_message: str) -> dict:
         + conversation_history
         + [{"role": "user", "content": user_message}]
     )
+
+    yield {"type": "status", "stage": "interpreting", "label": "Understanding your request..."}
 
     response = client.chat.completions.create(
         model=MODEL,
@@ -169,7 +196,9 @@ def interpret(conversation_history: list[dict], user_message: str) -> dict:
 
     if not tool_calls:
         # No tool call -- Claude is asking a clarifying question or explaining a gap.
-        return {"reply": (message.content or "").strip(), "ran_intent": None}
+        reply = (message.content or "").strip()
+        yield {"type": "final", "reply": reply, "ran_intent": None}
+        return
 
     call = tool_calls[0]
     tool_input = json.loads(call.function.arguments)
@@ -177,10 +206,15 @@ def interpret(conversation_history: list[dict], user_message: str) -> dict:
     context = tool_input.get("context") or {}
     payload = tool_input.get("payload") or {}
 
+    yield {"type": "tool_call", "name": intent, "input": {"context": context, "payload": payload}}
+
+    yield {"type": "status", "stage": "compliance", "label": "Checking compliance rules..."}
     decision = evaluate(intent, context)
+
     if not decision.allowed:
         raw_result = {"status": "blocked", "compliance": decision.to_dict()}
     else:
+        yield {"type": "status", "stage": "routing", "label": f"Running {intent}..."}
         try:
             routed = route(intent, payload)
             raw_result = {
@@ -189,8 +223,22 @@ def interpret(conversation_history: list[dict], user_message: str) -> dict:
                 "routing": {"capability": routed["capability"], "tool": routed["tool"]},
                 "output": routed["result"],
             }
-        except NoCapabilityRegisteredError as e:
+        except (NoCapabilityRegisteredError, ValueError) as e:
             raw_result = {"status": "error", "compliance": decision.to_dict(), "error": str(e)}
 
+    yield {"type": "tool_result", "data": raw_result}
+
+    yield {"type": "status", "stage": "explaining", "label": "Writing a plain-English summary..."}
     reply = explain_result(user_message, intent, raw_result)
-    return {"reply": reply, "ran_intent": intent}
+
+    yield {"type": "final", "reply": reply, "ran_intent": intent}
+
+
+def interpret(conversation_history: list[dict], user_message: str) -> dict:
+    """Non-streaming convenience wrapper around interpret_stream(), for
+    callers (tests, programmatic use) that just want the end result."""
+    final = {"reply": "", "ran_intent": None}
+    for event in interpret_stream(conversation_history, user_message):
+        if event["type"] == "final":
+            final = {"reply": event["reply"], "ran_intent": event["ran_intent"]}
+    return final

@@ -50,6 +50,28 @@ def init_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS datasets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                safe_name TEXT UNIQUE NOT NULL,
+                display_name TEXT NOT NULL,
+                uploaded_by INTEGER NOT NULL,
+                stage TEXT NOT NULL,
+                rows INTEGER NOT NULL,
+                columns_json TEXT NOT NULL,
+                dropped_columns_json TEXT NOT NULL DEFAULT '[]',
+                duplicate_rows_removed INTEGER NOT NULL DEFAULT 0,
+                null_counts_json TEXT NOT NULL DEFAULT '{}',
+                bronze_path TEXT,
+                silver_path TEXT,
+                gold_path TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (uploaded_by) REFERENCES users (id)
+            )
+            """
+        )
         conn.commit()
 
 
