@@ -200,7 +200,14 @@ of losing the actual substance either:
    and why, final stage. For an IFRS 9 result: the portfolio-weighted average PD AND LGD
    as their own bullets (not just the final ECL number), plus the stage breakdown and
    which scenario was used -- PD and LGD are results in their own right, not just inputs
-   buried inside ECL. Bold the key number or word in each bullet with **asterisks**.
+   buried inside ECL. If "pd_model"/"lgd_model" fields are present, name them explicitly
+   in a bullet (e.g. "PD modeled with a fitted scikit-learn LogisticRegression") -- this is
+   real, verifiable information the user should see, not something to leave buried in the
+   raw JSON. If "scenario_description" is present, mention in one bullet what it's grounded in
+   (e.g. "the adverse scenario reflects Dr. Saber's specified GDP -1%/oil $50 conditions, per
+   SAMA quarterly Economic Reports") -- this is real, sourced, attributed context, worth
+   surfacing, not a detail to skip.
+   Bold the key number or word in each bullet with **asterisks**.
 3. If stage is "silver_held", give the hold reason its own bullet stated plainly, and end
    with one short closing sentence inviting them to ask you to promote it anyway.
 4. If the result includes "additional_analyses" (extra computations run alongside the main

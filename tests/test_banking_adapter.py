@@ -137,9 +137,58 @@ def test_ifrs9_modeled_staging_matches_dpd_backstop():
 
 
 def test_ifrs9_modeled_scenario_scales_ecl_up():
+    optimistic = banking_adapter.run_ifrs9({"csv_content": MODELED_IFRS9_CSV, "scenario": "optimistic"})
     base = banking_adapter.run_ifrs9({"csv_content": MODELED_IFRS9_CSV, "scenario": "base"})
-    severe = banking_adapter.run_ifrs9({"csv_content": MODELED_IFRS9_CSV, "scenario": "severe"})
-    assert severe["total_computed_ecl"] > base["total_computed_ecl"]
+    adverse = banking_adapter.run_ifrs9({"csv_content": MODELED_IFRS9_CSV, "scenario": "adverse"})
+    assert optimistic["total_computed_ecl"] < base["total_computed_ecl"] < adverse["total_computed_ecl"]
+
+
+def test_ifrs9_scenarios_attributed_to_dr_saber_with_real_sama_context():
+    """Scenario structure must match Dr. Saber's stated specification
+    (optimistic/base/adverse, his multipliers), with real SAMA context
+    layered into the base scenario -- not arbitrary numbers."""
+    base = banking_adapter.run_ifrs9({"csv_content": MODELED_IFRS9_CSV, "scenario": "base"})
+    adverse = banking_adapter.run_ifrs9({"csv_content": MODELED_IFRS9_CSV, "scenario": "adverse"})
+    optimistic = banking_adapter.run_ifrs9({"csv_content": MODELED_IFRS9_CSV, "scenario": "optimistic"})
+
+    assert "SAMA" in base["scenario_description"]
+    assert "1.2%" in base["scenario_description"]  # real NPL ratio context
+    assert "Dr. Saber" in base["scenario_description"] or "specification" in base["scenario_description"]
+    assert banking_adapter.MACRO_SCENARIOS["optimistic"]["pd_multiplier"] == 0.85
+    assert banking_adapter.MACRO_SCENARIOS["base"]["pd_multiplier"] == 1.0
+    assert banking_adapter.MACRO_SCENARIOS["adverse"]["pd_multiplier"] == 1.25
+
+
+def test_lgd_uses_dr_sabers_stated_collateral_rates_for_clear_mappings():
+    """Real estate, salary assignment, and unsecured facility types
+    should fit close to Dr. Saber's stated rates (25%/30%/65%), since
+    that's the training target now -- not our own invented numbers."""
+    result = banking_adapter.run_ifrs9({"csv_content": MODELED_IFRS9_CSV})
+    lgd_by_type = result["modeled_lgd_by_facility_type"]
+
+    assert abs(lgd_by_type["تمويل عقاري"] - 0.25) < 0.05      # real estate
+    assert abs(lgd_by_type["تمويل شخصي"] - 0.30) < 0.05        # salary assignment
+    assert abs(lgd_by_type["بطاقة ائتمانية"] - 0.65) < 0.05    # unsecured
+
+
+def test_pending_clarification_facility_types_are_flagged():
+    """Facility types that don't map cleanly onto Dr. Saber's 4
+    categories must be explicitly flagged, not silently guessed."""
+    result = banking_adapter.run_ifrs9({"csv_content": MODELED_IFRS9_CSV})
+    pending = result.get("facility_types_pending_dr_saber_clarification", [])
+    assert "تمويل تجاري" in pending  # commercial financing, present in the test fixture
+
+
+def test_staging_triggers_disclose_what_was_actually_evaluated():
+    """The staging result must honestly disclose which SICR triggers
+    this data could support, not silently claim the full multi-trigger
+    logic ran when most of the underlying columns don't exist."""
+    result = banking_adapter.run_ifrs9({"csv_content": MODELED_IFRS9_CSV})
+
+    assert "DPD backstop (30/90 days past due)" in result["staging_triggers_evaluated"]
+    not_evaluated_text = " ".join(result["staging_triggers_not_evaluated"])
+    assert "watchlist" in not_evaluated_text
+    assert "rating downgrade" in not_evaluated_text
 
 
 def test_ifrs9_modeled_rejects_unknown_scenario():
