@@ -52,6 +52,34 @@ def suggest_visualization(intent: str, raw_result: dict) -> list[dict] | None:
                 "values": [dd.get("high_confidence_clusters", 0), dd.get("needs_review_clusters", 0)],
             })
 
+    # Standalone results from a recommended follow-up action (NDI/IFRS9/
+    # dedup run on their own, not bundled into an add_dataset reply) --
+    # output here IS the adapter's result directly, not nested.
+    if intent == "find_duplicate_candidates" and output.get("total_clusters", 0) > 0:
+        charts.append({
+            "type": "bar",
+            "title": "Potential duplicate customer groups by confidence",
+            "labels": ["High confidence", "Needs review"],
+            "values": [output.get("high_confidence_clusters", 0), output.get("needs_review_clusters", 0)],
+        })
+
+    if intent == "assess_ndi_readiness" and output.get("top_gap_domains"):
+        charts.append({
+            "type": "bar",
+            "title": "NDI domain gaps (largest first)",
+            "labels": [d["domain"] for d in output["top_gap_domains"]],
+            "values": [d["gap"] for d in output["top_gap_domains"]],
+        })
+
+    if intent == "compute_ifrs9_ecl" and output.get("loans_by_stage"):
+        stages = output["loans_by_stage"]
+        charts.append({
+            "type": "bar",
+            "title": "Loans by IFRS 9 stage",
+            "labels": [f"Stage {k}" for k in stages.keys()],
+            "values": list(stages.values()),
+        })
+
     extra = raw_result.get("additional_analyses")
     if isinstance(extra, dict):
         ndi = extra.get("ndi_readiness")

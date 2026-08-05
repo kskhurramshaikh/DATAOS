@@ -45,6 +45,17 @@ def _find_col(columns, candidates):
     return None
 
 
+def is_applicable(csv_content: str) -> bool:
+    """Cheap check: does this data have the columns duplicate detection
+    needs (name + DOB), without running full detection or touching the
+    database? Used to decide whether to recommend this action at all."""
+    try:
+        header_only = pd.read_csv(io.StringIO(csv_content), nrows=0)
+    except Exception:
+        return False
+    return bool(_find_col(header_only.columns, DOB_COL_CANDIDATES) and _find_col(header_only.columns, NAME_COL_CANDIDATES))
+
+
 def find_duplicate_candidates(payload: dict) -> dict:
     csv_content = payload.get("csv_content")
     dataset_name = payload.get("dataset_name", "")

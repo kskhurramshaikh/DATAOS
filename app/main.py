@@ -271,21 +271,6 @@ def _dataset_upload_events(dataset_name: str, raw_bytes: bytes, csv_content: str
             yield {"type": "status", "stage": "silver", "label": "Cleaning and deduplicating into Silver..."}
             silver = dataset_adapter.clean_to_silver(bronze["safe_name"], bronze["df"])
 
-            yield {"type": "status", "stage": "dedup", "label": "Checking for duplicate customer records..."}
-            silver_csv = silver["silver_df"].to_csv(index=False)
-            dedup_result = dedup_adapter.find_duplicate_candidates({
-                "csv_content": silver_csv,
-                "dataset_name": bronze["safe_name"],
-            })
-            pending_duplicate_clusters = dedup_result.get("total_clusters", 0) if dedup_result.get("applicable") else 0
-
-            if pending_duplicate_clusters > 0:
-                yield {
-                    "type": "duplicate_review",
-                    "dataset_name": bronze["safe_name"],
-                    "clusters": dedup_result["clusters"],
-                }
-
             output = {
                 "dataset_name": bronze["safe_name"],
                 "rows": len(silver["silver_df"]),
@@ -294,25 +279,18 @@ def _dataset_upload_events(dataset_name: str, raw_bytes: bytes, csv_content: str
                 "null_counts": silver["null_counts"],
                 "storage": {"bronze": bronze["bronze_path"], "silver": silver["silver_path"], "gold": None},
             }
-            if dedup_result.get("applicable"):
-                output["duplicate_detection"] = dedup_result
 
-            should_hold = silver["held"] or pending_duplicate_clusters > 0
-
-            if should_hold:
+            # NOTE: unlike earlier versions, duplicate detection / NDI /
+            # IFRS 9 are NOT auto-run here anymore -- they're offered as
+            # recommendations below and only run when the user picks one.
+            # That means Gold promotion is no longer gated on an
+            # unresolved duplicate check the user never asked for --
+            # only the null-rate quality gate (which is unconditional,
+            # not something the user opts into) still blocks promotion.
+            if silver["held"]:
                 yield {"type": "status", "stage": "held", "label": "Data quality check: holding at Silver..."}
-                hold_reasons = []
-                if silver["held"]:
-                    hold_reasons.append(silver["hold_reason"])
-                if pending_duplicate_clusters > 0:
-                    hc = dedup_result.get("high_confidence_clusters", 0)
-                    nr = dedup_result.get("needs_review_clusters", 0)
-                    hold_reasons.append(
-                        f"{pending_duplicate_clusters} potential duplicate customer group(s) found "
-                        f"({hc} high-confidence, {nr} needing review) -- unresolved, pending human decision"
-                    )
                 output["stage"] = "silver_held"
-                output["hold_reason"] = "; ".join(hold_reasons)
+                output["hold_reason"] = silver["hold_reason"]
                 output["numeric_summary"] = {}
                 output["top_categories"] = {}
                 output["dropped_columns"] = []
@@ -349,47 +327,132 @@ def _dataset_upload_events(dataset_name: str, raw_bytes: bytes, csv_content: str
 
     yield {"type": "tool_result", "data": raw_result}
 
-    # If this was an Excel workbook, check for NDI/IFRS9 sheets alongside
-    # the primary one and run those computations too -- one upload,
-    # every relevant analysis the workbook actually supports, combined
-    # into a single reply rather than making the user upload three times.
-    extra_results = {}
-    if filename and filename.lower().endswith((".xlsx", ".xls")):
-        sheet_names = dataset_adapter.list_excel_sheet_names(raw_bytes)
-
-        ndi_sheet = next((s for s in sheet_names if "ndi" in s.lower()), None)
-        if ndi_sheet:
-            yield {"type": "status", "stage": "ndi", "label": "Assessing NDI data-governance readiness..."}
+    # Detect which follow-up capabilities are actually relevant to what
+    # was just uploaded, and offer them as recommendations instead of
+    # running them automatically -- the user decides what happens next
+    # with their own data, same principle as the review-before-Gold gate.
+    if ran_intent == "add_dataset":
+        recommendations = []
+        if filename and filename.lower().endswith((".xlsx", ".xls")):
+            sheet_names = dataset_adapter.list_excel_sheet_names(raw_bytes)
+            if any("ndi" in s.lower() for s in sheet_names):
+                recommendations.append({
+                    "action": "assess_ndi",
+                    "label": "📊 Assess NDI readiness",
+                    "description": "Compute a data-governance readiness reading from the NDI sheet in this workbook.",
+                })
+            if any("ifrs" in s.lower() for s in sheet_names):
+                recommendations.append({
+                    "action": "compute_ifrs9",
+                    "label": "💰 Compute IFRS 9 ECL",
+                    "description": "Independently compute expected credit loss from the IFRS 9 portfolio sheet.",
+                })
+        silver_csv_for_check = raw_result.get("output", {}).get("storage", {}).get("silver")
+        if silver_csv_for_check:
             try:
-                ndi_csv = dataset_adapter.extract_specific_sheet_csv(raw_bytes, ndi_sheet)
-                ndi_result = banking_adapter.run_ndi({"csv_content": ndi_csv})
-                extra_results["ndi_readiness"] = ndi_result
-                yield {"type": "tool_result", "data": {"ndi_readiness": ndi_result}}
-            except ValueError as e:
-                extra_results["ndi_readiness_error"] = str(e)
+                with open(silver_csv_for_check, "r", encoding="utf-8") as f:
+                    landed_csv = f.read()
+                if dedup_adapter.is_applicable(landed_csv):
+                    recommendations.append({
+                        "action": "find_duplicates",
+                        "label": "🔁 Find duplicate customers",
+                        "description": "Check this dataset for near-duplicate customer records needing review.",
+                    })
+            except OSError:
+                pass
 
-        ifrs9_sheet = next((s for s in sheet_names if "ifrs" in s.lower()), None)
-        if ifrs9_sheet:
-            yield {"type": "status", "stage": "ifrs9", "label": "Computing IFRS 9 expected credit loss..."}
-            try:
-                ifrs9_csv = dataset_adapter.extract_specific_sheet_csv(raw_bytes, ifrs9_sheet)
-                ifrs9_result = banking_adapter.run_ifrs9({"csv_content": ifrs9_csv})
-                extra_results["ifrs9_ecl"] = ifrs9_result
-                yield {"type": "tool_result", "data": {"ifrs9_ecl": ifrs9_result}}
-            except ValueError as e:
-                extra_results["ifrs9_ecl_error"] = str(e)
+        if recommendations:
+            yield {
+                "type": "recommendations",
+                "dataset_name": raw_result["output"]["dataset_name"],
+                "filename": filename,
+                "options": recommendations,
+            }
 
     yield {"type": "status", "stage": "explaining", "label": "Writing a plain-English summary..."}
 
-    combined_result = dict(raw_result)
-    if extra_results:
-        combined_result["additional_analyses"] = extra_results
-
-    charts = suggest_visualization("add_dataset", combined_result)
+    charts = suggest_visualization("add_dataset", raw_result)
     if charts:
         yield {"type": "visualization", "charts": charts}
 
-    reply = explain_result(user_message, "add_dataset", combined_result, has_visualization=bool(charts))  # may raise RuntimeError -- caught by the caller
+    reply = explain_result(user_message, "add_dataset", raw_result, has_visualization=bool(charts))  # may raise RuntimeError -- caught by the caller
+
+    chat_store.add_message(conv_id, "user", user_message)
+    chat_store.add_message(conv_id, "assistant", reply)
+    yield {"type": "final", "reply": reply, "conversation_id": conv_id, "ran_intent": ran_intent}
+
+
+# ---------------------------------------------------------------------
+# Single follow-up analysis -- what actually runs when a user clicks one
+# of the recommendation chips after an upload (assess NDI, compute
+# IFRS 9, or find duplicates). Deliberately separate from the upload
+# flow above: these are optional, on-demand actions, not automatic
+# side effects of uploading a file.
+# ---------------------------------------------------------------------
+
+def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: bytes | None, user_id: int, conv_id: int):
+    intent_map = {
+        "assess_ndi": ("assess_ndi_readiness", "assess_data_governance_readiness", "ndi_scorecard_engine"),
+        "compute_ifrs9": ("compute_ifrs9_ecl", "compute_expected_credit_loss", "ifrs9_ecl_engine"),
+        "find_duplicates": ("find_duplicate_candidates", "detect_entity_duplicates", "rapidfuzz_dob_clustering"),
+    }
+    if action not in intent_map:
+        yield {"type": "final", "reply": f"Unknown action '{action}'.", "conversation_id": conv_id, "ran_intent": None}
+        return
+
+    intent, capability, tool = intent_map[action]
+    user_message = f'Run "{intent}" on dataset "{dataset_name}".'
+
+    yield {"type": "status", "stage": "compliance", "label": "Checking compliance rules..."}
+    decision = evaluate(intent, {})
+
+    if not decision.allowed:
+        raw_result = {"status": "blocked", "compliance": decision.to_dict()}
+        ran_intent = None
+    else:
+        try:
+            if action in ("assess_ndi", "compute_ifrs9"):
+                if not raw_bytes:
+                    raise ValueError("The original file wasn't available for this follow-up action -- please re-attach it.")
+                sheet_names = dataset_adapter.list_excel_sheet_names(raw_bytes)
+                keyword = "ndi" if action == "assess_ndi" else "ifrs"
+                sheet = next((s for s in sheet_names if keyword in s.lower()), None)
+                if not sheet:
+                    raise ValueError(f"No sheet matching '{keyword}' found in the re-attached file.")
+                yield {"type": "status", "stage": action, "label": f"Running {intent}..."}
+                sheet_csv = dataset_adapter.extract_specific_sheet_csv(raw_bytes, sheet)
+                output = banking_adapter.run_ndi({"csv_content": sheet_csv}) if action == "assess_ndi" \
+                    else banking_adapter.run_ifrs9({"csv_content": sheet_csv})
+            else:  # find_duplicates
+                yield {"type": "status", "stage": "dedup", "label": "Checking for duplicate customer records..."}
+                silver_csv = dataset_adapter.read_silver_csv(dataset_name)
+                output = dedup_adapter.find_duplicate_candidates({"csv_content": silver_csv, "dataset_name": dataset_name})
+                pending = output.get("total_clusters", 0) if output.get("applicable") else 0
+                if pending > 0:
+                    yield {"type": "duplicate_review", "dataset_name": dataset_name, "clusters": output["clusters"]}
+
+            raw_result = {
+                "status": "completed",
+                "compliance": decision.to_dict(),
+                "routing": {"capability": capability, "tool": tool},
+                "output": output,
+            }
+            ran_intent = intent
+        except ValueError as e:
+            raw_result = {"status": "error", "compliance": decision.to_dict(), "error": str(e)}
+            ran_intent = None
+
+    yield {"type": "tool_result", "data": raw_result}
+
+    charts = suggest_visualization(ran_intent or intent, raw_result)
+    if charts:
+        yield {"type": "visualization", "charts": charts}
+
+    yield {"type": "status", "stage": "explaining", "label": "Writing a plain-English summary..."}
+    try:
+        reply = explain_result(user_message, ran_intent or intent, raw_result, has_visualization=bool(charts))
+    except RuntimeError:
+        raise
 
     chat_store.add_message(conv_id, "user", user_message)
     chat_store.add_message(conv_id, "assistant", reply)
@@ -402,24 +465,31 @@ async def chat_stream(
     file: UploadFile | None = File(None),
     dataset_name: str | None = Form(None),
     conversation_id: int | None = Form(None),
+    action: str | None = Form(None),
     user: dict = Depends(auth.get_current_user),
 ):
     conv_id = _resolve_conversation(conversation_id, user["id"])
     csv_content = None
     filename = None
     sheet_used = None
+    raw_bytes = None
 
     if file is not None:
         raw_bytes = await file.read()
         filename = file.filename
-        try:
-            csv_content, sheet_used = dataset_adapter.extract_csv_content(filename, raw_bytes)
-        except ValueError as e:
-            async def error_only():
-                yield _sse("error", {"detail": str(e)})
-            return StreamingResponse(error_only(), media_type="text/event-stream")
+        if not action or action == "add_dataset":
+            try:
+                csv_content, sheet_used = dataset_adapter.extract_csv_content(filename, raw_bytes)
+            except ValueError as e:
+                async def error_only():
+                    yield _sse("error", {"detail": str(e)})
+                return StreamingResponse(error_only(), media_type="text/event-stream")
 
-    if csv_content is not None:
+    if action and action != "add_dataset":
+        # A recommendation chip was clicked -- run just that one
+        # follow-up analysis, not the full upload flow again.
+        sync_gen = _run_recommended_action_events(action, dataset_name, raw_bytes, user["id"], conv_id)
+    elif csv_content is not None:
         sync_gen = _dataset_upload_events(dataset_name, raw_bytes, csv_content, filename, sheet_used, user["id"], conv_id)
     else:
         if not message:

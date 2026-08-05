@@ -148,10 +148,33 @@ def extract_csv_content(filename: str, raw_bytes: bytes) -> tuple[str, str | Non
     return df.to_csv(index=False), sheet_name
 
 
+IDENTIFIER_COL_KEYWORDS = [
+    "id", "phone", "mobile", "national_id", "cust_id", "customer_id", "account",
+    "iban", "zip", "postal", "ssn", "reference", "code", "number",
+]
+
+
+def _looks_like_identifier(col_name: str) -> bool:
+    low = str(col_name).lower().replace(" ", "_")
+    return any(kw == low or low.startswith(kw + "_") or low.endswith("_" + kw) or low == kw for kw in IDENTIFIER_COL_KEYWORDS)
+
+
 def _numeric_summary(df: pd.DataFrame) -> dict:
+    """
+    Only summarizes columns that are genuinely quantitative (like
+    PRODUCTS -- sum/average makes sense). Numeric-looking identifier
+    columns (National ID, phone, customer ID) are excluded on purpose --
+    summing or averaging an ID is meaningless and looks like a bug if it
+    shows up in a live demo. This is a name-based heuristic, not
+    semantic understanding -- it can miss an oddly-named identifier
+    column, but it fails toward omitting a summary rather than
+    presenting a nonsensical one.
+    """
     numeric_cols = df.select_dtypes(include="number").columns
     summary = {}
     for col in numeric_cols:
+        if _looks_like_identifier(col):
+            continue
         series = df[col].dropna()
         if series.empty:
             continue
@@ -368,6 +391,21 @@ def run(payload: dict) -> dict:
         )
 
     return result
+
+
+def read_silver_csv(safe_name: str) -> str:
+    """Reads back the already-landed Silver CSV for a dataset that was
+    uploaded earlier. Lets a follow-up action (like running duplicate
+    detection after the fact) reuse already-cleaned data on disk instead
+    of needing the original file re-uploaded."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT silver_path FROM datasets WHERE safe_name = ?", (safe_name,)
+        ).fetchone()
+    if row is None or not row["silver_path"]:
+        raise ValueError(f"No landed Silver data found for dataset '{safe_name}'.")
+    with open(row["silver_path"], "r", encoding="utf-8") as f:
+        return f.read()
 
 
 def list_datasets(payload: dict) -> dict:

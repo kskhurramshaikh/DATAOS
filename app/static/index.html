@@ -155,6 +155,17 @@
   .review-btn:disabled { opacity: 0.5; cursor: wait; }
   .decision-done { font-size: 12px; color: #5bdc8c; font-weight: 600; }
 
+  /* Recommendation chips -- what the user can do next with this dataset */
+  .reco-header { font-size: 13px; color: var(--muted); margin-top: 4px; margin-bottom: 8px; }
+  .reco-chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .reco-chip {
+    padding: 9px 14px; border-radius: 20px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--text); font-size: 13px; cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .reco-chip:hover { border-color: var(--accent); background: var(--accent-dim); }
+  .reco-chip:disabled { opacity: 0.5; cursor: wait; }
+
   /* Pipeline log -- the permanent trail of every stage the request
      actually went through (compliance -> routing -> tool, or
      Bronze -> Silver -> Gold), kept visible after the reply lands. */
@@ -245,6 +256,8 @@
 const API = "";
 let token = null;
 let conversationId = null;
+let lastUploadedFile = null; // kept in memory so a recommendation chip can re-run an
+                              // analysis against the same workbook without re-uploading
 
 const $ = (id) => document.getElementById(id);
 
@@ -399,6 +412,9 @@ function addStreamingBotMessage() {
   const reviewContainer = document.createElement("div");
   reviewContainer.className = "review-container hidden";
 
+  const recoContainer = document.createElement("div");
+  recoContainer.className = "reco-container hidden";
+
   const details = document.createElement("details");
   details.className = "tool-details hidden";
   const summary = document.createElement("summary");
@@ -417,6 +433,7 @@ function addStreamingBotMessage() {
   div.appendChild(reviewContainer);
   div.appendChild(chartsContainer);
   div.appendChild(finalText);
+  div.appendChild(recoContainer);
   div.appendChild(details);
   $("messages").appendChild(div);
   scrollMessagesToBottom();
@@ -502,6 +519,34 @@ function addStreamingBotMessage() {
           },
         });
       }
+      scrollMessagesToBottom();
+    },
+    addRecommendations(datasetName, options) {
+      recoContainer.classList.remove("hidden");
+
+      const header = document.createElement("div");
+      header.className = "reco-header";
+      header.textContent = "What would you like to do with this dataset?";
+      recoContainer.appendChild(header);
+
+      const chipRow = document.createElement("div");
+      chipRow.className = "reco-chip-row";
+
+      for (const opt of options) {
+        const chip = document.createElement("button");
+        chip.className = "reco-chip";
+        chip.textContent = opt.label;
+        chip.title = opt.description || "";
+        chip.onclick = async () => {
+          chipRow.querySelectorAll(".reco-chip").forEach((b) => (b.disabled = true));
+          addMessage("user", opt.label);
+          await streamRequest({ file: lastUploadedFile, dataset_name: datasetName, action: opt.action });
+          chipRow.querySelectorAll(".reco-chip").forEach((b) => (b.disabled = false));
+        };
+        chipRow.appendChild(chip);
+      }
+
+      recoContainer.appendChild(chipRow);
       scrollMessagesToBottom();
     },
     addDuplicateReview(datasetName, clusters) {
@@ -628,6 +673,8 @@ function handleStreamEvent(bubble, eventType, data) {
     bubble.addCharts(data.charts);
   } else if (eventType === "duplicate_review") {
     bubble.addDuplicateReview(data.dataset_name, data.clusters);
+  } else if (eventType === "recommendations") {
+    bubble.addRecommendations(data.dataset_name, data.options);
   } else if (eventType === "final") {
     conversationId = data.conversation_id;
     bubble.setFinal(data.reply);
@@ -640,7 +687,7 @@ function handleStreamEvent(bubble, eventType, data) {
 // upload through the same streaming endpoint. Manually parses SSE
 // frames from a fetch ReadableStream, since EventSource can't POST
 // with auth headers or multipart bodies.
-async function streamRequest({ message, file, dataset_name }) {
+async function streamRequest({ message, file, dataset_name, action }) {
   const bubble = addStreamingBotMessage();
   $("send-btn").disabled = true;
 
@@ -649,6 +696,7 @@ async function streamRequest({ message, file, dataset_name }) {
     if (message) form.append("message", message);
     if (file) form.append("file", file);
     if (dataset_name) form.append("dataset_name", dataset_name);
+    if (action) form.append("action", action);
     if (conversationId) form.append("conversation_id", conversationId);
 
     const res = await fetch(API + "/chat/stream", {
@@ -737,6 +785,8 @@ $("dataset-file-input").addEventListener("change", async () => {
   input.value = ""; // allow re-selecting the same file later
 
   if (!datasetName) return; // user cancelled
+
+  lastUploadedFile = file; // remembered for any recommendation chip clicked afterward
 
   addMessage("user", `Uploaded ${file.name} as dataset "${datasetName}"`);
   await streamRequest({ file, dataset_name: datasetName });
