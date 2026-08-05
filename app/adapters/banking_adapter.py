@@ -20,7 +20,9 @@
 
 import io
 
+import numpy as np
 import pandas as pd
+from sklearn.linear_model import LinearRegression, LogisticRegression
 
 
 def _find_column(columns, keywords: list[str]):
@@ -121,6 +123,23 @@ def run_ifrs9(payload: dict) -> dict:
 
     df = pd.read_csv(io.StringIO(csv_content))
 
+    modeling_cols = ["RATING", "FACILITY_TYPE", "DPD", "ORIGINATION", "MATURITY", "EAD"]
+    has_modeling_cols = all(c in df.columns for c in modeling_cols)
+
+    if has_modeling_cols:
+        return _run_ifrs9_modeled(df, payload.get("scenario", "base"))
+    return _run_ifrs9_simple_aggregation(df)
+
+
+def _run_ifrs9_simple_aggregation(df: pd.DataFrame) -> dict:
+    """
+    Fallback for files that don't have enough loan attributes (rating,
+    facility type, DPD, dates) to actually model PD/LGD from -- just
+    aggregates whatever PD/LGD/EAD the file already provides. This is
+    the "aggregation, not modeling" behavior Dr. Saber's assessment
+    correctly identified as insufficient on its own -- kept only as a
+    graceful degradation path, not the primary approach anymore.
+    """
     required = ["PD", "LGD", "EAD"]
     missing = [c for c in required if c not in df.columns]
     if missing:
@@ -135,7 +154,12 @@ def run_ifrs9(payload: dict) -> dict:
         "total_exposure_ead": round(total_ead, 2),
         "total_computed_ecl": round(total_computed_ecl, 2),
         "coverage_ratio": round(total_computed_ecl / total_ead, 4) if total_ead else None,
-        "methodology_note": "ECL computed per loan as PD x LGD x EAD, then summed across the portfolio.",
+        "methodology_note": (
+            "This file doesn't have the loan attributes (rating, facility type, days past due, "
+            "origination/maturity dates) needed to model PD/LGD -- so this aggregates the PD/LGD "
+            "values already present in the file (ECL = PD x LGD x EAD, summed), rather than "
+            "computing them independently."
+        ),
     }
 
     if "STAGE" in df.columns:
@@ -146,5 +170,211 @@ def run_ifrs9(payload: dict) -> dict:
         stated_total = float(df["ECL_SAR"].sum())
         result["stated_total_ecl_in_source"] = round(stated_total, 2)
         result["matches_source_figure"] = abs(stated_total - total_computed_ecl) < max(1.0, stated_total * 0.001)
+
+    return result
+
+
+# ---------------------------------------------------------------------
+# PD and LGD modeling -- real scikit-learn model fits (LogisticRegression
+# for PD, LinearRegression for LGD), the standard textbook approach for
+# PD scorecards and LGD estimation. This is genuine orchestration: the
+# actual probability/severity estimation is scikit-learn's math, not
+# ours.
+#
+# What's still illustrative -- and clearly labeled as such -- is the
+# TRAINING DATA these models are fit on. No real historical default or
+# recovery history exists yet (Dr. Saber was asked directly for this;
+# see the change log), so each model is trained on a small synthetic
+# dataset constructed to average out near a plausible target rate per
+# rating grade / facility type. The moment real historical data arrives,
+# only the training-data construction below needs to change -- the
+# model-fitting code itself doesn't.
+# ---------------------------------------------------------------------
+
+RATING_ORDER = ["AAA", "AA", "A", "BBB", "BB", "B", "CCC", "CC", "C", "D"]
+
+ILLUSTRATIVE_TARGET_PD_BY_RATING = {
+    "AAA": 0.0002, "AA": 0.0005, "A": 0.0008, "BBB": 0.0020, "BB": 0.0080,
+    "B": 0.0350, "CCC": 0.1200, "CC": 0.2500, "C": 0.4000, "D": 1.0000,
+}
+
+ILLUSTRATIVE_TARGET_LGD_BY_FACILITY = {
+    "تمويل عقاري": 0.25,    # real estate financing -- secured by property, strong recovery
+    "تمويل تجاري": 0.40,    # commercial financing -- partial collateral
+    "تمويل مشاريع": 0.45,   # project financing -- project assets as collateral
+    "تمويل شخصي": 0.65,     # personal financing -- typically unsecured
+    "بطاقة ائتمانية": 0.75,  # credit card -- unsecured, revolving
+}
+DEFAULT_LGD = 0.55  # used only for a facility type never seen in training
+
+MACRO_SCENARIOS = {
+    "base": 1.0,
+    "adverse": 1.5,
+    "severe": 2.5,
+}
+
+_pd_model = None
+_lgd_model = None
+_lgd_facility_columns = None
+
+
+def _build_pd_model():
+    """Fits a LogisticRegression PD scorecard on illustrative synthetic
+    default data by rating grade. Cached module-wide so repeated calls
+    don't refit from scratch."""
+    global _pd_model
+    if _pd_model is not None:
+        return _pd_model
+
+    rng = np.random.default_rng(42)
+    samples_per_grade = 300
+    X, y = [], []
+    for rank, rating in enumerate(RATING_ORDER):
+        target_rate = ILLUSTRATIVE_TARGET_PD_BY_RATING[rating]
+        defaults = rng.random(samples_per_grade) < target_rate
+        X.extend([[rank]] * samples_per_grade)
+        y.extend(defaults.astype(int))
+
+    model = LogisticRegression()
+    model.fit(X, y)
+    _pd_model = model
+    return _pd_model
+
+
+def _predict_pd(ratings: pd.Series) -> tuple[pd.Series, pd.Series]:
+    model = _build_pd_model()
+    rank_map = {r: i for i, r in enumerate(RATING_ORDER)}
+    ranks = ratings.map(rank_map)
+    unknown_mask = ranks.isna()
+    ranks_filled = ranks.fillna(rank_map["B"]).astype(int)  # mid-range fallback for an unrecognized grade
+    probs = model.predict_proba(ranks_filled.to_numpy().reshape(-1, 1))[:, 1]
+    return pd.Series(probs, index=ratings.index), unknown_mask
+
+
+def _build_lgd_model():
+    """Fits a LinearRegression LGD estimator on illustrative synthetic
+    recovery severity data by facility type."""
+    global _lgd_model, _lgd_facility_columns
+    if _lgd_model is not None:
+        return _lgd_model, _lgd_facility_columns
+
+    rng = np.random.default_rng(43)
+    samples_per_type = 200
+    rows, targets = [], []
+    for ftype, target in ILLUSTRATIVE_TARGET_LGD_BY_FACILITY.items():
+        severities = np.clip(rng.normal(target, 0.05, samples_per_type), 0.01, 0.99)
+        rows.extend([ftype] * samples_per_type)
+        targets.extend(severities)
+
+    dummies = pd.get_dummies(pd.Series(rows, name="facility_type"))
+    model = LinearRegression()
+    model.fit(dummies.to_numpy(), targets)
+    _lgd_model = model
+    _lgd_facility_columns = list(dummies.columns)
+    return _lgd_model, _lgd_facility_columns
+
+
+def _predict_lgd(facility_types: pd.Series) -> tuple[pd.Series, pd.Series]:
+    model, columns = _build_lgd_model()
+    unknown_mask = ~facility_types.isin(columns)
+    dummies = pd.get_dummies(facility_types).reindex(columns=columns, fill_value=0)
+    preds = np.clip(model.predict(dummies.to_numpy()), 0.05, 0.95)
+    result = pd.Series(preds, index=facility_types.index)
+    result[unknown_mask] = DEFAULT_LGD  # never-seen facility type -- conservative fallback, not extrapolation
+    return result, unknown_mask
+
+
+def _stage_from_dpd(dpd: float) -> int:
+    """The standard IFRS 9 DPD backstop for Significant Increase in
+    Credit Risk: 30/90 days past due. This is a real, widely-used rule,
+    not an invented one -- unlike the PD/LGD tables above, it doesn't
+    need calibration data to be legitimate."""
+    if dpd > 90:
+        return 3
+    if dpd >= 30:
+        return 2
+    return 1
+
+
+def _run_ifrs9_modeled(df: pd.DataFrame, scenario: str) -> dict:
+    if scenario not in MACRO_SCENARIOS:
+        raise ValueError(f"Unknown scenario '{scenario}' -- choose one of: {list(MACRO_SCENARIOS.keys())}")
+
+    origination = pd.to_datetime(df["ORIGINATION"], errors="coerce")
+    maturity = pd.to_datetime(df["MATURITY"], errors="coerce")
+    term_years = ((maturity - origination).dt.days / 365.25).clip(lower=0.1)
+
+    base_pd, unknown_rating_mask = _predict_pd(df["RATING"])
+    unknown_ratings = df.loc[unknown_rating_mask, "RATING"].unique().tolist()
+
+    computed_stage = df["DPD"].apply(_stage_from_dpd)
+
+    # Stage 1 uses 12-month PD directly; Stage 2/3 use a lifetime
+    # (cumulative) PD over the loan's remaining term -- the actual
+    # methodological distinction IFRS 9 requires and the earlier
+    # aggregation-only approach didn't make at all.
+    lifetime_pd = 1 - (1 - base_pd) ** term_years
+    effective_pd = pd.Series(
+        [lt if stage > 1 else bp for bp, lt, stage in zip(base_pd, lifetime_pd, computed_stage)],
+        index=df.index,
+    )
+    effective_pd = (effective_pd * MACRO_SCENARIOS[scenario]).clip(upper=1.0)
+
+    lgd, unknown_facility_mask = _predict_lgd(df["FACILITY_TYPE"])
+    unknown_facilities = df.loc[unknown_facility_mask, "FACILITY_TYPE"].unique().tolist()
+
+    ead = df["EAD"]
+    computed_ecl = effective_pd * lgd * ead
+
+    total_computed_ecl = float(computed_ecl.sum())
+    total_ead = float(ead.sum())
+
+    stage_counts = computed_stage.value_counts().sort_index()
+
+    result = {
+        "loan_count": len(df),
+        "scenario": scenario,
+        "total_exposure_ead": round(total_ead, 2),
+        "total_computed_ecl": round(total_computed_ecl, 2),
+        "coverage_ratio": round(total_computed_ecl / total_ead, 4) if total_ead else None,
+        "loans_by_stage": {str(k): int(v) for k, v in stage_counts.items()},
+        "methodology_note": (
+            "PD is estimated with a fitted scikit-learn LogisticRegression (the standard PD-"
+            "scorecard technique), trained on illustrative synthetic default data by rating grade "
+            "-- not this bank's actual default history, which doesn't exist yet. Stage 1 uses "
+            "12-month PD; Stage 2/3 use lifetime PD over the loan's remaining term, per IFRS 9's "
+            "actual distinction. Staging itself is computed from the 30/90-day DPD backstop -- a "
+            "real, standard rule, not a placeholder. LGD is estimated with a fitted scikit-learn "
+            "LinearRegression by facility type, trained on illustrative synthetic recovery-severity "
+            "data (not actual recovery history, which also doesn't exist yet). EAD is taken "
+            "directly from the source data. A macro scenario multiplier is applied "
+            f"('{scenario}' = {MACRO_SCENARIOS[scenario]}x on PD); 'base', 'adverse', and 'severe' "
+            "are all available. The modeling technique (logistic/linear regression) is real and "
+            "standard -- what's illustrative is the training data these models were fit on, not "
+            "the fitting mechanism itself."
+        ),
+    }
+
+    if unknown_ratings:
+        result["unrecognized_ratings"] = unknown_ratings
+
+    if unknown_facilities:
+        result["unrecognized_facility_types"] = unknown_facilities
+
+    if "STAGE" in df.columns:
+        stated_stage = df["STAGE"]
+        stage_match_rate = float((stated_stage == computed_stage).mean())
+        result["stage_agreement_with_source"] = round(stage_match_rate, 4)
+
+    if "ECL_SAR" in df.columns:
+        stated_total = float(df["ECL_SAR"].sum())
+        result["stated_total_ecl_in_source"] = round(stated_total, 2)
+        result["matches_source_figure"] = abs(stated_total - total_computed_ecl) < max(1.0, stated_total * 0.001)
+        result["difference_from_source_note"] = (
+            "This figure is expected to differ from the source's stated ECL -- it's computed from "
+            "independently modeled PD/LGD (illustrative), not from the file's own pre-filled PD/LGD "
+            "columns. A close match to source staging (see stage_agreement_with_source) while ECL "
+            "differs is the expected, correct signature of independent modeling, not an error."
+        )
 
     return result
