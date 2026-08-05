@@ -154,29 +154,60 @@ def test_ifrs9_scenarios_attributed_to_dr_saber_with_real_sama_context():
     assert "SAMA" in base["scenario_description"]
     assert "1.2%" in base["scenario_description"]  # real NPL ratio context
     assert "Dr. Saber" in base["scenario_description"] or "specification" in base["scenario_description"]
-    assert banking_adapter.MACRO_SCENARIOS["optimistic"]["pd_multiplier"] == 0.85
+    assert banking_adapter.MACRO_SCENARIOS["optimistic"]["pd_multiplier"] == 0.75
     assert banking_adapter.MACRO_SCENARIOS["base"]["pd_multiplier"] == 1.0
-    assert banking_adapter.MACRO_SCENARIOS["adverse"]["pd_multiplier"] == 1.25
+    assert banking_adapter.MACRO_SCENARIOS["adverse"]["pd_multiplier"] == 1.50
 
 
-def test_lgd_uses_dr_sabers_stated_collateral_rates_for_clear_mappings():
-    """Real estate, salary assignment, and unsecured facility types
-    should fit close to Dr. Saber's stated rates (25%/30%/65%), since
-    that's the training target now -- not our own invented numbers."""
+def test_lgd_uses_dr_sabers_full_parameter_file_rates_for_all_facility_types():
+    """All 5 facility types in the data now have Dr. Saber's exact
+    rates from his parameter file -- nothing left as an unresolved
+    placeholder."""
     result = banking_adapter.run_ifrs9({"csv_content": MODELED_IFRS9_CSV})
     lgd_by_type = result["modeled_lgd_by_facility_type"]
 
-    assert abs(lgd_by_type["تمويل عقاري"] - 0.25) < 0.05      # real estate
-    assert abs(lgd_by_type["تمويل شخصي"] - 0.30) < 0.05        # salary assignment
-    assert abs(lgd_by_type["بطاقة ائتمانية"] - 0.65) < 0.05    # unsecured
+    assert abs(lgd_by_type["تمويل عقاري"] - 0.25) < 0.05       # real estate
+    assert abs(lgd_by_type["تمويل شخصي"] - 0.30) < 0.05         # salary-based
+    assert abs(lgd_by_type["بطاقة ائتمانية"] - 0.65) < 0.05     # unsecured
+    assert abs(lgd_by_type["تمويل تجاري"] - 0.45) < 0.05        # commercial (was pending, now resolved)
+    assert "facility_types_pending_dr_saber_clarification" not in result
 
 
-def test_pending_clarification_facility_types_are_flagged():
-    """Facility types that don't map cleanly onto Dr. Saber's 4
-    categories must be explicitly flagged, not silently guessed."""
+def test_scenarios_adjust_both_pd_and_lgd():
+    """Dr. Saber's full parameter file adjusts LGD by scenario too, not
+    just PD -- collateral recovers less under stress."""
+    optimistic = banking_adapter.run_ifrs9({"csv_content": MODELED_IFRS9_CSV, "scenario": "optimistic"})
+    adverse = banking_adapter.run_ifrs9({"csv_content": MODELED_IFRS9_CSV, "scenario": "adverse"})
+
+    assert optimistic["portfolio_weighted_average_lgd"] < adverse["portfolio_weighted_average_lgd"]
+    assert banking_adapter.MACRO_SCENARIOS["adverse"]["lgd_multiplier"] == 1.15
+    assert banking_adapter.MACRO_SCENARIOS["optimistic"]["lgd_multiplier"] == 0.90
+
+
+def test_expected_ecl_across_scenarios_is_probability_weighted():
+    """Dr. Saber's parameter file gives probability weights (25/55/20%)
+    for a blended expected-ECL figure across all three scenarios."""
     result = banking_adapter.run_ifrs9({"csv_content": MODELED_IFRS9_CSV})
-    pending = result.get("facility_types_pending_dr_saber_clarification", [])
-    assert "تمويل تجاري" in pending  # commercial financing, present in the test fixture
+
+    weights = sum(p["probability_weight"] for p in banking_adapter.MACRO_SCENARIOS.values())
+    assert abs(weights - 1.0) < 1e-9
+
+    expected = (
+        result["ecl_by_scenario"]["optimistic"] * 0.25
+        + result["ecl_by_scenario"]["base"] * 0.55
+        + result["ecl_by_scenario"]["adverse"] * 0.20
+    )
+    assert abs(result["expected_ecl_across_scenarios"] - expected) < 1.0
+
+
+def test_pd_interpolates_grades_missing_from_dr_sabers_table():
+    """CC and C aren't in Dr. Saber's 8-grade table -- confirm they're
+    interpolated between his CCC and D values, staying monotonic."""
+    assert banking_adapter.ILLUSTRATIVE_TARGET_PD_BY_RATING["CCC"] < banking_adapter.ILLUSTRATIVE_TARGET_PD_BY_RATING["CC"]
+    assert banking_adapter.ILLUSTRATIVE_TARGET_PD_BY_RATING["CC"] < banking_adapter.ILLUSTRATIVE_TARGET_PD_BY_RATING["C"]
+    assert banking_adapter.ILLUSTRATIVE_TARGET_PD_BY_RATING["C"] < banking_adapter.ILLUSTRATIVE_TARGET_PD_BY_RATING["D"]
+    assert "CC" in banking_adapter.RATINGS_INTERPOLATED_NOT_IN_SABER_TABLE
+    assert "C" in banking_adapter.RATINGS_INTERPOLATED_NOT_IN_SABER_TABLE
 
 
 def test_staging_triggers_disclose_what_was_actually_evaluated():
@@ -189,6 +220,8 @@ def test_staging_triggers_disclose_what_was_actually_evaluated():
     not_evaluated_text = " ".join(result["staging_triggers_not_evaluated"])
     assert "watchlist" in not_evaluated_text
     assert "rating downgrade" in not_evaluated_text
+    assert "restructuring" in not_evaluated_text
+    assert "legal proceedings" in not_evaluated_text
 
 
 def test_ifrs9_modeled_rejects_unknown_scenario():

@@ -194,66 +194,75 @@ def _run_ifrs9_simple_aggregation(df: pd.DataFrame) -> dict:
 RATING_ORDER = ["AAA", "AA", "A", "BBB", "BB", "B", "CCC", "CC", "C", "D"]
 
 ILLUSTRATIVE_TARGET_PD_BY_RATING = {
-    "AAA": 0.0002, "AA": 0.0005, "A": 0.0008, "BBB": 0.0020, "BB": 0.0080,
-    "B": 0.0350, "CCC": 0.1200, "CC": 0.2500, "C": 0.4000, "D": 1.0000,
+    # Base (Most Likely) 12-month PD, exactly as specified in Dr. Saber's
+    # DataOS_IFRS9_Parameters file (PD Lookup Table by Credit Rating,
+    # referenced from SAMA Financial Stability Reports). His table
+    # doesn't include CC/C grades (it has 8: AAA/AA/A/BBB/BB/B/CCC/D) --
+    # our data has 10, so CC and C are geometrically interpolated
+    # between his CCC (25%) and D (100%) values, disclosed as such below.
+    "AAA": 0.0010, "AA": 0.0025, "A": 0.0060, "BBB": 0.0150, "BB": 0.0400,
+    "B": 0.1000, "CCC": 0.2500,
+    "CC": 0.3969,   # interpolated between Dr. Saber's CCC (25%) and D (100%) -- not in his table
+    "C": 0.6300,    # interpolated between Dr. Saber's CCC (25%) and D (100%) -- not in his table
+    "D": 1.0000,
 }
+RATINGS_INTERPOLATED_NOT_IN_SABER_TABLE = ["CC", "C"]
 
-# LGD by collateral type -- Dr. Saber's stated professional assumptions
-# ("reasonable and consistent with Saudi banking practice"), not our
-# own invention. Mapped from FACILITY_TYPE (what the data has) to his
-# 4 collateral categories where the mapping is clear. Two facility
-# types (commercial financing, project financing) don't map cleanly
-# onto his categories -- held at an illustrative placeholder pending
-# his clarification (asked directly, see change log), not guessed.
+# LGD by facility type -- Dr. Saber's exact stated rates from his
+# DataOS_IFRS9_Parameters file (LGD Parameters by Facility Type sheet),
+# not our own invention. All 5 facility types present in this dataset
+# now have a direct, named rate from his file -- nothing left as an
+# unresolved placeholder.
 ILLUSTRATIVE_TARGET_LGD_BY_FACILITY = {
-    "تمويل عقاري": 0.25,     # real estate financing -> Dr. Saber: Real estate, 25%
-    "تمويل شخصي": 0.30,      # personal financing -> Dr. Saber: Salary assignment, 30%
-    "بطاقة ائتمانية": 0.65,   # credit card -> Dr. Saber: Unsecured, 65%
-    "تمويل تجاري": 0.45,      # commercial financing -- PENDING his clarification, placeholder
-    "تمويل مشاريع": 0.45,     # project financing -- PENDING his clarification, placeholder
+    "تمويل عقاري": 0.25,      # Real Estate Financing -- strong collateral, ~75% recovery
+    "تمويل مشاريع": 0.35,     # Project Financing -- structured, asset-backed but illiquid
+    "تمويل مركبات": 0.40,     # Vehicle Financing -- depreciating asset (not in this file's data, kept for completeness)
+    "تمويل تجاري": 0.45,      # Commercial Financing -- mixed collateral, harder to liquidate
+    "تمويل شخصي": 0.30,       # Personal/Salary-Based Financing -- salary assignment, predictable recovery
+    "بطاقة ائتمانية": 0.65,    # Credit Card / Unsecured -- no collateral, lowest recovery
 }
-FACILITY_TYPES_PENDING_CLARIFICATION = {"تمويل تجاري", "تمويل مشاريع"}
 DEFAULT_LGD = 0.55  # used only for a facility type never seen in training
 
-# Macro scenario definitions -- Dr. Saber's own stated structure and
-# multipliers (three scenarios, as IFRS 9 requires; we previously had
-# base/adverse/severe, which was our own structure, not his). Sourced
-# by him to SAMA quarterly Economic Reports. Real SAMA context (2025
-# Financial Stability Report, fetched directly) is layered in for the
-# base scenario: actual 2024 GDP growth was 2.7%, unemployment 7.4%,
-# and the aggregate Saudi banking sector NPL ratio was 1.2% -- a real,
-# citable comparison point for the portfolio's own modeled PD, though
-# not a like-for-like figure (NPL ratio is a whole-sector actual
-# outcome; portfolio PD here is this specific test file's modeled
-# forward-looking rate).
+# Macro scenario definitions -- Dr. Saber's exact structure from his
+# DataOS_IFRS9_Parameters file (Macroeconomic Scenarios sheet), sourced
+# by him to SAMA Quarterly Economic Reports. Includes both a PD
+# multiplier AND an LGD multiplier per scenario -- LGD isn't scenario-
+# invariant either (collateral recovers less in a downturn too), which
+# our earlier version didn't model. Probability weights are included
+# for a probability-weighted "expected ECL across scenarios" figure.
 MACRO_SCENARIOS = {
     "optimistic": {
-        "pd_multiplier": 0.85,
+        "pd_multiplier": 0.75,
+        "lgd_multiplier": 0.90,
+        "probability_weight": 0.25,
         "description": (
-            "Per Dr. Saber's specification: GDP +3%, oil $90+ per barrel. Source: SAMA "
-            "quarterly Economic Reports."
+            "Per Dr. Saber's DataOS_IFRS9_Parameters file: GDP +3.5%, oil $90+ per barrel, "
+            "unemployment 4.5%, credit growth +8%. Source: SAMA Quarterly Economic Reports."
         ),
     },
     "base": {
         "pd_multiplier": 1.0,
+        "lgd_multiplier": 1.0,
+        "probability_weight": 0.55,
         "description": (
-            "Per Dr. Saber's specification: GDP +2%, oil $75 per barrel -- PD unchanged. "
-            "Source: SAMA quarterly Economic Reports. Real context from SAMA's 2025 Financial "
-            "Stability Report: actual 2024 real GDP growth was 2.7%, unemployment 7.4% "
-            "(historic low), and the aggregate Saudi banking sector NPL ratio was 1.2% "
-            "(down from 1.5% in 2023) -- a real, citable sector-wide figure, though not "
-            "directly comparable to this portfolio's own modeled PD (a specific test "
-            "portfolio's forward-looking rate vs. a whole-sector historical outcome)."
+            "Per Dr. Saber's DataOS_IFRS9_Parameters file (\"Most Likely\"): GDP +2.0%, oil $75 "
+            "per barrel, unemployment 6.0%, credit growth +4%. Source: SAMA Quarterly Economic "
+            "Reports. Real context from SAMA's 2025 Financial Stability Report: actual 2024 GDP "
+            "growth was 2.7%, unemployment 7.4% (historic low), and the aggregate Saudi banking "
+            "sector NPL ratio was 1.2% (down from 1.5% in 2023) -- a real, citable sector-wide "
+            "figure, though not directly comparable to this portfolio's own modeled PD."
         ),
     },
     "adverse": {
-        "pd_multiplier": 1.25,
+        "pd_multiplier": 1.50,
+        "lgd_multiplier": 1.15,
+        "probability_weight": 0.20,
         "description": (
-            "Per Dr. Saber's specification: GDP -1%, oil $50 per barrel. Source: SAMA "
-            "quarterly Economic Reports. Directionally consistent with SAMA's own published "
-            "adverse stress-test narrative (2025 Financial Stability Report, Box 3.1): oil "
-            "price weakness, rising unemployment, and credit risk intensifying, particularly "
-            "in real estate."
+            "Per Dr. Saber's DataOS_IFRS9_Parameters file: GDP -1.0%, oil $50 per barrel, "
+            "unemployment 9.0%, credit growth -2%. Source: SAMA Quarterly Economic Reports. "
+            "Directionally consistent with SAMA's own published adverse stress-test narrative "
+            "(2025 Financial Stability Report, Box 3.1): oil price weakness, rising "
+            "unemployment, and credit risk intensifying, particularly in real estate."
         ),
     },
 }
@@ -331,10 +340,13 @@ def _predict_lgd(facility_types: pd.Series) -> tuple[pd.Series, pd.Series]:
 
 def _compute_staging(df: pd.DataFrame) -> tuple[pd.Series, list[str], list[str]]:
     """
-    Computes IFRS 9 staging using Dr. Saber's specified multi-trigger
-    SICR rules where the underlying data actually supports them:
-    - Stage 2: DPD > 30, OR a 2-notch rating downgrade, OR a watchlist flag
-    - Stage 3: DPD > 90, OR restructured, OR formal default
+    Computes IFRS 9 staging using Dr. Saber's multi-trigger SICR rules
+    (DataOS_IFRS9_Parameters, Loan Staging Rules sheet), evaluated where
+    the underlying data actually supports them:
+    - Stage 2: DPD > 30, OR a 2-notch rating downgrade, OR a watchlist
+      flag, OR the borrower requests restructuring
+    - Stage 3: DPD > 90, OR the loan is formally restructured, OR legal
+      proceedings are initiated, OR a formal default is declared
     The DPD backstop (30/90 days) is a real, standard rule and is
     always evaluated. The other triggers only fire if the corresponding
     column exists in the uploaded file -- this keeps the logic honest
@@ -353,13 +365,29 @@ def _compute_staging(df: pd.DataFrame) -> tuple[pd.Series, list[str], list[str]]
     else:
         not_evaluated.append("watchlist flag (no watchlist column in this file)")
 
+    restructure_request_col = _find_column(df.columns, ["restructure_request", "restructuring_requested"])
+    if restructure_request_col:
+        flagged = df[restructure_request_col].fillna(False).astype(bool)
+        stage = stage.where(~(flagged & (stage == 1)), 2)
+        evaluated.append("borrower-requested restructuring flag")
+    else:
+        not_evaluated.append("borrower-requested restructuring flag (no such column in this file)")
+
     restructured_col = _find_column(df.columns, ["restructured", "restructuring"])
     if restructured_col:
         flagged = df[restructured_col].fillna(False).astype(bool)
         stage = stage.where(~flagged, 3)
-        evaluated.append("restructured flag")
+        evaluated.append("formally restructured flag")
     else:
-        not_evaluated.append("restructured flag (no restructuring column in this file)")
+        not_evaluated.append("formally restructured flag (no restructuring column in this file)")
+
+    legal_col = _find_column(df.columns, ["legal_proceedings", "legal_action"])
+    if legal_col:
+        flagged = df[legal_col].fillna(False).astype(bool)
+        stage = stage.where(~flagged, 3)
+        evaluated.append("legal proceedings initiated flag")
+    else:
+        not_evaluated.append("legal proceedings initiated flag (no such column in this file)")
 
     default_col = _find_column(df.columns, ["formal_default", "default_flag", "is_default"])
     if default_col:
@@ -400,16 +428,29 @@ def _run_ifrs9_modeled(df: pd.DataFrame, scenario: str) -> dict:
         [lt if stage > 1 else bp for bp, lt, stage in zip(base_pd, lifetime_pd, computed_stage)],
         index=df.index,
     )
-    effective_pd = (effective_pd * MACRO_SCENARIOS[scenario]["pd_multiplier"]).clip(upper=1.0)
 
-    lgd, unknown_facility_mask = _predict_lgd(df["FACILITY_TYPE"])
+    base_lgd, unknown_facility_mask = _predict_lgd(df["FACILITY_TYPE"])
     unknown_facilities = df.loc[unknown_facility_mask, "FACILITY_TYPE"].unique().tolist()
 
-    pending_clarification_facilities = sorted(
-        set(df["FACILITY_TYPE"].dropna().unique()) & FACILITY_TYPES_PENDING_CLARIFICATION
+    ead = df["EAD"]
+
+    # Compute ECL under all three scenarios -- needed both for the
+    # requested scenario's result and for the probability-weighted
+    # expected-ECL figure across all of them (Dr. Saber's parameter
+    # file includes scenario probability weights specifically for this).
+    ecl_by_scenario = {}
+    for scenario_name, scenario_params in MACRO_SCENARIOS.items():
+        scenario_pd = (effective_pd * scenario_params["pd_multiplier"]).clip(upper=1.0)
+        scenario_lgd = (base_lgd * scenario_params["lgd_multiplier"]).clip(upper=1.0)
+        ecl_by_scenario[scenario_name] = float((scenario_pd * scenario_lgd * ead).sum())
+
+    effective_pd = (effective_pd * MACRO_SCENARIOS[scenario]["pd_multiplier"]).clip(upper=1.0)
+    lgd = (base_lgd * MACRO_SCENARIOS[scenario]["lgd_multiplier"]).clip(upper=1.0)
+
+    expected_ecl_across_scenarios = sum(
+        ecl_by_scenario[name] * params["probability_weight"] for name, params in MACRO_SCENARIOS.items()
     )
 
-    ead = df["EAD"]
     computed_ecl = effective_pd * lgd * ead
 
     total_computed_ecl = float(computed_ecl.sum())
@@ -443,6 +484,8 @@ def _run_ifrs9_modeled(df: pd.DataFrame, scenario: str) -> dict:
         "scenario": scenario,
         "total_exposure_ead": round(total_ead, 2),
         "total_computed_ecl": round(total_computed_ecl, 2),
+        "expected_ecl_across_scenarios": round(expected_ecl_across_scenarios, 2),
+        "ecl_by_scenario": {name: round(val, 2) for name, val in ecl_by_scenario.items()},
         "coverage_ratio": round(total_computed_ecl / total_ead, 4) if total_ead else None,
         "loans_by_stage": {str(k): int(v) for k, v in stage_counts.items()},
         "staging_triggers_evaluated": staging_triggers_evaluated,
@@ -455,25 +498,30 @@ def _run_ifrs9_modeled(df: pd.DataFrame, scenario: str) -> dict:
         "lgd_model": "scikit-learn LinearRegression (fitted)",
         "scenario_description": MACRO_SCENARIOS[scenario]["description"],
         "methodology_note": (
-            "This methodology follows Dr. Mohamed Saber's suggested approach directly. PD is "
-            "estimated with a fitted scikit-learn LogisticRegression (the standard PD-scorecard "
-            "technique), trained on illustrative default data by rating grade (he pointed to "
-            "SAMA's Financial Stability Reports as the intended source; the report's publicly "
-            "available figures give an aggregate banking-sector NPL ratio, not a grade-by-grade "
-            "table, so the grade-level curve remains illustrative pending a more granular source). "
-            "Stage 1 uses 12-month PD; Stage 2/3 use lifetime PD over the loan's remaining term, "
-            "per IFRS 9's actual distinction. Staging uses his multi-trigger SICR rules -- see "
-            "staging_triggers_evaluated / staging_triggers_not_evaluated for exactly which "
-            "triggers this file's data actually supports. LGD uses his stated collateral-type "
-            "rates directly (Real estate 25%, Salary assignment 30%, Unsecured 65%) for the "
-            "facility types that map cleanly -- see facility_types_pending_dr_saber_clarification "
-            "for the two that don't yet. EAD is taken directly from the source data. The macro "
-            f"scenario ('{scenario}' = {MACRO_SCENARIOS[scenario]['pd_multiplier']}x on PD) uses "
-            "his exact three-scenario structure (optimistic/base/adverse) and multipliers, sourced "
-            "by him to SAMA quarterly Economic Reports -- see scenario_description for the real "
-            "context layered in. What remains illustrative, pending his data: the PD training set "
-            "itself and the precise multiplier-to-shock sensitivity, which needs real historical "
-            "default outcomes to calibrate."
+            "This methodology follows Dr. Mohamed Saber's DataOS_IFRS9_Parameters file directly "
+            "-- his exact PD table, LGD-by-facility rates, staging rules, and macro scenario "
+            "structure, not our own invented numbers. PD is estimated with a fitted scikit-learn "
+            "LogisticRegression (the standard PD-scorecard technique), trained on his stated base "
+            "12-month PD values by rating (sourced by him to SAMA's Financial Stability Reports). "
+            "His table covers 8 of the 10 grades in this data; CC and C are geometrically "
+            "interpolated between his CCC and D values -- see modeled_pd_by_rating and the "
+            "RATINGS_INTERPOLATED_NOT_IN_SABER_TABLE note. Stage 1 uses 12-month PD; Stage 2/3 use "
+            "lifetime PD over the loan's remaining term, per IFRS 9's actual distinction. Staging "
+            "uses his multi-trigger SICR rules -- see staging_triggers_evaluated / "
+            "staging_triggers_not_evaluated for exactly which triggers this file's data actually "
+            "supports (only the DPD backstop today). LGD uses his exact stated rates for all 5 "
+            "facility types in this data (Real estate 25%, Project financing 35%, Commercial 45%, "
+            "Salary-based 30%, Unsecured/credit card 65%) -- fitted with scikit-learn "
+            "LinearRegression, not looked up directly, but trained to land on his numbers. Both PD "
+            "and LGD are adjusted by his scenario multipliers -- LGD isn't scenario-invariant "
+            f"either (collateral recovers less under stress). This scenario ('{scenario}') applies "
+            f"{MACRO_SCENARIOS[scenario]['pd_multiplier']}x to PD and "
+            f"{MACRO_SCENARIOS[scenario]['lgd_multiplier']}x to LGD. "
+            "expected_ecl_across_scenarios is his probability-weighted blend across all three "
+            "(25%/55%/20%). What remains illustrative, pending his historical data: the underlying "
+            "training figures themselves (not fitted from this bank's actual defaults/recoveries, "
+            "which don't exist yet) -- the parameters and mechanism are his and real; the "
+            "calibration-to-actual-outcomes step is what's still ahead."
         ),
     }
 
@@ -482,16 +530,6 @@ def _run_ifrs9_modeled(df: pd.DataFrame, scenario: str) -> dict:
 
     if unknown_facilities:
         result["unrecognized_facility_types"] = unknown_facilities
-
-    if pending_clarification_facilities:
-        result["facility_types_pending_dr_saber_clarification"] = pending_clarification_facilities
-        result["pending_clarification_note"] = (
-            "The facility type(s) listed above don't map cleanly onto Dr. Saber's 4 stated "
-            "collateral categories (Real estate/Vehicle/Salary assignment/Unsecured). Held at "
-            "an illustrative 45% LGD placeholder pending his direct clarification (asked "
-            f"{', '.join(pending_clarification_facilities)} specifically) -- not guessed on "
-            "his behalf."
-        )
 
     if "STAGE" in df.columns:
         stated_stage = df["STAGE"]
