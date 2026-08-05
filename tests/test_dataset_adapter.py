@@ -2,6 +2,7 @@ import io
 
 from fastapi.testclient import TestClient
 
+import app.main as main
 from app.main import app
 from app.adapters import dataset_adapter
 
@@ -179,6 +180,27 @@ def _signed_up_token(email):
         json={"name": "Reco Tester", "email": email, "password": "secret123"},
     )
     return r.json()["token"]
+
+
+def test_select_ifrs9_scenario_offers_all_three_without_computing_anything():
+    """Clicking the IFRS 9 chip must offer all three scenarios up front
+    -- never silently compute a default one."""
+    from app.adapters import banking_adapter
+
+    gen = main._run_recommended_action_events("select_ifrs9_scenario", "some_dataset", None, 1, 1)
+    events = list(gen)
+
+    reco_events = [e for e in events if e["type"] == "recommendations"]
+    assert len(reco_events) == 1
+    offered_scenarios = {opt["scenario"] for opt in reco_events[0]["options"]}
+    assert offered_scenarios == set(banking_adapter.MACRO_SCENARIOS.keys())
+
+    tool_result_events = [e for e in events if e["type"] == "tool_result"]
+    assert tool_result_events == []  # nothing was computed
+
+    final_events = [e for e in events if e["type"] == "final"]
+    assert len(final_events) == 1
+    assert final_events[0]["ran_intent"] is None
 
 
 def test_recommended_action_find_duplicates_reads_landed_silver_no_file_needed(tmp_path, monkeypatch):

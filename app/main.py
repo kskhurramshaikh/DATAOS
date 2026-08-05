@@ -343,9 +343,9 @@ def _dataset_upload_events(dataset_name: str, raw_bytes: bytes, csv_content: str
                 })
             if any("ifrs" in s.lower() for s in sheet_names):
                 recommendations.append({
-                    "action": "compute_ifrs9",
+                    "action": "select_ifrs9_scenario",
                     "label": "💰 Compute IFRS 9 (PD, LGD & ECL)",
-                    "description": "Model probability of default, loss given default, and expected credit loss -- with scenario analysis -- from the IFRS 9 portfolio sheet.",
+                    "description": "Model probability of default, loss given default, and expected credit loss -- pick a macro scenario to model.",
                 })
         silver_csv_for_check = raw_result.get("output", {}).get("storage", {}).get("silver")
         if silver_csv_for_check:
@@ -390,7 +390,28 @@ def _dataset_upload_events(dataset_name: str, raw_bytes: bytes, csv_content: str
 # side effects of uploading a file.
 # ---------------------------------------------------------------------
 
-def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: bytes | None, user_id: int, conv_id: int):
+def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: bytes | None, user_id: int, conv_id: int, scenario: str = "base"):
+    if action == "select_ifrs9_scenario":
+        # No computation yet -- just let the user pick which macro
+        # scenario to model. Nothing runs, no LLM call needed, until
+        # they actually choose one of the three.
+        scenario_labels = {"optimistic": "📈 Optimistic scenario", "base": "📊 Base scenario", "adverse": "📉 Adverse scenario"}
+        options = [
+            {
+                "action": "compute_ifrs9",
+                "scenario": s,
+                "label": scenario_labels.get(s, s.title()),
+                "description": banking_adapter.MACRO_SCENARIOS[s]["description"],
+            }
+            for s in banking_adapter.MACRO_SCENARIOS
+        ]
+        yield {"type": "recommendations", "dataset_name": dataset_name, "options": options}
+        reply = "Which macro scenario would you like to model for IFRS 9?"
+        chat_store.add_message(conv_id, "user", f'Compute IFRS 9 on dataset "{dataset_name}".')
+        chat_store.add_message(conv_id, "assistant", reply)
+        yield {"type": "final", "reply": reply, "conversation_id": conv_id, "ran_intent": None}
+        return
+
     intent_map = {
         "assess_ndi": ("assess_ndi_readiness", "assess_data_governance_readiness", "ndi_scorecard_engine"),
         "compute_ifrs9": ("compute_ifrs9_ecl", "compute_expected_credit_loss", "ifrs9_ecl_engine"),
@@ -401,7 +422,8 @@ def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: by
         return
 
     intent, capability, tool = intent_map[action]
-    user_message = f'Run "{intent}" on dataset "{dataset_name}".'
+    scenario_note = f' (scenario: "{scenario}")' if action == "compute_ifrs9" else ""
+    user_message = f'Run "{intent}" on dataset "{dataset_name}"{scenario_note}.'
 
     yield {"type": "status", "stage": "compliance", "label": "Checking compliance rules..."}
     decision = evaluate(intent, {})
@@ -422,7 +444,7 @@ def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: by
                 yield {"type": "status", "stage": action, "label": f"Running {intent}..."}
                 sheet_csv = dataset_adapter.extract_specific_sheet_csv(raw_bytes, sheet)
                 output = banking_adapter.run_ndi({"csv_content": sheet_csv}) if action == "assess_ndi" \
-                    else banking_adapter.run_ifrs9({"csv_content": sheet_csv})
+                    else banking_adapter.run_ifrs9({"csv_content": sheet_csv, "scenario": scenario})
             else:  # find_duplicates
                 yield {"type": "status", "stage": "dedup", "label": "Checking for duplicate customer records..."}
                 silver_csv = dataset_adapter.read_silver_csv(dataset_name)
@@ -443,6 +465,28 @@ def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: by
             ran_intent = None
 
     yield {"type": "tool_result", "data": raw_result}
+
+    # For IFRS 9 specifically, offer the other two scenarios as one-click
+    # follow-ups -- otherwise there's no way to see optimistic/adverse
+    # without re-triggering the chip and guessing there's a scenario
+    # parameter at all.
+    if action == "compute_ifrs9" and ran_intent:
+        other_scenarios = [s for s in banking_adapter.MACRO_SCENARIOS if s != scenario]
+        scenario_labels = {"optimistic": "📈 Optimistic scenario", "base": "📊 Base scenario", "adverse": "📉 Adverse scenario"}
+        recommendations = [
+            {
+                "action": "compute_ifrs9",
+                "scenario": s,
+                "label": scenario_labels.get(s, s.title()),
+                "description": banking_adapter.MACRO_SCENARIOS[s]["description"],
+            }
+            for s in other_scenarios
+        ]
+        yield {
+            "type": "recommendations",
+            "dataset_name": dataset_name,
+            "options": recommendations,
+        }
 
     charts = suggest_visualization(ran_intent or intent, raw_result)
     if charts:
@@ -466,6 +510,7 @@ async def chat_stream(
     dataset_name: str | None = Form(None),
     conversation_id: int | None = Form(None),
     action: str | None = Form(None),
+    scenario: str = Form("base"),
     user: dict = Depends(auth.get_current_user),
 ):
     conv_id = _resolve_conversation(conversation_id, user["id"])
@@ -488,7 +533,7 @@ async def chat_stream(
     if action and action != "add_dataset":
         # A recommendation chip was clicked -- run just that one
         # follow-up analysis, not the full upload flow again.
-        sync_gen = _run_recommended_action_events(action, dataset_name, raw_bytes, user["id"], conv_id)
+        sync_gen = _run_recommended_action_events(action, dataset_name, raw_bytes, user["id"], conv_id, scenario)
     elif csv_content is not None:
         sync_gen = _dataset_upload_events(dataset_name, raw_bytes, csv_content, filename, sheet_used, user["id"], conv_id)
     else:

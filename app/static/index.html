@@ -540,7 +540,7 @@ function addStreamingBotMessage() {
         chip.onclick = async () => {
           chipRow.querySelectorAll(".reco-chip").forEach((b) => (b.disabled = true));
           addMessage("user", opt.label);
-          await streamRequest({ file: lastUploadedFile, dataset_name: datasetName, action: opt.action });
+          await streamRequest({ file: lastUploadedFile, dataset_name: datasetName, action: opt.action, scenario: opt.scenario });
           chipRow.querySelectorAll(".reco-chip").forEach((b) => (b.disabled = false));
         };
         chipRow.appendChild(chip);
@@ -687,7 +687,7 @@ function handleStreamEvent(bubble, eventType, data) {
 // upload through the same streaming endpoint. Manually parses SSE
 // frames from a fetch ReadableStream, since EventSource can't POST
 // with auth headers or multipart bodies.
-async function streamRequest({ message, file, dataset_name, action }) {
+async function streamRequest({ message, file, dataset_name, action, scenario }) {
   const bubble = addStreamingBotMessage();
   $("send-btn").disabled = true;
 
@@ -697,6 +697,7 @@ async function streamRequest({ message, file, dataset_name, action }) {
     if (file) form.append("file", file);
     if (dataset_name) form.append("dataset_name", dataset_name);
     if (action) form.append("action", action);
+    if (scenario) form.append("scenario", scenario);
     if (conversationId) form.append("conversation_id", conversationId);
 
     const res = await fetch(API + "/chat/stream", {
