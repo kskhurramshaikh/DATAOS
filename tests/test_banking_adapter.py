@@ -111,6 +111,24 @@ def test_ifrs9_modeled_path_used_when_attributes_present():
     assert "scikit-learn LogisticRegression" in result["methodology_note"]
 
 
+def test_ifrs9_modeled_exposes_pd_and_lgd_as_first_class_results():
+    """PD and LGD must be visible results in their own right, not just
+    hidden inputs to the final ECL number."""
+    result = banking_adapter.run_ifrs9({"csv_content": MODELED_IFRS9_CSV})
+
+    assert result["portfolio_weighted_average_pd"] is not None
+    assert 0 < result["portfolio_weighted_average_pd"] < 1
+    assert result["portfolio_weighted_average_lgd"] is not None
+    assert 0 < result["portfolio_weighted_average_lgd"] < 1
+
+    assert set(result["modeled_pd_by_rating"].keys()) == {"AAA", "B", "CCC", "D"}
+    assert set(result["modeled_lgd_by_facility_type"].keys()) == {
+        "تمويل عقاري", "تمويل شخصي", "بطاقة ائتمانية", "تمويل تجاري",
+    }
+    # AAA should have a lower modeled PD than D
+    assert result["modeled_pd_by_rating"]["AAA"] < result["modeled_pd_by_rating"]["D"]
+
+
 def test_ifrs9_modeled_staging_matches_dpd_backstop():
     result = banking_adapter.run_ifrs9({"csv_content": MODELED_IFRS9_CSV})
     # DPD 0, 15 -> stage 1; DPD 45 -> stage 2; DPD 150 -> stage 3

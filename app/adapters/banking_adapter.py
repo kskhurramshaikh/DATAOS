@@ -329,6 +329,27 @@ def _run_ifrs9_modeled(df: pd.DataFrame, scenario: str) -> dict:
     total_computed_ecl = float(computed_ecl.sum())
     total_ead = float(ead.sum())
 
+    # PD and LGD are the whole point of an IFRS 9 engine, not just
+    # inputs hidden inside the final ECL number -- surface them as
+    # first-class results: the modeled rate per rating/facility type
+    # actually present in this portfolio, plus EAD-weighted portfolio
+    # averages.
+    pd_model = _build_pd_model()
+    modeled_pd_by_rating = {}
+    for rating in sorted(df["RATING"].dropna().unique(), key=lambda r: RATING_ORDER.index(r) if r in RATING_ORDER else len(RATING_ORDER)):
+        if rating in RATING_ORDER:
+            rank = RATING_ORDER.index(rating)
+            pd_value = float(pd_model.predict_proba([[rank]])[0][1])
+            modeled_pd_by_rating[rating] = round(pd_value, 6)
+
+    modeled_lgd_by_facility_type = {}
+    for ftype in df["FACILITY_TYPE"].dropna().unique():
+        lgd_pred, _ = _predict_lgd(pd.Series([ftype]))
+        modeled_lgd_by_facility_type[str(ftype)] = round(float(lgd_pred.iloc[0]), 4)
+
+    portfolio_weighted_avg_pd = float((effective_pd * ead).sum() / total_ead) if total_ead else None
+    portfolio_weighted_avg_lgd = float((lgd * ead).sum() / total_ead) if total_ead else None
+
     stage_counts = computed_stage.value_counts().sort_index()
 
     result = {
@@ -338,6 +359,10 @@ def _run_ifrs9_modeled(df: pd.DataFrame, scenario: str) -> dict:
         "total_computed_ecl": round(total_computed_ecl, 2),
         "coverage_ratio": round(total_computed_ecl / total_ead, 4) if total_ead else None,
         "loans_by_stage": {str(k): int(v) for k, v in stage_counts.items()},
+        "portfolio_weighted_average_pd": round(portfolio_weighted_avg_pd, 6) if portfolio_weighted_avg_pd is not None else None,
+        "portfolio_weighted_average_lgd": round(portfolio_weighted_avg_lgd, 4) if portfolio_weighted_avg_lgd is not None else None,
+        "modeled_pd_by_rating": modeled_pd_by_rating,
+        "modeled_lgd_by_facility_type": modeled_lgd_by_facility_type,
         "methodology_note": (
             "PD is estimated with a fitted scikit-learn LogisticRegression (the standard PD-"
             "scorecard technique), trained on illustrative synthetic default data by rating grade "

@@ -344,8 +344,8 @@ def _dataset_upload_events(dataset_name: str, raw_bytes: bytes, csv_content: str
             if any("ifrs" in s.lower() for s in sheet_names):
                 recommendations.append({
                     "action": "compute_ifrs9",
-                    "label": "💰 Compute IFRS 9 ECL",
-                    "description": "Independently compute expected credit loss from the IFRS 9 portfolio sheet.",
+                    "label": "💰 Compute IFRS 9 (PD, LGD & ECL)",
+                    "description": "Model probability of default, loss given default, and expected credit loss -- with scenario analysis -- from the IFRS 9 portfolio sheet.",
                 })
         silver_csv_for_check = raw_result.get("output", {}).get("storage", {}).get("silver")
         if silver_csv_for_check:

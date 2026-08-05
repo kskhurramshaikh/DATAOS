@@ -80,6 +80,24 @@ def suggest_visualization(intent: str, raw_result: dict) -> list[dict] | None:
             "values": list(stages.values()),
         })
 
+    if intent == "compute_ifrs9_ecl" and output.get("modeled_pd_by_rating"):
+        pd_by_rating = output["modeled_pd_by_rating"]
+        charts.append({
+            "type": "bar",
+            "title": "Modeled PD by credit rating",
+            "labels": list(pd_by_rating.keys()),
+            "values": list(pd_by_rating.values()),
+        })
+
+    if intent == "compute_ifrs9_ecl" and output.get("modeled_lgd_by_facility_type"):
+        lgd_by_facility = output["modeled_lgd_by_facility_type"]
+        charts.append({
+            "type": "bar",
+            "title": "Modeled LGD by facility type",
+            "labels": list(lgd_by_facility.keys()),
+            "values": list(lgd_by_facility.values()),
+        })
+
     extra = raw_result.get("additional_analyses")
     if isinstance(extra, dict):
         ndi = extra.get("ndi_readiness")

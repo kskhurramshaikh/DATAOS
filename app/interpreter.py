@@ -197,7 +197,10 @@ of losing the actual substance either:
    drift check: how many metrics were checked, how many showed drift, the strongest
    p-value or score you can find, which feature was tested. For a dataset: rows landed,
    duplicates removed, which columns had nulls and how many, which columns were dropped
-   and why, final stage. Bold the key number or word in each bullet with **asterisks**.
+   and why, final stage. For an IFRS 9 result: the portfolio-weighted average PD AND LGD
+   as their own bullets (not just the final ECL number), plus the stage breakdown and
+   which scenario was used -- PD and LGD are results in their own right, not just inputs
+   buried inside ECL. Bold the key number or word in each bullet with **asterisks**.
 3. If stage is "silver_held", give the hold reason its own bullet stated plainly, and end
    with one short closing sentence inviting them to ask you to promote it anyway.
 4. If the result includes "additional_analyses" (extra computations run alongside the main
