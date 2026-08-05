@@ -17,6 +17,23 @@ HEAVY_NULL_CSV = (
     "2026-01-02,Gizmo,Gadgets,,14.50,South\n"
     "2026-01-03,Widget,Gadgets,5,9.99,East\n"
     "2026-01-04,Widget,Gadgets,7,9.99,West\n"
+    "2026-01-05,Gizmo,Gadgets,,14.50,North\n"
+    "2026-01-06,Widget,Gadgets,4,9.99,South\n"
+    "2026-01-07,Widget,Gadgets,6,9.99,East\n"
+    "2026-01-08,Gizmo,Gadgets,,14.50,West\n"
+    "2026-01-09,Widget,Gadgets,2,9.99,North\n"
+    "2026-01-10,Widget,Gadgets,8,9.99,South\n"
+    "2026-01-11,Gizmo,Gadgets,,14.50,East\n"
+    "2026-01-12,Widget,Gadgets,1,9.99,West\n"
+    "2026-01-13,Widget,Gadgets,9,9.99,North\n"
+    "2026-01-14,Gizmo,Gadgets,,14.50,South\n"
+    "2026-01-15,Widget,Gadgets,3,9.99,East\n"
+    "2026-01-16,Widget,Gadgets,5,9.99,West\n"
+    "2026-01-17,Widget,Gadgets,6,9.99,North\n"
+    "2026-01-18,Widget,Gadgets,4,9.99,South\n"
+    "2026-01-19,Widget,Gadgets,7,9.99,East\n"
+    "2026-01-20,Widget,Gadgets,2,9.99,West\n"
+    "2026-01-21,Widget,Gadgets,8,9.99,North\n"
 )
 
 # Larger, clean-ish CSV -- low enough null rate to auto-promote to Gold,
@@ -40,14 +57,59 @@ def test_dataset_adapter_holds_at_silver_when_too_many_nulls(tmp_path, monkeypat
     result = dataset_adapter.run({"dataset_name": "heavy null test", "csv_content": HEAVY_NULL_CSV})
 
     assert result["dataset_name"] == "heavy_null_test"
-    assert result["rows"] == 4  # 5 rows minus 1 exact duplicate
+    assert result["rows"] == 21  # 22 rows minus 1 exact duplicate
     assert result["duplicate_rows_removed"] == 1
-    assert result["null_counts"].get("quantity") == 1  # 1 of 4 unique rows null = 25%, in the hold zone
+    assert result["null_counts"].get("quantity") == 5  # 5 of 21 unique rows null = ~24%, in the hold zone
     assert result["stage"] == "silver_held"
     assert result["hold_reason"] is not None
     assert result["numeric_summary"] == {}
     assert (tmp_path / "silver" / "heavy_null_test" / "cleaned.csv").exists()
     assert not (tmp_path / "gold" / "heavy_null_test").exists()
+
+
+def test_small_reference_table_gets_lenient_null_threshold(tmp_path, monkeypatch):
+    """Reproduces Dr. Saber's real finding: a small reference/lookup
+    table (e.g. a 7-row LGD rate table) hits a high null PERCENTAGE from
+    a single missing descriptive value -- 1/7 rows is already 14%, which
+    would wrongly hold a table that's actually fine to use. Small tables
+    (under 20 rows) should get a more lenient threshold."""
+    monkeypatch.setattr(dataset_adapter, "DATA_ROOT", str(tmp_path))
+
+    csv = (
+        "Facility Type,LGD Rate,Arabic Name\n"
+        "Real Estate,0.25,test1\n"
+        "Project Financing,0.35,test2\n"
+        "Vehicle Financing,0.40,\n"  # 1 missing value out of 7 rows = 14%
+        "Commercial,0.45,test3\n"
+        "Personal,0.30,test4\n"
+        "Credit Card,0.65,test5\n"
+        "Unsecured,0.65,test6\n"
+    )
+    result = dataset_adapter.run({"dataset_name": "small lgd table", "csv_content": csv})
+
+    assert result["stage"] == "gold"  # NOT held, despite 14% > the normal 10% threshold
+    assert result.get("hold_reason") is None
+
+
+def test_small_table_threshold_still_holds_when_genuinely_too_null(tmp_path, monkeypatch):
+    """The small-table leniency isn't unlimited -- if enough values are
+    missing even by the more lenient bar, it should still hold."""
+    monkeypatch.setattr(dataset_adapter, "DATA_ROOT", str(tmp_path))
+
+    csv = (
+        "Facility Type,LGD Rate,Arabic Name\n"
+        "Real Estate,0.25,\n"
+        "Project Financing,0.35,\n"
+        "Vehicle Financing,0.40,\n"  # 3 of 7 missing = 43%, over even the lenient 35% bar
+        "Commercial,0.45,test3\n"
+        "Personal,0.30,test4\n"
+        "Credit Card,0.65,test5\n"
+        "Unsecured,0.65,test6\n"
+    )
+    result = dataset_adapter.run({"dataset_name": "small lgd table too null", "csv_content": csv})
+
+    assert result["stage"] == "silver_held"
+    assert "small-table threshold" in result["hold_reason"]
 
 
 def test_dataset_adapter_auto_promotes_to_gold_and_curates(tmp_path, monkeypatch):

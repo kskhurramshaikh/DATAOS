@@ -42,8 +42,18 @@ import pandas as pd
 from app.db import get_conn
 
 DATA_ROOT = os.environ.get("DATAOS_DATA_ROOT", "data")
-NULL_RATE_HOLD_THRESHOLD = 0.10  # >10% null in any column holds at Silver
+NULL_RATE_HOLD_THRESHOLD = 0.10  # >10% null in any column holds at Silver -- for normal-sized datasets
 GOLD_DROP_COLUMN_THRESHOLD = 0.50  # >50% null in a column drops it from Gold
+# A small reference/lookup table (e.g. a 7-row LGD rate table) hits a much
+# higher percentage from a single missing value than a large customer
+# dataset does -- 1 missing value in 7 rows is already 14%, which would
+# wrongly hold a table that's actually fine. Real reference tables like
+# this are common (parameter files, rate lookups, scenario definitions)
+# and a single cosmetic gap in one shouldn't block promotion the way the
+# same rate would for a 600-row customer file. Found via Dr. Saber's own
+# testing -- see change log.
+SMALL_TABLE_ROW_THRESHOLD = 20
+SMALL_TABLE_NULL_RATE_HOLD_THRESHOLD = 0.35
 
 
 def _safe_name(name: str) -> str:
@@ -292,6 +302,10 @@ def clean_to_silver(safe_name: str, df: pd.DataFrame) -> dict:
     null_counts = {col: int(cnt) for col, cnt in null_counts_before.items() if cnt > 0}
     rows = len(silver_df)
 
+    hold_threshold = (
+        SMALL_TABLE_NULL_RATE_HOLD_THRESHOLD if rows < SMALL_TABLE_ROW_THRESHOLD else NULL_RATE_HOLD_THRESHOLD
+    )
+
     # A column empty enough to be dropped at Gold anyway (>50% null)
     # doesn't need to hold up promotion -- it'll just be curated away.
     # The hold is for the ambiguous middle ground: too null to trust
@@ -302,7 +316,9 @@ def clean_to_silver(safe_name: str, df: pd.DataFrame) -> dict:
         if rows and (cnt / rows) <= GOLD_DROP_COLUMN_THRESHOLD
     }
     max_null_rate = max(relevant_rates.values(), default=0.0)
-    held = max_null_rate > NULL_RATE_HOLD_THRESHOLD
+    held = max_null_rate > hold_threshold
+
+    small_table_note = f" (small-table threshold, {rows} rows)" if rows < SMALL_TABLE_ROW_THRESHOLD else ""
 
     return {
         "silver_df": silver_df,
@@ -311,7 +327,7 @@ def clean_to_silver(safe_name: str, df: pd.DataFrame) -> dict:
         "null_counts": null_counts,
         "held": held,
         "hold_reason": (
-            f"a column is {max_null_rate:.0%} null, over the {NULL_RATE_HOLD_THRESHOLD:.0%} auto-promotion threshold"
+            f"a column is {max_null_rate:.0%} null, over the {hold_threshold:.0%} auto-promotion threshold{small_table_note}"
             if held else None
         ),
     }
