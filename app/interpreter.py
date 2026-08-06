@@ -241,6 +241,29 @@ Example of the right shape (for a drift check):
     return response.choices[0].message.content.strip()
 
 
+def _sanitize_for_display(intent: str, raw_result: dict) -> dict:
+    """Mirrors the sanitization applied on the chip-click duplicate path
+    in main.py -- this is the equivalent for the natural-language chat
+    path, which calls the same adapter independently via route().
+    Kept as defense-in-depth: the system prompt instructs the model
+    never to call "find_duplicate_candidates" from a text-only message
+    (it has no file content to work with, so the call would fail
+    anyway), but an instruction is not a guarantee, so the raw matching
+    internals are stripped here too regardless of whether the model
+    actually follows it.
+    """
+    if intent != "find_duplicate_candidates":
+        return raw_result
+    if raw_result.get("status") != "completed" or not raw_result.get("output", {}).get("applicable"):
+        return raw_result
+    from app.adapters.dedup_adapter import sanitize_clusters_output_for_display
+    return {
+        **raw_result,
+        "routing": {**raw_result.get("routing", {}), "tool": "Entity duplicate detection"},
+        "output": sanitize_clusters_output_for_display(raw_result["output"]),
+    }
+
+
 def interpret_stream(conversation_history: list[dict], user_message: str):
     """
     Generator: yields dicts describing each real step as it starts --
@@ -304,7 +327,7 @@ def interpret_stream(conversation_history: list[dict], user_message: str):
         except (NoCapabilityRegisteredError, ValueError) as e:
             raw_result = {"status": "error", "compliance": decision.to_dict(), "error": str(e)}
 
-    yield {"type": "tool_result", "data": raw_result}
+    yield {"type": "tool_result", "data": _sanitize_for_display(intent, raw_result)}
 
     charts = suggest_visualization(intent, raw_result)
     if charts:

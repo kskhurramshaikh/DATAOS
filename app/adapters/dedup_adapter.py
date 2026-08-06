@@ -183,6 +183,29 @@ def find_duplicate_candidates(payload: dict) -> dict:
     }
 
 
+def sanitize_clusters_output_for_display(output: dict) -> dict:
+    """Strips internal matching internals -- per-cluster similarity
+    scores, the methodology explanation, the matching algorithm name --
+    from a find_duplicate_candidates() result before it's ever shown in
+    a raw-JSON 'view details' panel. The review cards (the
+    "duplicate_review" event) are the correct user-facing view for this
+    data; this function only governs whatever raw-result debug view
+    sits alongside them. Used by both the chip-click path (main.py) and
+    the natural-language chat path (interpreter.py) so there's one
+    definition of "safe to show," not two that can drift apart.
+    """
+    if not output.get("applicable"):
+        return output
+    return {
+        "applicable": True,
+        "total_clusters": output["total_clusters"],
+        "high_confidence_groups": output["high_confidence_clusters"],
+        "needs_review_groups": output["needs_review_clusters"],
+        "total_records_involved": output["total_records_involved"],
+        "note": "Per-record detail and decisions are in the review cards above -- this summary omits internal matching scores.",
+    }
+
+
 def decide_cluster(cluster_id: int, status: str, decided_by: str) -> dict:
     if status not in ("confirmed_duplicate", "not_duplicate"):
         raise ValueError(f"Invalid status '{status}' -- must be 'confirmed_duplicate' or 'not_duplicate'.")
