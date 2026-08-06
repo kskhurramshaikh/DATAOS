@@ -204,12 +204,9 @@
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
   }
   .review-card.is-decided { opacity: 0.6; }
-  .review-card-summary {
-    cursor: pointer; list-style: none; display: flex; align-items: flex-start; gap: 10px;
+  .review-card-top {
+    display: flex; align-items: flex-start; gap: 10px;
   }
-  .review-card-summary::-webkit-details-marker { display: none; }
-  .review-card-summary::before { content: "▸"; color: var(--muted); margin-top: 2px; }
-  .review-card[open] .review-card-summary::before { content: "▾"; }
   .review-card-headline { display: flex; flex-direction: column; gap: 3px; flex: 1; }
   .review-card-title { font-size: 14px; color: var(--text); font-weight: 600; }
   .review-card-reason { font-size: 12px; color: var(--muted); }
@@ -219,7 +216,16 @@
   }
   .match-high { background: rgba(91, 220, 140, 0.18); color: #5bdc8c; }
   .match-review { background: rgba(255, 190, 90, 0.18); color: #ffbe5a; }
-  .record-list { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+  .record-details { margin-top: 10px; }
+  .record-toggle {
+    cursor: pointer; list-style: none; font-size: 11.5px; color: var(--muted);
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .record-toggle::-webkit-details-marker { display: none; }
+  .record-toggle::before { content: "▸"; }
+  .record-details[open] .record-toggle::before { content: "▾"; }
+  .record-toggle:hover { color: var(--text); }
+  .record-list { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
   .record-row {
     display: flex; align-items: baseline; gap: 10px; font-size: 12.5px;
     padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
@@ -818,11 +824,11 @@ function addStreamingBotMessage() {
           ? `Flagged because: ${reasons.join(", ")}`
           : "Flagged as a likely match by the review model";
 
-        const card = document.createElement("details");
+        const card = document.createElement("div");
         card.className = "review-card";
 
-        const summaryEl = document.createElement("summary");
-        summaryEl.className = "review-card-summary";
+        const cardTop = document.createElement("div");
+        cardTop.className = "review-card-top";
 
         const badge = document.createElement("span");
         badge.className = "match-badge " + (isHigh ? "match-high" : "match-review");
@@ -839,22 +845,9 @@ function addStreamingBotMessage() {
         headline.appendChild(title);
         headline.appendChild(reasonEl);
 
-        summaryEl.appendChild(badge);
-        summaryEl.appendChild(headline);
-        card.appendChild(summaryEl);
-
-        const recordList = document.createElement("div");
-        recordList.className = "record-list";
-        for (const m of cluster.members) {
-          const row = document.createElement("div");
-          row.className = "record-row";
-          row.innerHTML =
-            `<span class="record-row-name">${escapeHtml(m.name)}</span>` +
-            `<span class="record-row-meta">Born ${escapeHtml(m.dob)}${m.phone ? " &middot; " + escapeHtml(m.phone) : ""}</span>` +
-            `<span class="record-row-id">${escapeHtml(m.row_id)}</span>`;
-          recordList.appendChild(row);
-        }
-        card.appendChild(recordList);
+        cardTop.appendChild(badge);
+        cardTop.appendChild(headline);
+        card.appendChild(cardTop);
 
         const actions = document.createElement("div");
         actions.className = "review-actions";
@@ -885,7 +878,6 @@ function addStreamingBotMessage() {
             statusSpan.textContent = "✓ " + label;
             statusSpan.classList.remove("hidden");
             card.classList.add("is-decided");
-            card.open = false;
             decidedCount++;
             updateProgress();
             return true;
@@ -904,6 +896,30 @@ function addStreamingBotMessage() {
         actions.appendChild(rejectBtn);
         actions.appendChild(statusSpan);
         card.appendChild(actions);
+
+        // Raw member rows (name/DOB/phone/row ID) are the only thing
+        // behind an optional expand now -- genuinely supplementary
+        // detail for double-checking, not required to make the call.
+        const recordDetails = document.createElement("details");
+        recordDetails.className = "record-details";
+        const recordToggle = document.createElement("summary");
+        recordToggle.className = "record-toggle";
+        recordToggle.textContent = `View ${cluster.size} records`;
+        recordDetails.appendChild(recordToggle);
+
+        const recordList = document.createElement("div");
+        recordList.className = "record-list";
+        for (const m of cluster.members) {
+          const row = document.createElement("div");
+          row.className = "record-row";
+          row.innerHTML =
+            `<span class="record-row-name">${escapeHtml(m.name)}</span>` +
+            `<span class="record-row-meta">Born ${escapeHtml(m.dob)}${m.phone ? " &middot; " + escapeHtml(m.phone) : ""}</span>` +
+            `<span class="record-row-id">${escapeHtml(m.row_id)}</span>`;
+          recordList.appendChild(row);
+        }
+        recordDetails.appendChild(recordList);
+        card.appendChild(recordDetails);
 
         list.appendChild(card);
 
