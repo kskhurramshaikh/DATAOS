@@ -115,11 +115,21 @@ async def _run_in_thread(sync_generator):
 
 
 # ---------------------------------------------------------------------
-# Landing page -- the chat UI is the actual front door now.
+# Landing page (item 9) -- the marketing/product landing page is now
+# the actual front door at "/". The conversational chat UI (sign up,
+# log in, talk to DataOS) has moved to "/app" -- linked from the
+# landing page's "Sign up / Log in" button, top-right nav. Nothing
+# about the chat UI itself changed; it's the same file, just served
+# at a different route.
 # ---------------------------------------------------------------------
 
 @app.get("/")
 def root():
+    return FileResponse("app/static/landing.html")
+
+
+@app.get("/app")
+def chat_app():
     return FileResponse("app/static/index.html")
 
 
