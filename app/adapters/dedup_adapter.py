@@ -183,7 +183,7 @@ def find_duplicate_candidates(payload: dict) -> dict:
     }
 
 
-def decide_cluster(cluster_id: int, status: str) -> dict:
+def decide_cluster(cluster_id: int, status: str, decided_by: str) -> dict:
     if status not in ("confirmed_duplicate", "not_duplicate"):
         raise ValueError(f"Invalid status '{status}' -- must be 'confirmed_duplicate' or 'not_duplicate'.")
 
@@ -192,12 +192,44 @@ def decide_cluster(cluster_id: int, status: str) -> dict:
         if row is None:
             raise ValueError(f"No duplicate cluster found with id {cluster_id}.")
         conn.execute(
-            "UPDATE duplicate_clusters SET status = ?, decided_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (status, cluster_id),
+            "UPDATE duplicate_clusters SET status = ?, decided_at = CURRENT_TIMESTAMP, decided_by = ? WHERE id = ?",
+            (status, decided_by, cluster_id),
         )
         conn.commit()
 
-    return {"id": cluster_id, "status": status}
+    return {"id": cluster_id, "status": status, "decided_by": decided_by}
+
+
+def get_audit_log(dataset_safe_name: str | None = None, limit: int = 200) -> list[dict]:
+    """Every decided cluster -- who decided it, what they decided, and when.
+    This is the durable record a bank compliance review needs; unlike the
+    chat transcript, it's queryable independently of any one conversation.
+    """
+    with get_conn() as conn:
+        if dataset_safe_name:
+            rows = conn.execute(
+                "SELECT * FROM duplicate_clusters WHERE dataset_safe_name = ? AND status != 'pending' "
+                "ORDER BY decided_at DESC LIMIT ?",
+                (dataset_safe_name, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM duplicate_clusters WHERE status != 'pending' "
+                "ORDER BY decided_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "dataset_safe_name": r["dataset_safe_name"],
+            "members": json.loads(r["member_summary_json"]),
+            "confidence_tier": r["confidence_tier"],
+            "status": r["status"],
+            "decided_by": r["decided_by"],
+            "decided_at": r["decided_at"],
+        }
+        for r in rows
+    ]
 
 
 def get_pending_clusters(dataset_safe_name: str) -> list[dict]:
@@ -227,7 +259,7 @@ def get_pending_count(dataset_safe_name: str) -> int:
     return row["c"] if row else 0
 
 
-def _bulk_confirm(dataset_safe_name: str | None, tier: str | None) -> dict:
+def _bulk_confirm(dataset_safe_name: str | None, tier: str | None, decided_by: str) -> dict:
     """
     Applies 'confirmed_duplicate' to every PENDING cluster matching the
     given tier ('high_confidence' or None/'all' for every pending
@@ -270,8 +302,8 @@ def _bulk_confirm(dataset_safe_name: str | None, tier: str | None) -> dict:
             placeholders = ",".join("?" * len(ids))
             conn.execute(
                 f"UPDATE duplicate_clusters SET status = 'confirmed_duplicate', "
-                f"decided_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
-                ids,
+                f"decided_at = CURRENT_TIMESTAMP, decided_by = ? WHERE id IN ({placeholders})",
+                [decided_by, *ids],
             )
             conn.commit()
 
@@ -284,8 +316,8 @@ def _bulk_confirm(dataset_safe_name: str | None, tier: str | None) -> dict:
 
 
 def confirm_high_confidence(payload: dict) -> dict:
-    return _bulk_confirm(payload.get("dataset_name"), tier="high_confidence")
+    return _bulk_confirm(payload.get("dataset_name"), tier="high_confidence", decided_by=payload.get("decided_by", "unknown"))
 
 
 def confirm_all_pending(payload: dict) -> dict:
-    return _bulk_confirm(payload.get("dataset_name"), tier="all")
+    return _bulk_confirm(payload.get("dataset_name"), tier="all", decided_by=payload.get("decided_by", "unknown"))

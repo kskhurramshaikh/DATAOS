@@ -84,11 +84,22 @@ def init_db():
                 evidence_json TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
                 decided_at TEXT,
+                decided_by TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
         conn.commit()
+
+        # Ephemeral disk on Render's free tier means this table is normally
+        # recreated fresh with decided_by already in it -- but if the DB
+        # ever does persist across a deploy, this makes sure the column
+        # exists without wiping decision history.
+        try:
+            conn.execute("ALTER TABLE duplicate_clusters ADD COLUMN decided_by TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
 
 @contextmanager

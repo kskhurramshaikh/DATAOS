@@ -474,6 +474,27 @@ def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: by
             raw_result = {"status": "error", "compliance": decision.to_dict(), "error": str(e)}
             ran_intent = None
 
+    # The duplicate-review cards (the "duplicate_review" event above) are
+    # the full user-facing view for this action -- a bank exec should
+    # never see the raw matching internals (min_name_similarity, the
+    # methodology note, the literal tool name) that used to leak into
+    # the "View details" panel below the cards on every run. Everyone
+    # else's raw_result (NDI, IFRS 9) is untouched.
+    if action == "find_duplicates" and raw_result.get("status") == "completed" and raw_result["output"].get("applicable"):
+        o = raw_result["output"]
+        raw_result = {
+            **raw_result,
+            "routing": {"capability": capability, "tool": "Entity duplicate detection"},
+            "output": {
+                "applicable": True,
+                "total_clusters": o["total_clusters"],
+                "high_confidence_groups": o["high_confidence_clusters"],
+                "needs_review_groups": o["needs_review_clusters"],
+                "total_records_involved": o["total_records_involved"],
+                "note": "Per-record detail and decisions are in the review cards above -- this summary omits internal matching scores.",
+            },
+        }
+
     yield {"type": "tool_result", "data": raw_result}
 
     # For IFRS 9 specifically, offer the other two scenarios as one-click
@@ -586,7 +607,7 @@ class DuplicateDecisionRequest(BaseModel):
 @app.post("/duplicates/decide")
 def decide_duplicate(req: DuplicateDecisionRequest, user: dict = Depends(auth.get_current_user)):
     try:
-        result = dedup_adapter.decide_cluster(req.cluster_id, req.status)
+        result = dedup_adapter.decide_cluster(req.cluster_id, req.status, decided_by=user["email"])
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return result
@@ -595,6 +616,14 @@ def decide_duplicate(req: DuplicateDecisionRequest, user: dict = Depends(auth.ge
 @app.get("/duplicates/pending")
 def list_pending_duplicates(dataset_name: str, user: dict = Depends(auth.get_current_user)):
     return {"dataset_name": dataset_name, "clusters": dedup_adapter.get_pending_clusters(dataset_name)}
+
+
+@app.get("/duplicates/audit-log")
+def duplicate_audit_log(dataset_name: str | None = None, user: dict = Depends(auth.get_current_user)):
+    """The durable compliance record for duplicate-review decisions --
+    who decided what, and when -- independent of any one chat session.
+    This is what a bank reviewer pulls up later, not the chat transcript."""
+    return {"entries": dedup_adapter.get_audit_log(dataset_name)}
 
 
 @app.post("/intent")

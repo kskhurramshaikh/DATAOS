@@ -138,6 +138,39 @@
   }
   .review-batch-btn:hover { background: rgba(91,220,140,0.18); }
   .review-batch-btn:disabled { opacity: 0.5; cursor: default; }
+  .review-audit-link {
+    background: none; border: none; color: var(--muted); font-size: 12px;
+    text-decoration: underline; cursor: pointer; padding: 0;
+  }
+  .review-audit-link:hover { color: var(--text); }
+  .audit-modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 100;
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .audit-modal-backdrop.hidden { display: none; }
+  .audit-modal {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    width: 100%; max-width: 640px; max-height: 80vh; display: flex; flex-direction: column;
+  }
+  .audit-modal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 18px; border-bottom: 1px solid var(--border);
+  }
+  .audit-modal-header h3 { font-size: 15px; color: var(--text); }
+  .audit-modal-close { background: none; border: none; color: var(--muted); font-size: 20px; cursor: pointer; line-height: 1; }
+  .audit-modal-close:hover { color: var(--text); }
+  .audit-modal-body { padding: 14px 18px; overflow-y: auto; }
+  .audit-row {
+    display: flex; flex-direction: column; gap: 3px; padding: 10px 0; font-size: 12.5px;
+    border-bottom: 1px solid var(--border);
+  }
+  .audit-row:last-child { border-bottom: none; }
+  .audit-row-main { color: var(--text); }
+  .audit-row-meta { color: var(--muted); font-size: 11.5px; }
+  .audit-row-status { font-weight: 600; }
+  .audit-row-status.confirmed { color: #5bdc8c; }
+  .audit-row-status.rejected { color: var(--muted); }
+  .audit-empty { color: var(--muted); font-size: 13px; padding: 20px 0; text-align: center; }
   .review-list { display: flex; flex-direction: column; gap: 8px; }
   .review-card {
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
@@ -371,6 +404,54 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+// Duplicate-review audit log -- a durable record independent of the
+// chat scroll. This is what a bank reviewer pulls up later to see who
+// decided what and when, separate from any one conversation.
+const auditBackdrop = document.createElement("div");
+auditBackdrop.className = "audit-modal-backdrop hidden";
+auditBackdrop.innerHTML = `
+  <div class="audit-modal">
+    <div class="audit-modal-header">
+      <h3>Duplicate review -- audit log</h3>
+      <button class="audit-modal-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="audit-modal-body" id="audit-modal-body"></div>
+  </div>
+`;
+document.body.appendChild(auditBackdrop);
+auditBackdrop.querySelector(".audit-modal-close").onclick = () => auditBackdrop.classList.add("hidden");
+auditBackdrop.onclick = (e) => { if (e.target === auditBackdrop) auditBackdrop.classList.add("hidden"); };
+
+async function openAuditLog(datasetName) {
+  const body = document.getElementById("audit-modal-body");
+  body.innerHTML = `<div class="audit-empty">Loading...</div>`;
+  auditBackdrop.classList.remove("hidden");
+  try {
+    const res = await fetch(API + "/duplicates/audit-log?dataset_name=" + encodeURIComponent(datasetName), {
+      headers: { "Authorization": "Bearer " + token },
+    });
+    if (!res.ok) throw new Error("Failed to load audit log");
+    const { entries } = await res.json();
+    if (!entries.length) {
+      body.innerHTML = `<div class="audit-empty">No decisions recorded yet for this dataset.</div>`;
+      return;
+    }
+    body.innerHTML = entries.map((e) => {
+      const names = [...new Set(e.members.map((m) => m.name))].join(" / ");
+      const confirmed = e.status === "confirmed_duplicate";
+      const statusLabel = confirmed ? "Confirmed as same customer" : "Marked as different people";
+      return `
+        <div class="audit-row">
+          <div class="audit-row-main">${escapeHtml(names)} <span class="audit-row-status ${confirmed ? "confirmed" : "rejected"}">-- ${statusLabel}</span></div>
+          <div class="audit-row-meta">Decided by ${escapeHtml(e.decided_by || "unknown")} on ${escapeHtml(e.decided_at || "unknown date")}</div>
+        </div>
+      `;
+    }).join("");
+  } catch (err) {
+    body.innerHTML = `<div class="audit-empty">Could not load the audit log: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
 // Lightweight markdown -> HTML: bold and bullet lists only, which is
 // all the reply-formatting prompt ever asks the model to use. Escapes
 // first so nothing in the text can inject markup.
@@ -601,6 +682,18 @@ function addStreamingBotMessage() {
         batchBtn.textContent = `Confirm all ${highCount} likely matches`;
         summary.appendChild(batchBtn);
       }
+
+      const summaryActions = document.createElement("div");
+      summaryActions.style.display = "flex";
+      summaryActions.style.gap = "14px";
+      summaryActions.style.alignItems = "center";
+      if (batchBtn) summaryActions.appendChild(batchBtn);
+      const auditLink = document.createElement("button");
+      auditLink.className = "review-audit-link";
+      auditLink.textContent = "View audit log";
+      auditLink.onclick = () => openAuditLog(datasetName);
+      summaryActions.appendChild(auditLink);
+      summary.appendChild(summaryActions);
 
       reviewContainer.appendChild(summary);
 
