@@ -327,14 +327,15 @@ def interpret_stream(conversation_history: list[dict], user_message: str):
         except (NoCapabilityRegisteredError, ValueError) as e:
             raw_result = {"status": "error", "compliance": decision.to_dict(), "error": str(e)}
 
-    yield {"type": "tool_result", "data": _sanitize_for_display(intent, raw_result)}
+    display_result = _sanitize_for_display(intent, raw_result)
+    yield {"type": "tool_result", "data": display_result}
 
     charts = suggest_visualization(intent, raw_result)
     if charts:
         yield {"type": "visualization", "charts": charts}
 
     yield {"type": "status", "stage": "explaining", "label": "Writing a plain-English summary..."}
-    reply = explain_result(user_message, intent, raw_result, has_visualization=bool(charts))
+    reply = explain_result(user_message, intent, display_result, has_visualization=bool(charts))
 
     yield {"type": "final", "reply": reply, "ran_intent": intent}
 

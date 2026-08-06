@@ -525,7 +525,7 @@ def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: by
 
     yield {"type": "status", "stage": "explaining", "label": "Writing a plain-English summary..."}
     try:
-        reply = explain_result(user_message, ran_intent or intent, raw_result, has_visualization=bool(charts))
+        reply = explain_result(user_message, ran_intent or intent, display_result, has_visualization=bool(charts))
     except RuntimeError:
         raise
 

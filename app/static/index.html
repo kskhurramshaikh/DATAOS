@@ -660,8 +660,12 @@ function addStreamingBotMessage() {
       entry.appendChild(entryLabel);
 
       // If this result carries routing info (which real capability and
-      // tool actually ran), call that out as its own visible line --
-      // not something you have to go hunting for inside the raw JSON.
+      // tool actually ran), call that out as its own visible line.
+      // Deliberately NOT dumping the raw JSON result here anymore --
+      // "View details" now only ever shows the orchestration trail
+      // (the pipeline-log steps above) and this routing line, never
+      // the underlying technical output. That's true for every intent,
+      // not just duplicate detection.
       const routing = data && data.routing;
       if (routing) {
         const routeLine = document.createElement("div");
@@ -669,10 +673,6 @@ function addStreamingBotMessage() {
         routeLine.textContent = `→ Routed to capability "${routing.capability}", tool "${routing.tool}"`;
         entry.appendChild(routeLine);
       }
-
-      const pre = document.createElement("pre");
-      pre.textContent = JSON.stringify(data, null, 2);
-      entry.appendChild(pre);
 
       detailBody.appendChild(entry);
       scrollMessagesToBottom();
