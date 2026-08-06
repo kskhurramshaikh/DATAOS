@@ -113,46 +113,69 @@
   .chart-block canvas { max-height: 220px; }
   .chart-alt-note { font-size: 11px; color: var(--muted); margin-top: 8px; font-style: italic; }
 
-  /* Duplicate review -- cards with native <details> expand, same
-     pattern as the "View details" panel elsewhere in this UI. Chosen
-     over the Tabulator grid for this specific view because a fixed-
-     width column layout squeezed action buttons in the narrow chat
-     bubble; Tabulator stays available for a future full-width table
-     view (e.g. browsing all datasets). */
+  /* Duplicate review -- redesigned for a non-technical reviewer (bank
+     exec), not a data analyst. Cards lead with a plain-language
+     statement of what's being asked ("Likely the same person") and a
+     human-readable reason, not a raw table of row IDs. A summary bar
+     at the top shows review progress and offers a one-click batch
+     action for the obvious (high-confidence) matches, since a real
+     file can surface dozens of groups (Dr. Saber's test file: 71).
+     Native <details> expand kept for the same reason as before --
+     Tabulator's fixed-width grid squeezes action buttons in the
+     narrow chat bubble. */
   .review-container { margin-top: 4px; }
-  .review-header { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+  .review-summary {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 14px; margin-bottom: 10px; flex-wrap: wrap;
+  }
+  .review-summary-text { font-size: 13px; color: var(--text); }
+  .review-summary-text b { color: var(--text); }
+  .review-summary-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .review-batch-btn {
+    padding: 8px 14px; border-radius: 6px; border: 1px solid #5bdc8c; background: rgba(91,220,140,0.10);
+    color: #5bdc8c; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;
+  }
+  .review-batch-btn:hover { background: rgba(91,220,140,0.18); }
+  .review-batch-btn:disabled { opacity: 0.5; cursor: default; }
   .review-list { display: flex; flex-direction: column; gap: 8px; }
   .review-card {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
   }
+  .review-card.is-decided { opacity: 0.6; }
   .review-card-summary {
-    cursor: pointer; list-style: none; display: flex; align-items: center; gap: 10px;
-    font-size: 13px;
+    cursor: pointer; list-style: none; display: flex; align-items: flex-start; gap: 10px;
   }
   .review-card-summary::-webkit-details-marker { display: none; }
-  .review-card-summary::before { content: "▸ "; color: var(--muted); }
-  .review-card[open] .review-card-summary::before { content: "▾ "; }
-  .review-card-info { color: var(--text); }
-  .tier-badge { padding: 3px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; flex-shrink: 0; }
-  .tier-high { background: rgba(91, 220, 140, 0.18); color: #5bdc8c; }
-  .tier-review { background: rgba(255, 190, 90, 0.18); color: #ffbe5a; }
-  .member-table {
-    width: 100%; margin-top: 10px; border-collapse: collapse; font-size: 12px;
+  .review-card-summary::before { content: "▸"; color: var(--muted); margin-top: 2px; }
+  .review-card[open] .review-card-summary::before { content: "▾"; }
+  .review-card-headline { display: flex; flex-direction: column; gap: 3px; flex: 1; }
+  .review-card-title { font-size: 14px; color: var(--text); font-weight: 600; }
+  .review-card-reason { font-size: 12px; color: var(--muted); }
+  .match-badge {
+    padding: 3px 9px; border-radius: 20px; font-size: 11px; font-weight: 600; flex-shrink: 0;
+    display: inline-flex; align-items: center; gap: 4px; margin-top: 1px;
   }
-  .member-table th {
-    text-align: left; color: var(--muted); font-weight: 600; padding: 6px 8px;
-    border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase;
+  .match-high { background: rgba(91, 220, 140, 0.18); color: #5bdc8c; }
+  .match-review { background: rgba(255, 190, 90, 0.18); color: #ffbe5a; }
+  .record-list { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+  .record-row {
+    display: flex; align-items: baseline; gap: 10px; font-size: 12.5px;
+    padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
   }
-  .member-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); color: var(--text); }
-  .member-table tr:last-child td { border-bottom: none; }
-  .review-actions { margin-top: 12px; display: flex; gap: 8px; align-items: center; }
+  .record-row-name { color: var(--text); font-weight: 600; min-width: 140px; }
+  .record-row-meta { color: var(--muted); flex: 1; }
+  .record-row-id { color: var(--muted); font-size: 10.5px; font-family: "SF Mono", Consolas, Monaco, monospace; }
+  .review-actions { margin-top: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .review-btn {
     padding: 7px 14px; border-radius: 6px; border: 1px solid var(--border);
     background: var(--bg); color: var(--text); font-size: 12px; cursor: pointer;
   }
-  .review-btn.confirm:hover { border-color: #5bdc8c; color: #5bdc8c; }
+  .review-btn.confirm { border-color: #5bdc8c; color: #5bdc8c; }
+  .review-btn.confirm:hover { background: rgba(91,220,140,0.10); }
   .review-btn.reject:hover { border-color: var(--muted); }
   .review-btn:disabled { opacity: 0.5; cursor: wait; }
+  .review-note { font-size: 11px; color: var(--muted); margin-top: 8px; font-style: italic; }
   .decision-done { font-size: 12px; color: #5bdc8c; font-weight: 600; }
 
   /* Recommendation chips -- what the user can do next with this dataset */
@@ -552,62 +575,114 @@ function addStreamingBotMessage() {
     addDuplicateReview(datasetName, clusters) {
       reviewContainer.classList.remove("hidden");
 
-      const header = document.createElement("div");
-      header.className = "review-header";
-      header.textContent = `${clusters.length} potential duplicate customer group(s) found -- review below`;
-      reviewContainer.appendChild(header);
+      const total = clusters.length;
+      const highCount = clusters.filter((c) => c.confidence_tier === "high_confidence").length;
+      let decidedCount = 0;
+
+      const summary = document.createElement("div");
+      summary.className = "review-summary";
+
+      const summaryText = document.createElement("div");
+      const summaryMain = document.createElement("div");
+      summaryMain.className = "review-summary-text";
+      summaryMain.innerHTML = `<b>${total}</b> group${total === 1 ? "" : "s"} of records look like they might be the same customer`;
+      const summarySub = document.createElement("div");
+      summarySub.className = "review-summary-sub";
+      summarySub.id = `review-progress-${datasetName}`.replace(/[^a-zA-Z0-9_-]/g, "");
+      summarySub.textContent = `0 of ${total} reviewed`;
+      summaryText.appendChild(summaryMain);
+      summaryText.appendChild(summarySub);
+      summary.appendChild(summaryText);
+
+      let batchBtn = null;
+      if (highCount > 1) {
+        batchBtn = document.createElement("button");
+        batchBtn.className = "review-batch-btn";
+        batchBtn.textContent = `Confirm all ${highCount} likely matches`;
+        summary.appendChild(batchBtn);
+      }
+
+      reviewContainer.appendChild(summary);
+
+      const note = document.createElement("div");
+      note.className = "review-note";
+      note.textContent = "Confirming a group records your decision for compliance review -- it does not merge or change any customer record automatically.";
+      reviewContainer.appendChild(note);
 
       const list = document.createElement("div");
       list.className = "review-list";
       reviewContainer.appendChild(list);
 
+      const updateProgress = () => {
+        summarySub.textContent = `${decidedCount} of ${total} reviewed`;
+        if (batchBtn && decidedCount === total) batchBtn.remove();
+      };
+
+      const cardHandlers = [];
+
       for (const cluster of clusters) {
+        const isHigh = cluster.confidence_tier === "high_confidence";
+        const uniqueNames = [...new Set(cluster.members.map((m) => m.name))];
+
+        // Plain-language reason: what actually matched across every member.
+        const dobs = new Set(cluster.members.map((m) => m.dob));
+        const phones = new Set(cluster.members.map((m) => m.phone || ""));
+        const reasons = [];
+        if (dobs.size === 1 && cluster.members[0].dob) reasons.push("same date of birth");
+        if (phones.size === 1 && [...phones][0]) reasons.push("same phone number");
+        if (uniqueNames.length === 1) reasons.push("identical name");
+        const reasonText = reasons.length
+          ? `Flagged because: ${reasons.join(", ")}`
+          : "Flagged as a likely match by the review model";
+
         const card = document.createElement("details");
         card.className = "review-card";
 
-        const summary = document.createElement("summary");
-        summary.className = "review-card-summary";
+        const summaryEl = document.createElement("summary");
+        summaryEl.className = "review-card-summary";
 
-        const tierBadge = document.createElement("span");
-        const isHigh = cluster.confidence_tier === "high_confidence";
-        tierBadge.className = "tier-badge " + (isHigh ? "tier-high" : "tier-review");
-        tierBadge.textContent = isHigh ? "High confidence" : "Needs review";
+        const badge = document.createElement("span");
+        badge.className = "match-badge " + (isHigh ? "match-high" : "match-review");
+        badge.textContent = isHigh ? "Likely match" : "Please check";
 
-        const uniqueNames = [...new Set(cluster.members.map((m) => m.name))].join(" / ");
-        const infoSpan = document.createElement("span");
-        infoSpan.className = "review-card-info";
-        infoSpan.textContent = `${cluster.size} records -- ${uniqueNames}`;
+        const headline = document.createElement("div");
+        headline.className = "review-card-headline";
+        const title = document.createElement("div");
+        title.className = "review-card-title";
+        title.textContent = `${cluster.size} records -- ${uniqueNames.join(" / ")}`;
+        const reasonEl = document.createElement("div");
+        reasonEl.className = "review-card-reason";
+        reasonEl.textContent = reasonText;
+        headline.appendChild(title);
+        headline.appendChild(reasonEl);
 
-        summary.appendChild(tierBadge);
-        summary.appendChild(infoSpan);
-        card.appendChild(summary);
+        summaryEl.appendChild(badge);
+        summaryEl.appendChild(headline);
+        card.appendChild(summaryEl);
 
-        const memberTable = document.createElement("table");
-        memberTable.className = "member-table";
-        const thead = document.createElement("thead");
-        thead.innerHTML = "<tr><th>Row ID</th><th>Name</th><th>DOB</th><th>Phone</th></tr>";
-        const tbody = document.createElement("tbody");
+        const recordList = document.createElement("div");
+        recordList.className = "record-list";
         for (const m of cluster.members) {
-          const tr = document.createElement("tr");
-          tr.innerHTML =
-            `<td>${escapeHtml(m.row_id)}</td><td>${escapeHtml(m.name)}</td>` +
-            `<td>${escapeHtml(m.dob)}</td><td>${escapeHtml(m.phone || "")}</td>`;
-          tbody.appendChild(tr);
+          const row = document.createElement("div");
+          row.className = "record-row";
+          row.innerHTML =
+            `<span class="record-row-name">${escapeHtml(m.name)}</span>` +
+            `<span class="record-row-meta">Born ${escapeHtml(m.dob)}${m.phone ? " &middot; " + escapeHtml(m.phone) : ""}</span>` +
+            `<span class="record-row-id">${escapeHtml(m.row_id)}</span>`;
+          recordList.appendChild(row);
         }
-        memberTable.appendChild(thead);
-        memberTable.appendChild(tbody);
-        card.appendChild(memberTable);
+        card.appendChild(recordList);
 
         const actions = document.createElement("div");
         actions.className = "review-actions";
 
         const confirmBtn = document.createElement("button");
         confirmBtn.className = "review-btn confirm";
-        confirmBtn.textContent = "Confirm duplicate";
+        confirmBtn.textContent = "Yes, same customer";
 
         const rejectBtn = document.createElement("button");
         rejectBtn.className = "review-btn reject";
-        rejectBtn.textContent = "Not a duplicate";
+        rejectBtn.textContent = "No, different people";
 
         const statusSpan = document.createElement("span");
         statusSpan.className = "decision-done hidden";
@@ -626,10 +701,16 @@ function addStreamingBotMessage() {
             rejectBtn.remove();
             statusSpan.textContent = "✓ " + label;
             statusSpan.classList.remove("hidden");
+            card.classList.add("is-decided");
+            card.open = false;
+            decidedCount++;
+            updateProgress();
+            return true;
           } catch (err) {
             confirmBtn.disabled = false;
             rejectBtn.disabled = false;
             alert("Could not save this decision: " + err.message);
+            return false;
           }
         };
 
@@ -642,6 +723,21 @@ function addStreamingBotMessage() {
         card.appendChild(actions);
 
         list.appendChild(card);
+
+        if (isHigh) {
+          cardHandlers.push(() => confirmBtn.disabled ? Promise.resolve() : decide("confirmed_duplicate", "Confirmed duplicate"));
+        }
+      }
+
+      if (batchBtn) {
+        batchBtn.onclick = async () => {
+          batchBtn.disabled = true;
+          batchBtn.textContent = "Confirming...";
+          for (const run of cardHandlers) {
+            await run();
+          }
+          if (batchBtn) { batchBtn.disabled = false; }
+        };
       }
 
       scrollMessagesToBottom();
