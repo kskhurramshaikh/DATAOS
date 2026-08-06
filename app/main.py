@@ -480,22 +480,22 @@ def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: by
     # methodology note, the literal tool name) that used to leak into
     # the "View details" panel below the cards on every run. Everyone
     # else's raw_result (NDI, IFRS 9) is untouched.
+    #
+    # IMPORTANT: this sanitizes a SEPARATE copy for display only.
+    # raw_result itself is left alone, because suggest_visualization()
+    # and explain_result() below both run on raw_result afterwards and
+    # read the original field names (high_confidence_clusters, etc.) --
+    # an earlier version of this fix mutated raw_result directly and
+    # silently broke the duplicate-groups chart as a result.
+    display_result = raw_result
     if action == "find_duplicates" and raw_result.get("status") == "completed" and raw_result["output"].get("applicable"):
-        o = raw_result["output"]
-        raw_result = {
+        display_result = {
             **raw_result,
             "routing": {"capability": capability, "tool": "Entity duplicate detection"},
-            "output": {
-                "applicable": True,
-                "total_clusters": o["total_clusters"],
-                "high_confidence_groups": o["high_confidence_clusters"],
-                "needs_review_groups": o["needs_review_clusters"],
-                "total_records_involved": o["total_records_involved"],
-                "note": "Per-record detail and decisions are in the review cards above -- this summary omits internal matching scores.",
-            },
+            "output": dedup_adapter.sanitize_clusters_output_for_display(raw_result["output"]),
         }
 
-    yield {"type": "tool_result", "data": raw_result}
+    yield {"type": "tool_result", "data": display_result}
 
     # For IFRS 9 specifically, offer the other two scenarios as one-click
     # follow-ups -- otherwise there's no way to see optimistic/adverse

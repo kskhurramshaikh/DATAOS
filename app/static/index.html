@@ -150,27 +150,55 @@
   .audit-modal-backdrop.hidden { display: none; }
   .audit-modal {
     background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-    width: 100%; max-width: 640px; max-height: 80vh; display: flex; flex-direction: column;
+    width: 100%; max-width: 860px; max-height: 84vh; display: flex; flex-direction: column;
   }
   .audit-modal-header {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 16px 18px; border-bottom: 1px solid var(--border);
+    padding: 16px 20px; border-bottom: 1px solid var(--border);
   }
   .audit-modal-header h3 { font-size: 15px; color: var(--text); }
   .audit-modal-close { background: none; border: none; color: var(--muted); font-size: 20px; cursor: pointer; line-height: 1; }
   .audit-modal-close:hover { color: var(--text); }
-  .audit-modal-body { padding: 14px 18px; overflow-y: auto; }
-  .audit-row {
-    display: flex; flex-direction: column; gap: 3px; padding: 10px 0; font-size: 12.5px;
-    border-bottom: 1px solid var(--border);
+
+  .audit-stats {
+    display: flex; gap: 22px; padding: 14px 20px; border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
   }
-  .audit-row:last-child { border-bottom: none; }
-  .audit-row-main { color: var(--text); }
-  .audit-row-meta { color: var(--muted); font-size: 11.5px; }
-  .audit-row-status { font-weight: 600; }
-  .audit-row-status.confirmed { color: #5bdc8c; }
-  .audit-row-status.rejected { color: var(--muted); }
-  .audit-empty { color: var(--muted); font-size: 13px; padding: 20px 0; text-align: center; }
+  .audit-stat { display: flex; flex-direction: column; gap: 2px; }
+  .audit-stat-value { font-size: 18px; font-weight: 700; color: var(--text); font-family: "SF Mono", Consolas, Monaco, monospace; }
+  .audit-stat-value.confirmed { color: #5bdc8c; }
+  .audit-stat-value.rejected { color: #ffbe5a; }
+  .audit-stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+
+  .audit-toolbar { padding: 12px 20px; border-bottom: 1px solid var(--border); }
+  .audit-search {
+    width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 12.5px; outline: none;
+  }
+  .audit-search:focus { border-color: var(--accent); }
+  .audit-search::placeholder { color: var(--muted); }
+
+  .audit-table-wrap { overflow-y: auto; flex: 1; }
+  .audit-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .audit-table thead th {
+    position: sticky; top: 0; z-index: 1;
+    text-align: left; color: var(--muted); font-weight: 600; padding: 9px 20px;
+    background: var(--panel); border-bottom: 1px solid var(--border); font-size: 10.5px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .audit-table td { padding: 9px 20px; border-bottom: 1px solid var(--border); color: var(--text); vertical-align: top; }
+  .audit-table tbody tr:hover { background: rgba(255,255,255,0.02); }
+  .audit-table tbody tr.audit-row-hidden { display: none; }
+  .audit-cell-name { font-weight: 600; white-space: nowrap; }
+  .audit-cell-reviewer { color: var(--muted); font-family: "SF Mono", Consolas, Monaco, monospace; font-size: 11.5px; }
+  .audit-cell-time { color: var(--muted); font-family: "SF Mono", Consolas, Monaco, monospace; font-size: 11px; white-space: nowrap; }
+  .audit-pill {
+    display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 20px;
+    font-size: 11px; font-weight: 600; white-space: nowrap;
+  }
+  .audit-pill.confirmed { background: rgba(91, 220, 140, 0.14); color: #5bdc8c; }
+  .audit-pill.rejected { background: rgba(255, 190, 90, 0.14); color: #ffbe5a; }
+  .audit-empty { color: var(--muted); font-size: 13px; padding: 30px 20px; text-align: center; }
   .review-list { display: flex; flex-direction: column; gap: 8px; }
   .review-card {
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
@@ -406,7 +434,10 @@ function escapeHtml(str) {
 
 // Duplicate-review audit log -- a durable record independent of the
 // chat scroll. This is what a bank reviewer pulls up later to see who
-// decided what and when, separate from any one conversation.
+// decided what and when, separate from any one conversation. Built as
+// a real table with a stats strip and search rather than stacked
+// cards -- a fully-reviewed file can produce hundreds of decisions,
+// and a card per row doesn't stay scannable at that scale.
 const auditBackdrop = document.createElement("div");
 auditBackdrop.className = "audit-modal-backdrop hidden";
 auditBackdrop.innerHTML = `
@@ -415,16 +446,33 @@ auditBackdrop.innerHTML = `
       <h3>Duplicate review -- audit log</h3>
       <button class="audit-modal-close" aria-label="Close">&times;</button>
     </div>
-    <div class="audit-modal-body" id="audit-modal-body"></div>
+    <div class="audit-stats" id="audit-stats"></div>
+    <div class="audit-toolbar">
+      <input type="text" class="audit-search" id="audit-search" placeholder="Search by customer or reviewer..." />
+    </div>
+    <div class="audit-table-wrap" id="audit-table-wrap"></div>
   </div>
 `;
 document.body.appendChild(auditBackdrop);
 auditBackdrop.querySelector(".audit-modal-close").onclick = () => auditBackdrop.classList.add("hidden");
 auditBackdrop.onclick = (e) => { if (e.target === auditBackdrop) auditBackdrop.classList.add("hidden"); };
 
+document.getElementById("audit-search").addEventListener("input", (e) => {
+  const q = e.target.value.trim().toLowerCase();
+  document.querySelectorAll("#audit-table-wrap tbody tr").forEach((row) => {
+    const match = row.dataset.search.includes(q);
+    row.classList.toggle("audit-row-hidden", !match);
+  });
+});
+
 async function openAuditLog(datasetName) {
-  const body = document.getElementById("audit-modal-body");
-  body.innerHTML = `<div class="audit-empty">Loading...</div>`;
+  const statsEl = document.getElementById("audit-stats");
+  const wrapEl = document.getElementById("audit-table-wrap");
+  const searchEl = document.getElementById("audit-search");
+  searchEl.value = "";
+  statsEl.innerHTML = "";
+  wrapEl.innerHTML = `<div class="audit-empty">Loading...</div>`;
+
   auditBackdrop.classList.remove("hidden");
   try {
     const res = await fetch(API + "/duplicates/audit-log?dataset_name=" + encodeURIComponent(datasetName), {
@@ -433,22 +481,64 @@ async function openAuditLog(datasetName) {
     if (!res.ok) throw new Error("Failed to load audit log");
     const { entries } = await res.json();
     if (!entries.length) {
-      body.innerHTML = `<div class="audit-empty">No decisions recorded yet for this dataset.</div>`;
+      wrapEl.innerHTML = `<div class="audit-empty">No decisions recorded yet for this dataset.</div>`;
       return;
     }
-    body.innerHTML = entries.map((e) => {
+
+    const confirmedCount = entries.filter((e) => e.status === "confirmed_duplicate").length;
+    const rejectedCount = entries.length - confirmedCount;
+    const reviewers = new Set(entries.map((e) => e.decided_by || "unknown"));
+
+    statsEl.innerHTML = `
+      <div class="audit-stat">
+        <div class="audit-stat-value">${entries.length}</div>
+        <div class="audit-stat-label">Total decisions</div>
+      </div>
+      <div class="audit-stat">
+        <div class="audit-stat-value confirmed">${confirmedCount}</div>
+        <div class="audit-stat-label">Confirmed duplicates</div>
+      </div>
+      <div class="audit-stat">
+        <div class="audit-stat-value rejected">${rejectedCount}</div>
+        <div class="audit-stat-label">Marked different</div>
+      </div>
+      <div class="audit-stat">
+        <div class="audit-stat-value">${reviewers.size}</div>
+        <div class="audit-stat-label">Reviewer${reviewers.size === 1 ? "" : "s"}</div>
+      </div>
+    `;
+
+    const rows = entries.map((e) => {
       const names = [...new Set(e.members.map((m) => m.name))].join(" / ");
       const confirmed = e.status === "confirmed_duplicate";
-      const statusLabel = confirmed ? "Confirmed as same customer" : "Marked as different people";
+      const reviewer = e.decided_by || "unknown";
+      const decidedAt = e.decided_at || "unknown";
+      const searchKey = (names + " " + reviewer).toLowerCase();
       return `
-        <div class="audit-row">
-          <div class="audit-row-main">${escapeHtml(names)} <span class="audit-row-status ${confirmed ? "confirmed" : "rejected"}">-- ${statusLabel}</span></div>
-          <div class="audit-row-meta">Decided by ${escapeHtml(e.decided_by || "unknown")} on ${escapeHtml(e.decided_at || "unknown date")}</div>
-        </div>
+        <tr data-search="${escapeHtml(searchKey)}">
+          <td class="audit-cell-name">${escapeHtml(names)}</td>
+          <td><span class="audit-pill ${confirmed ? "confirmed" : "rejected"}">${confirmed ? "Confirmed" : "Different people"}</span></td>
+          <td class="audit-cell-reviewer">${escapeHtml(reviewer)}</td>
+          <td class="audit-cell-time">${escapeHtml(decidedAt)}</td>
+        </tr>
       `;
     }).join("");
+
+    wrapEl.innerHTML = `
+      <table class="audit-table">
+        <thead>
+          <tr>
+            <th>Customer</th>
+            <th>Decision</th>
+            <th>Reviewer</th>
+            <th>Decided at</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
   } catch (err) {
-    body.innerHTML = `<div class="audit-empty">Could not load the audit log: ${escapeHtml(err.message)}</div>`;
+    wrapEl.innerHTML = `<div class="audit-empty">Could not load the audit log: ${escapeHtml(err.message)}</div>`;
   }
 }
 
