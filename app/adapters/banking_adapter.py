@@ -250,6 +250,7 @@ def compute_sama_compliance(dataset_name: str) -> dict:
 def compute_customer_360(dataset_name: str) -> dict:
     ds = dataset_adapter.list_datasets({"dataset_name": dataset_name})["datasets"][0]
     total_records = ds["rows"]
+    check_never_run = ds.get("duplicate_check_last_run_at") is None
 
     entries = dedup_adapter.get_audit_log(dataset_name, limit=10000)
     confirmed = [e for e in entries if e["status"] == "confirmed_duplicate"]
@@ -258,18 +259,32 @@ def compute_customer_360(dataset_name: str) -> dict:
     # record merge execution itself isn't built yet (see change log item
     # 2), so this is a projection based on real review decisions, not an
     # executed count.
-    extra_records = sum(max(len(e["members"]) - 1, 0) for e in confirmed)
-    golden_records_estimate = max(total_records - extra_records, 0)
-    uniqueness_ratio = round(100 * golden_records_estimate / total_records, 1) if total_records else None
+    #
+    # IMPORTANT: if duplicate detection has never been run, "0 confirmed
+    # duplicates" is ambiguous between "genuinely clean dataset" and
+    # "nobody has checked yet" -- defaulting to a perfect 100% uniqueness
+    # score in the unchecked case is the exact same false-confidence bug
+    # SAMA had (see compute_sama_compliance's check_never_run handling).
+    if check_never_run:
+        golden_records_estimate = None
+        uniqueness_ratio = None
+    else:
+        extra_records = sum(max(len(e["members"]) - 1, 0) for e in confirmed)
+        golden_records_estimate = max(total_records - extra_records, 0)
+        uniqueness_ratio = round(100 * golden_records_estimate / total_records, 1) if total_records else None
 
     return {
         "total_records": total_records,
         "golden_records_estimate": golden_records_estimate,
         "uniqueness_ratio": uniqueness_ratio,
         "uniqueness_target": 99.0,
-        "duplicate_clusters_confirmed": len(confirmed),
-        "duplicate_records_involved": extra_records,
+        "duplicate_clusters_confirmed": len(confirmed) if not check_never_run else None,
+        "duplicate_records_involved": (sum(max(len(e["members"]) - 1, 0) for e in confirmed) if not check_never_run else None),
+        "check_never_run": check_never_run,
         "note": (
+            "Duplicate detection hasn't been run on this dataset yet -- golden-record and "
+            "uniqueness figures can't be assessed until it has. Run \"Find duplicate customers\" first."
+        ) if check_never_run else (
             "golden_records_estimate assumes every confirmed duplicate group would collapse to "
             "one record if golden-record merge were executed -- that merge step isn't built yet, "
             "so this is a projection from real review decisions, not an executed count. No "

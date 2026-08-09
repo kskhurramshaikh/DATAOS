@@ -742,13 +742,13 @@ function renderSAMAComplianceView(container, d) {
 function renderCustomer360KPIBar(container, d) {
   const card = document.createElement("div");
   card.className = "comp-card";
-  const ratioClass = d.uniqueness_ratio != null && d.uniqueness_ratio >= d.uniqueness_target ? "good" : "warn";
+  const ratioClass = d.uniqueness_ratio == null ? "" : (d.uniqueness_ratio >= d.uniqueness_target ? "good" : "warn");
   card.innerHTML = `
     <div class="comp-title">Customer 360</div>
     <div class="comp-tiles">
       <div class="comp-tile"><div class="comp-tile-value">${d.golden_records_estimate ?? "—"}</div><div class="comp-tile-label">Golden records (est.)</div></div>
       <div class="comp-tile"><div class="comp-tile-value ${ratioClass}">${d.uniqueness_ratio != null ? d.uniqueness_ratio + "%" : "—"}</div><div class="comp-tile-label">Uniqueness (target ${d.uniqueness_target ?? 99}%+)</div></div>
-      <div class="comp-tile"><div class="comp-tile-value warn">${d.duplicate_records_involved ?? 0}</div><div class="comp-tile-label">Duplicate records involved</div></div>
+      <div class="comp-tile"><div class="comp-tile-value ${d.duplicate_records_involved ? "warn" : ""}">${d.duplicate_records_involved ?? "—"}</div><div class="comp-tile-label">Duplicate records involved</div></div>
     </div>
     ${d.note ? `<div class="comp-note">${escapeHtml(d.note)}</div>` : ""}
   `;
