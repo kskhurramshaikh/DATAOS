@@ -146,6 +146,38 @@ def find_duplicate_candidates(payload: dict) -> dict:
     )
 
     with get_conn() as conn:
+        # A fresh detection run reflects the current authoritative state
+        # of the dataset -- stale pending clusters from an earlier run
+        # must not just sit there accumulating. Without this, re-running
+        # "find duplicates" on the same dataset piled a whole new batch
+        # on top of whatever was already pending every single time
+        # (confirmed via testing: pending count climbed 83 -> 162 -> 186
+        # -> 269 across repeated runs on the same dataset, which also
+        # fed directly into SAMA's DG/RMD scores and Customer 360's
+        # duplicate counts). Already-decided clusters are untouched --
+        # they're real audit history, never cleared by a re-run.
+        conn.execute(
+            "DELETE FROM duplicate_clusters WHERE dataset_safe_name = ? AND status = 'pending'",
+            (dataset_name,),
+        )
+
+        # A cluster whose exact member set was already decided (confirmed
+        # or rejected) must not reappear as newly pending -- that would
+        # silently reopen a real human decision every time detection
+        # re-runs, which is worse than the accumulation bug it would
+        # otherwise still leave behind.
+        decided_member_sets = {
+            frozenset(json.loads(r["member_row_ids_json"]))
+            for r in conn.execute(
+                "SELECT member_row_ids_json FROM duplicate_clusters WHERE dataset_safe_name = ? AND status != 'pending'",
+                (dataset_name,),
+            ).fetchall()
+        }
+        cluster_list = [
+            c for c in cluster_list
+            if frozenset(m["row_id"] for m in c["members"]) not in decided_member_sets
+        ]
+
         for i, cluster in enumerate(cluster_list):
             cur = conn.execute(
                 """INSERT INTO duplicate_clusters

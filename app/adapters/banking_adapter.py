@@ -164,10 +164,17 @@ def compute_sama_compliance(dataset_name: str) -> dict:
     # review queue has actually been decided, not left pending.
     dg_score = round(100 * len(decided) / total_clusters, 1) if total_clusters else 100.0
 
-    # RMD -- unresolved duplicate risk data undermines anything built
-    # on top of it (IFRS 9 exposure figures, customer risk profiles);
-    # score reflects how much of that risk is still unresolved.
-    rmd_score = round(100 * (1 - pending / total_clusters), 1) if total_clusters else 100.0
+    # RMD -- record-impact weighted, not the same ratio as DG: what
+    # share of the dataset's actual records currently sit in an
+    # unresolved duplicate cluster, not just what fraction of review
+    # WORK is done. A few large unresolved clusters hurt this more
+    # than many small ones, even at the same cluster count -- DG and
+    # RMD measuring the identical decided/total ratio would make them
+    # numerically indistinguishable in every run, undermining the
+    # point of showing two separate domains.
+    pending_clusters = dedup_adapter.get_pending_clusters(dataset_name)
+    records_in_pending = sum(len(c["members"]) for c in pending_clusters)
+    rmd_score = round(100 * max(0, total_records - records_in_pending) / total_records, 1) if total_records else 100.0
 
     domain_scores = [
         {"code": "DG", "name": "Data Governance", "score": dg_score, "status": "measured"},
