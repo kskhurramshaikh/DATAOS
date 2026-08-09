@@ -30,6 +30,7 @@ from app.capability_registry import CAPABILITY_REGISTRY
 from app.compliance_agent import evaluate
 from app.router import route, NoCapabilityRegisteredError
 from app.visualization import suggest_visualization
+from app.adapters import dataset_adapter
 
 MODEL = "anthropic/claude-sonnet-5"
 
@@ -329,6 +330,61 @@ def interpret_stream(conversation_history: list[dict], user_message: str):
 
     display_result = _sanitize_for_display(intent, raw_result)
     yield {"type": "tool_result", "data": display_result}
+
+    # Mirrors main.py's component_type/component_data emission on the
+    # chip-click path. Today, compute_ifrs9_ecl and find_duplicate_candidates
+    # can't actually succeed from this text-only path (the system prompt
+    # above tells the model not to call them here, and even if it did,
+    # there's no re-attached file content available) -- but an LLM
+    # instruction isn't a hard guarantee, so this stays wired for the same
+    # defense-in-depth reason _sanitize_for_display exists: if this path
+    # ever does produce a result, it shouldn't silently lack the inline
+    # component the chip path already gets.
+    if raw_result.get("status") == "completed":
+        out = raw_result.get("output", {})
+        if intent == "compute_ifrs9_ecl":
+            yield {
+                "type": "component",
+                "component_type": "ifrs9_ecl",
+                "component_data": {
+                    "total_ecl_sar": out.get("total_computed_ecl"),
+                    "stage_1_count": out.get("stage_1_count"),
+                    "stage_2_count": out.get("stage_2_count"),
+                    "stage_3_count": out.get("stage_3_count"),
+                    "top_5_risk": out.get("top_5_risk", []),
+                    "pd_lgd_ead": out.get("pd_lgd_ead", {}),
+                },
+            }
+        elif intent == "find_duplicate_candidates" and out.get("applicable"):
+            yield {
+                "type": "component",
+                "component_type": "duplicate_clusters",
+                "component_data": {
+                    "total_clusters": out.get("total_clusters"),
+                    "high_confidence_clusters": out.get("high_confidence_clusters"),
+                    "needs_review_clusters": out.get("needs_review_clusters"),
+                    "note": "Full per-cluster detail and Confirm/Reject actions are in the review cards above.",
+                },
+            }
+
+    # Follow-up "what next" chips -- the actual gap this fixes.
+    # interpreter.py never yielded a recommendations event for anything
+    # before this, so completing an action via typed chat (e.g.
+    # "confirm all duplicates") was always a dead end even after the
+    # chip path grew this same behavior. Scoped to the intents that
+    # genuinely have a dataset to hand off to next; dataset_name is
+    # read from the intent's own output rather than the payload, since
+    # payload.dataset_name is optional for confirm_* (the system can
+    # resolve it automatically -- see the tool description above).
+    if raw_result.get("status") == "completed" and intent in (
+        "confirm_high_confidence_duplicates", "confirm_all_duplicates", "find_duplicate_candidates",
+    ):
+        out = raw_result.get("output", {})
+        ds_name = out.get("dataset_name")
+        if ds_name:
+            recommendations = dataset_adapter.get_followup_recommendations(ds_name, None, exclude_action=intent)
+            if recommendations:
+                yield {"type": "recommendations", "dataset_name": ds_name, "options": recommendations}
 
     charts = suggest_visualization(intent, raw_result)
     if charts:

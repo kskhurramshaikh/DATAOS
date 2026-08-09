@@ -495,3 +495,60 @@ def promote_dataset(payload: dict) -> dict:
         "numeric_summary": gold["numeric_summary"],
         "top_categories": gold["top_categories"],
     }
+
+
+def get_followup_recommendations(dataset_name: str, raw_bytes: bytes | None, exclude_action: str | None = None) -> list[dict]:
+    """The standing set of 'what would you like to do next' chips for a
+    dataset -- shared by both the chip-click path (main.py) and the
+    natural-language chat path (interpreter.py), so a user isn't left
+    at a dead end after completing an action on either path. Lives
+    here (not in main.py) specifically so both paths import the same
+    function rather than each having their own copy that can drift
+    apart -- confirm_all_duplicates via typed chat offered no
+    follow-up chips at all before this existed, since interpreter.py
+    never had its own version of this logic to begin with.
+    exclude_action omits whichever capability just ran."""
+    from app.adapters import dedup_adapter  # local import: avoids a module-load-order dependency, mirrors dedup_adapter's own pattern
+
+    recommendations = []
+    if raw_bytes:
+        try:
+            sheet_names = list_excel_sheet_names(raw_bytes)
+        except Exception:
+            sheet_names = []
+        if exclude_action != "assess_ndi" and any("ndi" in s.lower() for s in sheet_names):
+            recommendations.append({
+                "action": "assess_ndi",
+                "label": "📊 Assess NDI readiness",
+                "description": "Compute a data-governance readiness reading from the NDI sheet in this workbook.",
+            })
+        if exclude_action not in ("select_ifrs9_scenario", "compute_ifrs9") and any("ifrs" in s.lower() for s in sheet_names):
+            recommendations.append({
+                "action": "select_ifrs9_scenario",
+                "label": "💰 Compute IFRS 9 (PD, LGD & ECL)",
+                "description": "Model probability of default, loss given default, and expected credit loss -- pick a macro scenario to model.",
+            })
+    if exclude_action != "find_duplicates":
+        try:
+            silver_csv = read_silver_csv(dataset_name)
+            if dedup_adapter.is_applicable(silver_csv):
+                recommendations.append({
+                    "action": "find_duplicates",
+                    "label": "🔁 Find duplicate customers",
+                    "description": "Check this dataset for near-duplicate customer records needing review.",
+                })
+        except ValueError:
+            pass
+    if exclude_action != "sama_compliance":
+        recommendations.append({
+            "action": "sama_compliance",
+            "label": "🏦 SAMA compliance status",
+            "description": "Check data-governance, quality, and risk-data compliance signals against SAMA's compliance domains.",
+        })
+    if exclude_action != "customer_360":
+        recommendations.append({
+            "action": "customer_360",
+            "label": "👤 Customer 360 view",
+            "description": "See golden-record and data-quality KPIs for this dataset's customer base.",
+        })
+    return recommendations

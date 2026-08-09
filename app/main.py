@@ -361,7 +361,7 @@ def _dataset_upload_events(dataset_name: str, raw_bytes: bytes, csv_content: str
     # running them automatically -- the user decides what happens next
     # with their own data, same principle as the review-before-Gold gate.
     if ran_intent == "add_dataset":
-        recommendations = _followup_recommendations(raw_result["output"]["dataset_name"], raw_bytes, filename)
+        recommendations = dataset_adapter.get_followup_recommendations(raw_result["output"]["dataset_name"], raw_bytes)
         if recommendations:
             yield {
                 "type": "recommendations",
@@ -390,59 +390,6 @@ def _dataset_upload_events(dataset_name: str, raw_bytes: bytes, csv_content: str
 # flow above: these are optional, on-demand actions, not automatic
 # side effects of uploading a file.
 # ---------------------------------------------------------------------
-
-def _followup_recommendations(dataset_name: str, raw_bytes: bytes | None, filename: str | None, exclude_action: str | None = None) -> list[dict]:
-    """The standing set of 'what would you like to do next' chips --
-    reused after the initial upload AND after every recommended-action
-    completion (IFRS 9, NDI, duplicates), so a user isn't stuck with
-    only scenario-variant chips after running one analysis and has to
-    re-upload to reach the others. exclude_action omits whichever
-    capability just ran (offering it again right after running it is
-    redundant, and for IFRS 9 the scenario-variant chips already cover
-    that case)."""
-    recommendations = []
-    if raw_bytes:
-        try:
-            sheet_names = dataset_adapter.list_excel_sheet_names(raw_bytes)
-        except Exception:
-            sheet_names = []
-        if exclude_action != "assess_ndi" and any("ndi" in s.lower() for s in sheet_names):
-            recommendations.append({
-                "action": "assess_ndi",
-                "label": "📊 Assess NDI readiness",
-                "description": "Compute a data-governance readiness reading from the NDI sheet in this workbook.",
-            })
-        if exclude_action not in ("select_ifrs9_scenario", "compute_ifrs9") and any("ifrs" in s.lower() for s in sheet_names):
-            recommendations.append({
-                "action": "select_ifrs9_scenario",
-                "label": "💰 Compute IFRS 9 (PD, LGD & ECL)",
-                "description": "Model probability of default, loss given default, and expected credit loss -- pick a macro scenario to model.",
-            })
-    if exclude_action != "find_duplicates":
-        try:
-            silver_csv = dataset_adapter.read_silver_csv(dataset_name)
-            if dedup_adapter.is_applicable(silver_csv):
-                recommendations.append({
-                    "action": "find_duplicates",
-                    "label": "🔁 Find duplicate customers",
-                    "description": "Check this dataset for near-duplicate customer records needing review.",
-                })
-        except ValueError:
-            pass
-    if exclude_action != "sama_compliance":
-        recommendations.append({
-            "action": "sama_compliance",
-            "label": "🏦 SAMA compliance status",
-            "description": "Check data-governance, quality, and risk-data compliance signals against SAMA's compliance domains.",
-        })
-    if exclude_action != "customer_360":
-        recommendations.append({
-            "action": "customer_360",
-            "label": "👤 Customer 360 view",
-            "description": "See golden-record and data-quality KPIs for this dataset's customer base.",
-        })
-    return recommendations
-
 
 def _find_customer_sheet_csv(raw_bytes: bytes, sheet_names: list[str]) -> str | None:
     """Locates a customer/MDM-style sheet in the same workbook as the
@@ -630,9 +577,9 @@ def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: by
                 }
                 for s in other_scenarios
             ])
-            recommendations.extend(_followup_recommendations(dataset_name, raw_bytes, None, exclude_action="select_ifrs9_scenario"))
+            recommendations.extend(dataset_adapter.get_followup_recommendations(dataset_name, raw_bytes, exclude_action="select_ifrs9_scenario"))
         else:
-            recommendations.extend(_followup_recommendations(dataset_name, raw_bytes, None, exclude_action=action))
+            recommendations.extend(dataset_adapter.get_followup_recommendations(dataset_name, raw_bytes, exclude_action=action))
         if recommendations:
             yield {
                 "type": "recommendations",
