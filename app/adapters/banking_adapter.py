@@ -976,3 +976,130 @@ def _run_ifrs9_modeled(df: pd.DataFrame, scenario: str, customer_lookup: dict | 
         )
 
     return result
+
+
+# ---------------------------------------------------------------------
+# Typed-chat entry points -- the fix for Dr. Saber's Finding #1
+# (2026-08-09): the SAMA / Customer 360 / NDI Radar components were
+# only reachable via the recommendation-chip path in main.py; the
+# natural-language path in interpreter.py had no registered intent for
+# any of them, so typing "Show SAMA compliance" fell through to the
+# generic agent, which either denied the feature existed or routed to
+# an unrelated intent. These three wrappers are the payload-taking
+# adapter functions the capability registry now points at, so the
+# typed path routes through the exact same compute functions the chip
+# path already uses -- one implementation, two entrances, no drift.
+# ---------------------------------------------------------------------
+
+def _resolve_dataset_name_for_chat(payload: dict) -> str | None:
+    """Resolves which dataset a typed-chat request refers to.
+    - An explicit dataset_name in the payload wins (validated -- raises
+      a plain-English ValueError if it doesn't exist).
+    - Otherwise, if exactly one dataset exists, that's unambiguous.
+    - If none exist, returns None -- the caller renders the honest
+      "no dataset yet" state instead of erroring.
+    - If several exist and none was named, raises a friendly ask --
+      same behavior as confirm_all_duplicates already has."""
+    name = (payload or {}).get("dataset_name")
+    if name:
+        listing = dataset_adapter.list_datasets({"dataset_name": name})
+        return listing["datasets"][0]["dataset_name"]
+    datasets = dataset_adapter.list_datasets({})["datasets"]
+    if len(datasets) == 1:
+        return datasets[0]["dataset_name"]
+    if not datasets:
+        return None
+    names = ", ".join(d["display_name"] or d["dataset_name"] for d in datasets)
+    raise ValueError(
+        f"More than one dataset is available ({names}) -- please say which one you'd like this for."
+    )
+
+
+def _sama_no_dataset_state() -> dict:
+    """The SAMA Compliance View when no dataset exists at all. Same
+    honesty rule as check_never_run: nothing is invented -- every
+    domain shows not_measured with a plain explanation of what to do
+    first. Same output shape as compute_sama_compliance, so the
+    existing renderer needs no changes."""
+    domain_defs = [
+        ("DG", "Data Governance"), ("DQ", "Data Quality"),
+        ("DIS", "Data Integration & Sharing"), ("RMD", "Risk Management Data"),
+        ("DC", "Data Classification"), ("PDP", "Personal Data Protection"),
+        ("BIA", "Business Impact Assessment"), ("DS", "Data Security"),
+    ]
+    return {
+        "checks": [
+            {"label": "Data Governance", "status": "not_measured", "value": "No dataset uploaded yet"},
+            {"label": "MDM", "status": "not_measured", "value": "No dataset uploaded yet"},
+            {"label": "Data Classification", "status": "not_measured", "value": "Not yet instrumented"},
+            {"label": "PDPL", "status": "not_measured", "value": "No dataset uploaded yet"},
+            {"label": "IFRS 9 + Basel III readiness", "status": "not_measured", "value": "No dataset uploaded yet"},
+        ],
+        "domain_scores": [
+            {"code": code, "name": name, "score": None, "status": "not_measured"}
+            for code, name in domain_defs
+        ],
+        "no_dataset": True,
+        "priority_alert": (
+            "No dataset has been uploaded yet -- there's nothing to measure compliance signals "
+            "against. Upload a dataset via the \"+\" button, then run \"Find duplicate customers\" "
+            "to populate the governance and risk-data domains."
+        ),
+        "methodology_note": (
+            "DG, DQ, RMD, and PDP are computed from real signals (the duplicate-review audit log "
+            "and dataset null-rate metrics) once a dataset exists -- nothing is scored until "
+            "there's real data to score."
+        ),
+    }
+
+
+def _customer_360_no_dataset_state() -> dict:
+    """The Customer 360 KPI Bar when no dataset exists at all -- same
+    output shape as compute_customer_360's never-checked state, so the
+    existing "--" tile rendering applies unchanged."""
+    return {
+        "total_records": 0,
+        "golden_records_estimate": None,
+        "uniqueness_ratio": None,
+        "uniqueness_target": 99.0,
+        "duplicate_clusters_confirmed": None,
+        "duplicate_records_involved": None,
+        "check_never_run": True,
+        "quality_trend": None,
+        "no_dataset": True,
+        "note": (
+            "No dataset has been uploaded yet -- there are no customer records to measure. "
+            "Upload a dataset via the \"+\" button, then run \"Find duplicate customers\" to "
+            "populate these figures."
+        ),
+    }
+
+
+def run_sama_compliance(payload: dict) -> dict:
+    """Registered adapter for the typed-chat "assess_sama_compliance"
+    intent. Never refuses: with a dataset it computes the real view
+    (including its honest never-checked state); with no dataset it
+    renders the not-measured empty state above."""
+    dataset_name = _resolve_dataset_name_for_chat(payload)
+    if dataset_name is None:
+        return _sama_no_dataset_state()
+    result = compute_sama_compliance(dataset_name)
+    return {**result, "dataset_name": dataset_name}
+
+
+def run_customer_360(payload: dict) -> dict:
+    """Registered adapter for the typed-chat "assess_customer_360"
+    intent. Same never-refuse contract as run_sama_compliance."""
+    dataset_name = _resolve_dataset_name_for_chat(payload)
+    if dataset_name is None:
+        return _customer_360_no_dataset_state()
+    result = compute_customer_360(dataset_name)
+    return {**result, "dataset_name": dataset_name}
+
+
+def run_ndi_radar(payload: dict) -> dict:
+    """Registered adapter for the typed-chat "show_ndi_radar" intent.
+    Unconditional by design: the NDI Radar View renders from Dr.
+    Saber's preset BAJ baseline (his explicit spec for this component)
+    -- it needs no file and no dataset, ever."""
+    return compute_ndi_assessment()

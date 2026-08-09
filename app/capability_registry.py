@@ -52,4 +52,28 @@ CAPABILITY_REGISTRY = {
         "tool": "rapidfuzz_dob_clustering",
         "adapter": "app.adapters.dedup_adapter.confirm_all_pending",
     },
+    # -----------------------------------------------------------------
+    # Inline demo components on the typed-chat path -- the fix for Dr.
+    # Saber's Finding #1 (2026-08-09). These three views were only
+    # reachable via the recommendation chips in main.py before; the
+    # natural-language interpreter had no registered intent for any of
+    # them, so a user typing "Show SAMA compliance" got a denial that a
+    # shipped feature existed. Intent keys match the chip path's action
+    # naming where one exists (main.py's intent_map).
+    # -----------------------------------------------------------------
+    "assess_sama_compliance": {
+        "capability": "assess_sama_compliance_status",
+        "tool": "sama_compliance_scorer",
+        "adapter": "app.adapters.banking_adapter.run_sama_compliance",
+    },
+    "assess_customer_360": {
+        "capability": "assess_customer_data_quality",
+        "tool": "customer_360_analyzer",
+        "adapter": "app.adapters.banking_adapter.run_customer_360",
+    },
+    "show_ndi_radar": {
+        "capability": "assess_data_governance_readiness",
+        "tool": "ndi_scorecard_engine",
+        "adapter": "app.adapters.banking_adapter.run_ndi_radar",
+    },
 }

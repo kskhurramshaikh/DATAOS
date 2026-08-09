@@ -116,9 +116,34 @@ need an actual uploaded file -- none of them can be called from a text-only mess
 workbook is uploaded, the system detects which of these are actually relevant to it (an NDI
 sheet, an IFRS 9 sheet, name+DOB columns for duplicate detection) and offers them as clickable
 recommendation buttons in the chat -- they do NOT run automatically anymore. If a user asks
-about NDI readiness, IFRS 9, or duplicates in a text-only message, tell them (briefly, warmly)
-to upload the relevant file via the "+" button and use the recommendation buttons that appear
-afterward -- don't call the tool yourself and don't pretend to have run it.
+about NDI readiness (as a file-based check), IFRS 9, or duplicates in a text-only message,
+tell them (briefly, warmly) to upload the relevant file via the "+" button and use the
+recommendation buttons that appear afterward -- these ARE built features; never say or imply
+otherwise -- don't call the tool yourself and don't pretend to have run it.
+
+Three dashboard-style views are ALWAYS callable directly from a text-only message -- no file
+attachment needed. When a user asks to SEE or SHOW any of these (in any phrasing), call the
+intent immediately rather than asking for an upload:
+
+- "show_ndi_radar" (no payload needed): the NDI Radar View -- the official SDAIA NDI v1.1
+  maturity assessment (14 domains, radar chart, compliance breakdown) on the preset BAJ
+  baseline. It needs NO file and NO dataset, ever. "Show NDI radar", "NDI assessment",
+  "NDI maturity", "SDAIA readiness view", "national data index" all mean this. (Only if a
+  user specifically wants NDI computed from their own uploaded scorecard file is
+  "assess_ndi_readiness" the right intent instead.)
+- "assess_sama_compliance" (payload: optional dataset_name): the SAMA Compliance View --
+  8-domain compliance status. "Show SAMA compliance", "SAMA status", "compliance status"
+  all mean this.
+- "assess_customer_360" (payload: optional dataset_name): the Customer 360 KPI view --
+  golden records, uniqueness ratio, quality trend. "Show Customer 360", "Customer 360 KPI
+  bar", "golden records", "customer data quality KPIs" all mean this.
+
+For the last two: if the user doesn't name a dataset, just omit dataset_name -- the system
+resolves it automatically (uses the only dataset if one exists; renders an honest
+"nothing measured yet" view if none exists; asks which one if several exist). NEVER refuse
+these three intents, never say they need a file first, and never tell the user to upload
+something before calling them -- the views themselves explain honestly what's measured and
+what isn't.
 
 When a dataset is added, it goes through Bronze (raw landing), Silver (duplicates removed,
 missing values reported honestly), then Gold (curated for business use -- any column that's
@@ -153,8 +178,12 @@ Rules:
    (or reasonable defaults suffice), call the call_intent tool. Don't interrogate the user
    for parameters they haven't offered an opinion on -- use defaults.
 2. If the user asks for something that maps to a capability that ISN'T registered yet,
-   say plainly that it's not built yet and briefly what's coming, without inventing a
-   fake result.
+   say plainly that it's not available yet, without inventing a fake result. NEVER say
+   "not built" about anything that IS in the registered list above -- if a request sounds
+   close to a registered intent but you're not certain it's the one they mean, ask one
+   short clarifying question instead of denying the feature exists. Never route to a
+   loosely-related intent (like list_datasets) as a guess at what they meant -- a wrong
+   result is worse than a question.
 3. If the user's message is genuinely ambiguous about WHICH registered intent they mean,
    ask ONE short clarifying question -- don't call the tool speculatively.
 4. Keep replies short, warm, and non-technical. No JSON, no code blocks, no tool names.
@@ -373,6 +402,28 @@ def interpret_stream(conversation_history: list[dict], user_message: str):
                 "component_type": "ndi_assessment",
                 "component_data": compute_ndi_assessment(),
             }
+        # The three typed-chat dashboard intents (Dr. Saber's Finding #1
+        # fix): their adapters already return exactly the component_data
+        # shape the frontend renderers expect -- same contract as the
+        # chip path in main.py, same renderers, no remapping.
+        elif intent == "show_ndi_radar":
+            yield {
+                "type": "component",
+                "component_type": "ndi_assessment",
+                "component_data": out,
+            }
+        elif intent == "assess_sama_compliance":
+            yield {
+                "type": "component",
+                "component_type": "sama_compliance",
+                "component_data": out,
+            }
+        elif intent == "assess_customer_360":
+            yield {
+                "type": "component",
+                "component_type": "customer_360",
+                "component_data": out,
+            }
 
     # Follow-up "what next" chips -- the actual gap this fixes.
     # interpreter.py never yielded a recommendations event for anything
@@ -383,13 +434,27 @@ def interpret_stream(conversation_history: list[dict], user_message: str):
     # read from the intent's own output rather than the payload, since
     # payload.dataset_name is optional for confirm_* (the system can
     # resolve it automatically -- see the tool description above).
-    if raw_result.get("status") == "completed" and intent in (
-        "confirm_high_confidence_duplicates", "confirm_all_duplicates", "find_duplicate_candidates",
-    ):
+    # Intent key -> the chip-path action name get_followup_recommendations
+    # excludes -- the two namespaces aren't identical (the chips predate
+    # the typed intents), so this maps between them explicitly rather
+    # than passing an intent key exclude_action would never match.
+    # confirm_* deliberately map to None (exclude nothing): after
+    # confirming, re-running detection is a legitimate next step, and
+    # the verified live behavior is all 5 chips present -- kept as-is.
+    _exclude_action_by_intent = {
+        "confirm_high_confidence_duplicates": None,
+        "confirm_all_duplicates": None,
+        "find_duplicate_candidates": "find_duplicates",
+        "assess_sama_compliance": "sama_compliance",
+        "assess_customer_360": "customer_360",
+    }
+    if raw_result.get("status") == "completed" and intent in _exclude_action_by_intent:
         out = raw_result.get("output", {})
         ds_name = out.get("dataset_name")
         if ds_name:
-            recommendations = dataset_adapter.get_followup_recommendations(ds_name, None, exclude_action=intent)
+            recommendations = dataset_adapter.get_followup_recommendations(
+                ds_name, None, exclude_action=_exclude_action_by_intent[intent]
+            )
             if recommendations:
                 yield {"type": "recommendations", "dataset_name": ds_name, "options": recommendations}
 
