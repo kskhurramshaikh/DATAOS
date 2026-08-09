@@ -424,6 +424,21 @@ def read_silver_csv(safe_name: str) -> str:
         return f.read()
 
 
+def mark_duplicate_check_run(safe_name: str) -> None:
+    """Records that duplicate detection was actually run for this
+    dataset, regardless of outcome (found clusters, found none, or
+    wasn't applicable). This is the only reliable way to distinguish
+    'genuinely resolved, 0 pending' from 'never checked, 0 rows exist
+    because nothing was ever run' -- both look identical if you only
+    look at the duplicate_clusters table."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE datasets SET duplicate_check_last_run_at = CURRENT_TIMESTAMP WHERE safe_name = ?",
+            (safe_name,),
+        )
+        conn.commit()
+
+
 def list_datasets(payload: dict) -> dict:
     """list_datasets: returns every dataset's current stage/status, or
     one dataset's detail if dataset_name is given in the payload."""
@@ -448,6 +463,7 @@ def list_datasets(payload: dict) -> dict:
             "dropped_columns": json.loads(r["dropped_columns_json"]),
             "duplicate_rows_removed": r["duplicate_rows_removed"],
             "null_counts": json.loads(r["null_counts_json"]),
+            "duplicate_check_last_run_at": r["duplicate_check_last_run_at"],
             "updated_at": r["updated_at"],
         })
 
@@ -516,18 +532,33 @@ def get_followup_recommendations(dataset_name: str, raw_bytes: bytes | None, exc
             sheet_names = list_excel_sheet_names(raw_bytes)
         except Exception:
             sheet_names = []
-        if exclude_action != "assess_ndi" and any("ndi" in s.lower() for s in sheet_names):
-            recommendations.append({
-                "action": "assess_ndi",
-                "label": "📊 Assess NDI readiness",
-                "description": "Compute a data-governance readiness reading from the NDI sheet in this workbook.",
-            })
-        if exclude_action not in ("select_ifrs9_scenario", "compute_ifrs9") and any("ifrs" in s.lower() for s in sheet_names):
-            recommendations.append({
-                "action": "select_ifrs9_scenario",
-                "label": "💰 Compute IFRS 9 (PD, LGD & ECL)",
-                "description": "Model probability of default, loss given default, and expected credit loss -- pick a macro scenario to model.",
-            })
+        ndi_applicable = any("ndi" in s.lower() for s in sheet_names)
+        ifrs_applicable = any("ifrs" in s.lower() for s in sheet_names)
+    else:
+        # No file content available to check sheet names against --
+        # only the chip-click path re-attaches raw bytes; the
+        # natural-language chat path never has them (see interpreter.py).
+        # Rather than silently hiding these chips whenever that happens,
+        # offer them optimistically: the frontend still has the original
+        # file cached (lastUploadedFile) and will correctly re-attach it
+        # when clicked. Worst case is a graceful "no matching sheet"
+        # error on a dataset that genuinely doesn't have one -- not a
+        # missing chip a user has to re-upload to reach.
+        ndi_applicable = True
+        ifrs_applicable = True
+
+    if exclude_action != "assess_ndi" and ndi_applicable:
+        recommendations.append({
+            "action": "assess_ndi",
+            "label": "📊 Assess NDI readiness",
+            "description": "Compute a data-governance readiness reading from the NDI sheet in this workbook.",
+        })
+    if exclude_action not in ("select_ifrs9_scenario", "compute_ifrs9") and ifrs_applicable:
+        recommendations.append({
+            "action": "select_ifrs9_scenario",
+            "label": "💰 Compute IFRS 9 (PD, LGD & ECL)",
+            "description": "Model probability of default, loss given default, and expected credit loss -- pick a macro scenario to model.",
+        })
     if exclude_action != "find_duplicates":
         try:
             silver_csv = read_silver_csv(dataset_name)

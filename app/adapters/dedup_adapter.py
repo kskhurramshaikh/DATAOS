@@ -28,6 +28,7 @@ import pandas as pd
 from rapidfuzz import fuzz
 
 from app.db import get_conn
+from app.adapters import dataset_adapter
 
 DOB_COL_CANDIDATES = ["dob", "date_of_birth", "birth_date", "birthdate"]
 NAME_COL_CANDIDATES = ["full_name", "name", "customer_name"]
@@ -71,6 +72,7 @@ def find_duplicate_candidates(payload: dict) -> dict:
     id_col = _find_col(df.columns, ID_COL_CANDIDATES)
 
     if not dob_col or not name_col:
+        dataset_adapter.mark_duplicate_check_run(dataset_name)
         return {
             "applicable": False,
             "reason": (
@@ -194,6 +196,8 @@ def find_duplicate_candidates(payload: dict) -> dict:
             )
             cluster["id"] = cur.lastrowid
         conn.commit()
+
+    dataset_adapter.mark_duplicate_check_run(dataset_name)
 
     high_confidence_count = sum(1 for c in cluster_list if c["confidence_tier"] == "high_confidence")
     return {

@@ -156,13 +156,28 @@ def compute_sama_compliance(dataset_name: str) -> dict:
     else:
         pdp_score = None
 
+    check_never_run = ds.get("duplicate_check_last_run_at") is None
+
     pending = dedup_adapter.get_pending_count(dataset_name)
     decided = dedup_adapter.get_audit_log(dataset_name, limit=10000)
     total_clusters = pending + len(decided)
 
     # DG -- governance-process completion: how much of the duplicate
     # review queue has actually been decided, not left pending.
-    dg_score = round(100 * len(decided) / total_clusters, 1) if total_clusters else 100.0
+    # IMPORTANT: total_clusters == 0 is genuinely ambiguous on its own --
+    # it means either "fully resolved" or "detection was never run in
+    # the first place" (an untouched dataset has zero rows in
+    # duplicate_clusters either way). Defaulting that to 100%/"OK" would
+    # tell a bank exec their duplicate-review governance is complete
+    # when nobody has even checked yet -- exactly the kind of false
+    # claim this view exists to avoid. duplicate_check_last_run_at is
+    # the real signal that disambiguates the two.
+    if check_never_run:
+        dg_score = None
+    elif total_clusters:
+        dg_score = round(100 * len(decided) / total_clusters, 1)
+    else:
+        dg_score = 100.0  # checked, and genuinely found nothing to review
 
     # RMD -- record-impact weighted, not the same ratio as DG: what
     # share of the dataset's actual records currently sit in an
@@ -171,16 +186,20 @@ def compute_sama_compliance(dataset_name: str) -> dict:
     # than many small ones, even at the same cluster count -- DG and
     # RMD measuring the identical decided/total ratio would make them
     # numerically indistinguishable in every run, undermining the
-    # point of showing two separate domains.
-    pending_clusters = dedup_adapter.get_pending_clusters(dataset_name)
-    records_in_pending = sum(len(c["members"]) for c in pending_clusters)
-    rmd_score = round(100 * max(0, total_records - records_in_pending) / total_records, 1) if total_records else 100.0
+    # point of showing two separate domains. Same never-run caveat as
+    # DG applies here too.
+    if check_never_run:
+        rmd_score = None
+    else:
+        pending_clusters = dedup_adapter.get_pending_clusters(dataset_name)
+        records_in_pending = sum(len(c["members"]) for c in pending_clusters)
+        rmd_score = round(100 * max(0, total_records - records_in_pending) / total_records, 1) if total_records else 100.0
 
     domain_scores = [
-        {"code": "DG", "name": "Data Governance", "score": dg_score, "status": "measured"},
+        {"code": "DG", "name": "Data Governance", "score": dg_score, "status": "not_measured" if dg_score is None else "measured"},
         {"code": "DQ", "name": "Data Quality", "score": dq_score, "status": "measured"},
         {"code": "DIS", "name": "Data Integration & Sharing", "score": None, "status": "not_measured"},
-        {"code": "RMD", "name": "Risk Management Data", "score": rmd_score, "status": "measured"},
+        {"code": "RMD", "name": "Risk Management Data", "score": rmd_score, "status": "not_measured" if rmd_score is None else "measured"},
         {"code": "DC", "name": "Data Classification", "score": None, "status": "not_measured"},
         {"code": "PDP", "name": "Personal Data Protection", "score": pdp_score, "status": "measured" if pdp_score is not None else "not_measured"},
         {"code": "BIA", "name": "Business Impact Assessment", "score": None, "status": "not_measured"},
@@ -191,14 +210,24 @@ def compute_sama_compliance(dataset_name: str) -> dict:
     ifrs9_ready = all(c in columns for c in modeling_cols)
 
     checks = [
-        {"label": "Data Governance", "status": "ok" if dg_score >= 80 else "warn", "value": f"{dg_score}% of duplicate reviews decided"},
-        {"label": "MDM", "status": "ok" if pending == 0 else "warn", "value": f"{pending} duplicate cluster(s) still pending review"},
+        {
+            "label": "Data Governance",
+            "status": "not_measured" if check_never_run else ("ok" if dg_score >= 80 else "warn"),
+            "value": "Duplicate detection not yet run" if check_never_run else f"{dg_score}% of duplicate reviews decided",
+        },
+        {
+            "label": "MDM",
+            "status": "not_measured" if check_never_run else ("ok" if pending == 0 else "warn"),
+            "value": "Duplicate detection not yet run" if check_never_run else f"{pending} duplicate cluster(s) still pending review",
+        },
         {"label": "Data Classification", "status": "not_measured", "value": "Not yet instrumented"},
         {"label": "PDPL", "status": "ok" if (pdp_score or 0) >= 90 else "warn", "value": f"{pdp_score}% PII field completeness" if pdp_score is not None else "No PII columns detected"},
         {"label": "IFRS 9 + Basel III readiness", "status": "ok" if ifrs9_ready else "warn", "value": "Modeling columns present" if ifrs9_ready else "Missing required modeling columns"},
     ]
 
-    if pending > 0:
+    if check_never_run:
+        priority_alert = "Duplicate detection hasn't been run on this dataset yet -- DG and RMD can't be assessed until it has. Run \"Find duplicate customers\" first."
+    elif pending > 0:
         priority_alert = f"RMD domain: {pending} unresolved duplicate cluster(s) still need review -- affects reliability of downstream risk figures until decided."
     else:
         measured = [d for d in domain_scores if d["status"] == "measured"]

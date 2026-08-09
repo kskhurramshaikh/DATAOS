@@ -66,6 +66,7 @@ def init_db():
                 bronze_path TEXT,
                 silver_path TEXT,
                 gold_path TEXT,
+                duplicate_check_last_run_at TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (uploaded_by) REFERENCES users (id)
@@ -97,6 +98,12 @@ def init_db():
         # exists without wiping decision history.
         try:
             conn.execute("ALTER TABLE duplicate_clusters ADD COLUMN decided_by TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+        try:
+            conn.execute("ALTER TABLE datasets ADD COLUMN duplicate_check_last_run_at TEXT")
             conn.commit()
         except sqlite3.OperationalError:
             pass  # column already exists
