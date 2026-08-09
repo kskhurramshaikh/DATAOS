@@ -386,18 +386,18 @@ def compute_ndi_assessment() -> dict:
         "overall_compliance_pct": overall_compliance_pct,
         "overall_oe_score": overall_oe_score,
         "total_specs": total_specs,
+        "compliant_specs": total_compliant_specs,
         "domains": domains_out,
-        "stated_target": {"display_score": 52.3, "compliance_pct": 63.4, "maturity_level": "Emerging"},
         "methodology_note": (
             "Domain weights (7.14% x 13 + 7.1423% PDP), the 6-level maturity scale, the OE "
             "domain set, and all scoring formulas are the official SDAIA NDI v1.1 methodology, "
             "provided directly by Dr. Saber. The per-domain maturity/compliance inputs are his "
             "preset BAJ demo baseline, not computed from an uploaded file -- unlike IFRS 9, "
             "SAMA, and Customer 360, which compute their inputs from real uploaded data. "
-            "Applying his exact formula to his exact baseline table produces the figures shown "
-            "above, which differ from the target values his document states (52.3 / 63.4% / "
-            "Emerging) -- not a rounding difference. Shown as computed rather than forced to "
-            "match, pending his confirmation of which figure has the discrepancy."
+            "These are the official baseline display values, confirmed by Dr. Saber's own "
+            "independent re-derivation (2026-08-09) -- his spec's original stated totals "
+            "(52.3 / 63.4% / \"Emerging\") were superseded as an error in his document, not "
+            "in this computation; the 14 domain scores were always correct."
         ),
     }
 
@@ -428,6 +428,24 @@ def compute_customer_360(dataset_name: str) -> dict:
         golden_records_estimate = max(total_records - extra_records, 0)
         uniqueness_ratio = round(100 * golden_records_estimate / total_records, 1) if total_records else None
 
+    quality_trend = None
+    if not check_never_run and uniqueness_ratio is not None:
+        # No real historical tracking exists yet (see note below) -- this
+        # is a clearly-labeled illustrative trend, not real history. The
+        # only real number in it is the last point (today's actual
+        # uniqueness_ratio); the 5 earlier points are a synthetic,
+        # plausible improvement curve leading up to it, generated for
+        # demo purposes per the original spec's request -- not fabricated
+        # to look like real tracking, and disclosed as such directly on
+        # the chart, not just in a footnote.
+        start = max(0.0, uniqueness_ratio - 8.0)
+        step = (uniqueness_ratio - start) / 5
+        quality_trend = [
+            {"month": label, "uniqueness_pct": round(start + step * i, 1)}
+            for i, label in enumerate(["5 months ago", "4 months ago", "3 months ago", "2 months ago", "Last month", "This month"])
+        ]
+        quality_trend[-1]["uniqueness_pct"] = uniqueness_ratio  # exact real value, not rounded-through synthetic math
+
     return {
         "total_records": total_records,
         "golden_records_estimate": golden_records_estimate,
@@ -436,14 +454,17 @@ def compute_customer_360(dataset_name: str) -> dict:
         "duplicate_clusters_confirmed": len(confirmed) if not check_never_run else None,
         "duplicate_records_involved": (sum(max(len(e["members"]) - 1, 0) for e in confirmed) if not check_never_run else None),
         "check_never_run": check_never_run,
+        "quality_trend": quality_trend,
         "note": (
             "Duplicate detection hasn't been run on this dataset yet -- golden-record and "
             "uniqueness figures can't be assessed until it has. Run \"Find duplicate customers\" first."
         ) if check_never_run else (
             "golden_records_estimate assumes every confirmed duplicate group would collapse to "
             "one record if golden-record merge were executed -- that merge step isn't built yet, "
-            "so this is a projection from real review decisions, not an executed count. No "
-            "historical trend is shown -- DataOS doesn't track data-quality history over time yet."
+            "so this is a projection from real review decisions, not an executed count. The "
+            "6-month trend is illustrative demo data, not real historical tracking -- only "
+            "\"This month\" is a real measured value; DataOS doesn't track data-quality history "
+            "over time yet."
         ),
     }
 

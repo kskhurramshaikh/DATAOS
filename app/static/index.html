@@ -244,6 +244,7 @@
   }
   .audit-pill.confirmed { background: rgba(91, 220, 140, 0.14); color: #5bdc8c; }
   .audit-pill.rejected { background: rgba(255, 190, 90, 0.14); color: #ffbe5a; }
+  .audit-pill.low-compliance { background: rgba(255, 107, 107, 0.14); color: #ff6b6b; }
   .audit-empty { color: var(--muted); font-size: 13px; padding: 30px 20px; text-align: center; }
   .review-list { display: flex; flex-direction: column; gap: 8px; }
   .review-card {
@@ -743,6 +744,7 @@ function renderCustomer360KPIBar(container, d) {
   const card = document.createElement("div");
   card.className = "comp-card";
   const ratioClass = d.uniqueness_ratio == null ? "" : (d.uniqueness_ratio >= d.uniqueness_target ? "good" : "warn");
+  const hasTrend = Array.isArray(d.quality_trend) && d.quality_trend.length > 0;
   card.innerHTML = `
     <div class="comp-title">Customer 360</div>
     <div class="comp-tiles">
@@ -750,27 +752,49 @@ function renderCustomer360KPIBar(container, d) {
       <div class="comp-tile"><div class="comp-tile-value ${ratioClass}">${d.uniqueness_ratio != null ? d.uniqueness_ratio + "%" : "—"}</div><div class="comp-tile-label">Uniqueness (target ${d.uniqueness_target ?? 99}%+)</div></div>
       <div class="comp-tile"><div class="comp-tile-value ${d.duplicate_records_involved ? "warn" : ""}">${d.duplicate_records_involved ?? "—"}</div><div class="comp-tile-label">Duplicate records involved</div></div>
     </div>
+    ${hasTrend ? `
+      <div class="comp-section-label">6-month uniqueness trend <span style="color:#ffbe5a;text-transform:none;letter-spacing:0;">(illustrative demo data — only "This month" is real)</span></div>
+      <canvas id="c360-trend-${Date.now()}" style="max-height: 160px;"></canvas>
+    ` : ""}
     ${d.note ? `<div class="comp-note">${escapeHtml(d.note)}</div>` : ""}
   `;
   container.appendChild(card);
+
+  if (hasTrend) {
+    const canvas = card.querySelector("canvas");
+    new Chart(canvas.getContext("2d"), {
+      type: "line",
+      data: {
+        labels: d.quality_trend.map((p) => p.month),
+        datasets: [{
+          data: d.quality_trend.map((p) => p.uniqueness_pct),
+          borderColor: "rgba(91, 140, 255, 0.9)",
+          backgroundColor: "rgba(91, 140, 255, 0.15)",
+          fill: true,
+          tension: 0.3,
+          pointRadius: 3,
+        }],
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: { ticks: { color: "#8a8f9c" }, grid: { color: "rgba(255,255,255,0.06)" } },
+          x: { ticks: { color: "#8a8f9c", font: { size: 10 } }, grid: { display: false } },
+        },
+      },
+    });
+  }
 }
 
 function renderNDIRadarView(container, d) {
   const card = document.createElement("div");
   card.className = "comp-card";
 
-  const levelColor = { "Capability No": "", "Emerging": "warn", "Developing": "warn", "Defined": "good", "Managed": "good", "Leading": "good" };
-  const st = d.stated_target || {};
-  const mismatch = st.display_score != null && Math.abs(st.display_score - d.display_score) > 0.5;
-
   card.innerHTML = `
     <div class="comp-title">NDI Radar — SDAIA NDI v1.1</div>
     <div class="comp-ecl-headline">${d.display_score ?? "—"} / 100</div>
-    <div class="comp-ecl-sub">Maturity level: ${escapeHtml(d.maturity_level ?? "—")} &middot; ${d.overall_compliance_pct ?? "—"}% compliance &middot; OE score ${d.overall_oe_score ?? "—"}/5</div>
-    ${mismatch ? `
-      <div class="sama-alert">⚠ Computed from the stated formula and baseline: ${d.display_score}/100, ${d.overall_compliance_pct}% compliance, "${escapeHtml(d.maturity_level)}" level.
-      This differs from the target values stated in the spec (${st.display_score}/100, ${st.compliance_pct}%, "${escapeHtml(st.maturity_level)}") — flagged for Dr. Saber to confirm which figure has the discrepancy, not silently adjusted to match.</div>
-    ` : ""}
+    <div class="comp-ecl-sub">Maturity level: ${escapeHtml(d.maturity_level ?? "—")} &middot; ${d.overall_compliance_pct ?? "—"}% compliance (${d.compliant_specs ?? "—"}/${d.total_specs ?? "—"}) &middot; OE score ${d.overall_oe_score ?? "—"}/5</div>
     <div class="comp-donut-row">
       <canvas id="ndi-radar-${Date.now()}" style="max-width: 320px; max-height: 320px;"></canvas>
     </div>
@@ -782,7 +806,7 @@ function renderNDIRadarView(container, d) {
           <tr>
             <td>${escapeHtml(dom.code)} · ${escapeHtml(dom.name)}${dom.is_oe_domain ? " <span style=\"color:var(--muted);font-size:10px;\">(OE)</span>" : ""}</td>
             <td>${dom.maturity_score}/5</td>
-            <td><span class="audit-pill ${dom.compliance_status === "high" ? "confirmed" : dom.compliance_status === "low" ? "rejected" : ""}">${dom.compliance_pct}%</span></td>
+            <td><span class="audit-pill ${dom.compliance_status === "high" ? "confirmed" : dom.compliance_status === "medium" ? "rejected" : "low-compliance"}">${dom.compliance_pct}%</span></td>
             <td style="color:var(--muted);font-size:11.5px;">${escapeHtml(dom.evidence || "")}</td>
           </tr>
         `).join("")}
