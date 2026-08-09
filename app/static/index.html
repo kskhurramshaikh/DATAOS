@@ -113,6 +113,37 @@
   .chart-block canvas { max-height: 220px; }
   .chart-alt-note { font-size: 11px; color: var(--muted); margin-top: 8px; font-style: italic; }
 
+  /* Inline components (component_type/component_data payloads) --
+     structured views embedded directly in the chat bubble, per Dr.
+     Saber's Banking Demo Requirements v2 spec. */
+  .components-container { margin-top: 4px; }
+  .comp-card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px; margin-top: 10px;
+  }
+  .comp-title { font-size: 12px; color: var(--muted); margin-bottom: 10px; font-weight: 600; }
+  .comp-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; }
+  .comp-tile { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .comp-tile-value { font-size: 18px; font-weight: 700; color: var(--text); }
+  .comp-tile-value.good { color: #5bdc8c; }
+  .comp-tile-value.warn { color: #ffbe5a; }
+  .comp-tile-label { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .comp-ecl-headline { font-size: 26px; font-weight: 700; color: var(--text); margin-bottom: 2px; }
+  .comp-ecl-sub { font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+  .comp-donut-row { display: flex; gap: 16px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+  .comp-donut-row canvas { max-width: 140px; max-height: 140px; }
+  .comp-stage-legend { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+  .comp-stage-legend .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+  .comp-risk-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 4px; }
+  .comp-risk-table th {
+    text-align: left; color: var(--muted); font-weight: 600; padding: 6px 8px;
+    border-bottom: 1px solid var(--border); font-size: 10.5px; text-transform: uppercase;
+  }
+  .comp-risk-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); color: var(--text); }
+  .comp-risk-table tr:last-child td { border-bottom: none; }
+  .comp-section-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; margin: 14px 0 8px; }
+  .comp-note { font-size: 11.5px; color: var(--muted); margin-top: 10px; font-style: italic; }
+
   /* Duplicate review -- redesigned for a non-technical reviewer (bank
      exec), not a data analyst. Cards lead with a plain-language
      statement of what's being asked ("Likely the same person") and a
@@ -548,6 +579,116 @@ async function openAuditLog(datasetName) {
   }
 }
 
+// Inline components -- structured views rendered directly inside the
+// chat bubble (component_type/component_data payloads), per Dr.
+// Saber's Banking Demo Requirements v2 spec. Each is a plain function
+// that appends its card into the given container; kept simple and
+// read-only for P1 (no interactivity requirements beyond what's
+// already handled by the existing review-card/chart mechanisms).
+
+function renderProcessingSummaryCard(container, d) {
+  const card = document.createElement("div");
+  card.className = "comp-card";
+  const emailTileClass = d.email_null_pct != null && d.email_null_pct > 10 ? "warn" : "good";
+  card.innerHTML = `
+    <div class="comp-title">Processing summary</div>
+    <div class="comp-tiles">
+      <div class="comp-tile"><div class="comp-tile-value">${d.total_records ?? "—"}</div><div class="comp-tile-label">Total records</div></div>
+      <div class="comp-tile"><div class="comp-tile-value good">${d.gold_records ?? 0}</div><div class="comp-tile-label">Gold records</div></div>
+      <div class="comp-tile"><div class="comp-tile-value ${d.silver_held ? "warn" : ""}">${d.silver_held ?? 0}</div><div class="comp-tile-label">Held at Silver</div></div>
+      <div class="comp-tile"><div class="comp-tile-value ${emailTileClass}">${d.email_null_pct != null ? d.email_null_pct + "%" : "—"}</div><div class="comp-tile-label">Email null rate</div></div>
+      <div class="comp-tile"><div class="comp-tile-value">${d.processing_time_s != null ? d.processing_time_s + "s" : "—"}</div><div class="comp-tile-label">Processing time</div></div>
+    </div>
+  `;
+  container.appendChild(card);
+}
+
+function renderIFRS9ECLView(container, d) {
+  const card = document.createElement("div");
+  card.className = "comp-card";
+
+  const totalEcl = d.total_ecl_sar != null ? Number(d.total_ecl_sar).toLocaleString(undefined, { maximumFractionDigits: 0 }) : "—";
+  const s1 = d.stage_1_count ?? 0, s2 = d.stage_2_count ?? 0, s3 = d.stage_3_count ?? 0;
+
+  card.innerHTML = `
+    <div class="comp-title">IFRS 9 — expected credit loss</div>
+    <div class="comp-ecl-headline">${totalEcl} SAR</div>
+    <div class="comp-ecl-sub">Total expected credit loss across the portfolio</div>
+    <div class="comp-donut-row">
+      <canvas id="ecl-donut-${Date.now()}"></canvas>
+      <div class="comp-stage-legend">
+        <div><span class="dot" style="background:#5b8cff"></span>Stage 1 — ${s1} loans</div>
+        <div><span class="dot" style="background:#ffbe5a"></span>Stage 2 — ${s2} loans</div>
+        <div><span class="dot" style="background:#ff6b6b"></span>Stage 3 — ${s3} loans</div>
+      </div>
+    </div>
+  `;
+  container.appendChild(card);
+
+  const canvas = card.querySelector("canvas");
+  new Chart(canvas.getContext("2d"), {
+    type: "doughnut",
+    data: {
+      labels: ["Stage 1", "Stage 2", "Stage 3"],
+      datasets: [{ data: [s1, s2, s3], backgroundColor: ["#5b8cff", "#ffbe5a", "#ff6b6b"] }],
+    },
+    options: { responsive: true, plugins: { legend: { display: false } } },
+  });
+
+  if (d.top_5_risk && d.top_5_risk.length) {
+    const label = document.createElement("div");
+    label.className = "comp-section-label";
+    label.textContent = "Top 5 highest-risk customers";
+    card.appendChild(label);
+
+    const rows = d.top_5_risk.map((r) => `
+      <tr>
+        <td>${escapeHtml(r.name || "—")}</td>
+        <td>${r.id ? escapeHtml(r.id) : "—"}</td>
+        <td>${Number(r.ecl_sar || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} SAR</td>
+      </tr>
+    `).join("");
+    const table = document.createElement("table");
+    table.className = "comp-risk-table";
+    table.innerHTML = `<thead><tr><th>Customer</th><th>ID</th><th>ECL</th></tr></thead><tbody>${rows}</tbody>`;
+    card.appendChild(table);
+  }
+
+  if (d.pd_lgd_ead) {
+    const label = document.createElement("div");
+    label.className = "comp-section-label";
+    label.textContent = "Portfolio PD / LGD / EAD";
+    card.appendChild(label);
+
+    const tiles = document.createElement("div");
+    tiles.className = "comp-tiles";
+    const pd = d.pd_lgd_ead.avg_pd != null ? (d.pd_lgd_ead.avg_pd * 100).toFixed(2) + "%" : "—";
+    const lgd = d.pd_lgd_ead.avg_lgd != null ? (d.pd_lgd_ead.avg_lgd * 100).toFixed(1) + "%" : "—";
+    const ead = d.pd_lgd_ead.total_ead_sar != null ? Number(d.pd_lgd_ead.total_ead_sar).toLocaleString(undefined, { maximumFractionDigits: 0 }) + " SAR" : "—";
+    tiles.innerHTML = `
+      <div class="comp-tile"><div class="comp-tile-value">${pd}</div><div class="comp-tile-label">Avg. PD</div></div>
+      <div class="comp-tile"><div class="comp-tile-value">${lgd}</div><div class="comp-tile-label">Avg. LGD</div></div>
+      <div class="comp-tile"><div class="comp-tile-value">${ead}</div><div class="comp-tile-label">Total EAD</div></div>
+    `;
+    card.appendChild(tiles);
+  }
+}
+
+function renderDuplicateClustersSummary(container, d) {
+  const card = document.createElement("div");
+  card.className = "comp-card";
+  card.innerHTML = `
+    <div class="comp-title">Duplicate detection summary</div>
+    <div class="comp-tiles">
+      <div class="comp-tile"><div class="comp-tile-value">${d.total_clusters ?? 0}</div><div class="comp-tile-label">Total clusters</div></div>
+      <div class="comp-tile"><div class="comp-tile-value good">${d.high_confidence_clusters ?? 0}</div><div class="comp-tile-label">High confidence</div></div>
+      <div class="comp-tile"><div class="comp-tile-value warn">${d.needs_review_clusters ?? 0}</div><div class="comp-tile-label">Needs review</div></div>
+    </div>
+    ${d.note ? `<div class="comp-note">${escapeHtml(d.note)}</div>` : ""}
+  `;
+  container.appendChild(card);
+}
+
 // Lightweight markdown -> HTML: bold and bullet lists only, which is
 // all the reply-formatting prompt ever asks the model to use. Escapes
 // first so nothing in the text can inject markup.
@@ -606,6 +747,9 @@ function addStreamingBotMessage() {
   const finalText = document.createElement("div");
   finalText.className = "final-text hidden";
 
+  const componentsContainer = document.createElement("div");
+  componentsContainer.className = "components-container hidden";
+
   const chartsContainer = document.createElement("div");
   chartsContainer.className = "charts-container hidden";
 
@@ -631,6 +775,7 @@ function addStreamingBotMessage() {
 
   div.appendChild(statusLine);
   div.appendChild(reviewContainer);
+  div.appendChild(componentsContainer);
   div.appendChild(chartsContainer);
   div.appendChild(finalText);
   div.appendChild(recoContainer);
@@ -718,6 +863,17 @@ function addStreamingBotMessage() {
             scales: { y: { beginAtZero: true } },
           },
         });
+      }
+      scrollMessagesToBottom();
+    },
+    addComponent(componentType, componentData) {
+      componentsContainer.classList.remove("hidden");
+      if (componentType === "processing_summary") {
+        renderProcessingSummaryCard(componentsContainer, componentData);
+      } else if (componentType === "ifrs9_ecl") {
+        renderIFRS9ECLView(componentsContainer, componentData);
+      } else if (componentType === "duplicate_clusters") {
+        renderDuplicateClustersSummary(componentsContainer, componentData);
       }
       scrollMessagesToBottom();
     },
@@ -968,6 +1124,8 @@ function handleStreamEvent(bubble, eventType, data) {
     bubble.addCharts(data.charts);
   } else if (eventType === "duplicate_review") {
     bubble.addDuplicateReview(data.dataset_name, data.clusters);
+  } else if (eventType === "component") {
+    bubble.addComponent(data.component_type, data.component_data);
   } else if (eventType === "recommendations") {
     bubble.addRecommendations(data.dataset_name, data.options);
   } else if (eventType === "final") {

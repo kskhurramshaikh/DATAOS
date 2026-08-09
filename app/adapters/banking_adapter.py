@@ -479,6 +479,22 @@ def _run_ifrs9_modeled(df: pd.DataFrame, scenario: str) -> dict:
 
     stage_counts = computed_stage.value_counts().sort_index()
 
+    # Top-5 highest-ECL records, for the inline view's risk table. Uses
+    # the same fuzzy column-matching approach dedup_adapter.py already
+    # established (a name/ID column can be called almost anything) --
+    # gracefully omitted if the file has no name-like column at all,
+    # rather than guessing.
+    name_col = _find_column(df.columns, ["full_name", "name", "customer_name"])
+    id_col = _find_column(df.columns, ["national_id", "cust_id", "customer_id", "id"])
+    top_5_risk = []
+    top5_idx = computed_ecl.sort_values(ascending=False).head(5).index
+    for idx in top5_idx:
+        entry = {"ecl_sar": round(float(computed_ecl.loc[idx]), 2)}
+        entry["name"] = str(df.loc[idx, name_col]) if name_col else f"Record {idx}"
+        if id_col:
+            entry["id"] = str(df.loc[idx, id_col])
+        top_5_risk.append(entry)
+
     result = {
         "loan_count": len(df),
         "scenario": scenario,
@@ -488,10 +504,19 @@ def _run_ifrs9_modeled(df: pd.DataFrame, scenario: str) -> dict:
         "ecl_by_scenario": {name: round(val, 2) for name, val in ecl_by_scenario.items()},
         "coverage_ratio": round(total_computed_ecl / total_ead, 4) if total_ead else None,
         "loans_by_stage": {str(k): int(v) for k, v in stage_counts.items()},
+        "stage_1_count": int(stage_counts.get(1, 0)),
+        "stage_2_count": int(stage_counts.get(2, 0)),
+        "stage_3_count": int(stage_counts.get(3, 0)),
+        "top_5_risk": top_5_risk,
         "staging_triggers_evaluated": staging_triggers_evaluated,
         "staging_triggers_not_evaluated": staging_triggers_not_evaluated,
         "portfolio_weighted_average_pd": round(portfolio_weighted_avg_pd, 6) if portfolio_weighted_avg_pd is not None else None,
         "portfolio_weighted_average_lgd": round(portfolio_weighted_avg_lgd, 4) if portfolio_weighted_avg_lgd is not None else None,
+        "pd_lgd_ead": {
+            "avg_pd": round(portfolio_weighted_avg_pd, 6) if portfolio_weighted_avg_pd is not None else None,
+            "avg_lgd": round(portfolio_weighted_avg_lgd, 4) if portfolio_weighted_avg_lgd is not None else None,
+            "total_ead_sar": round(total_ead, 2),
+        },
         "modeled_pd_by_rating": modeled_pd_by_rating,
         "modeled_lgd_by_facility_type": modeled_lgd_by_facility_type,
         "pd_model": "scikit-learn LogisticRegression (fitted)",

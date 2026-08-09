@@ -24,6 +24,7 @@ import asyncio
 import json as json_lib
 import queue
 import threading
+import time
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, StreamingResponse
@@ -266,6 +267,7 @@ def _text_chat_events(history: list[dict], message: str, conv_id: int):
 def _dataset_upload_events(dataset_name: str, raw_bytes: bytes, csv_content: str, filename: str, sheet_used: str | None, user_id: int, conv_id: int):
     sheet_note = f' (sheet: "{sheet_used}")' if sheet_used else ""
     user_message = f'Uploaded a dataset file ({filename}{sheet_note}) to add as "{dataset_name}".'
+    _upload_start_time = time.time()
 
     yield {"type": "status", "stage": "compliance", "label": "Checking compliance rules..."}
     decision = evaluate("add_dataset", {})
@@ -336,6 +338,23 @@ def _dataset_upload_events(dataset_name: str, raw_bytes: bytes, csv_content: str
             ran_intent = None
 
     yield {"type": "tool_result", "data": raw_result}
+
+    if ran_intent == "add_dataset":
+        out = raw_result["output"]
+        email_col = next((c for c in out.get("null_counts", {}) if "email" in str(c).lower()), None)
+        rows = out.get("rows", 0)
+        email_null_count = out["null_counts"].get(email_col, 0) if email_col else 0
+        yield {
+            "type": "component",
+            "component_type": "processing_summary",
+            "component_data": {
+                "total_records": rows,
+                "gold_records": rows if out.get("stage") == "gold" else 0,
+                "silver_held": rows if out.get("stage") == "silver_held" else 0,
+                "email_null_pct": round(100 * email_null_count / rows, 1) if rows and email_col else None,
+                "processing_time_s": round(time.time() - _upload_start_time, 2),
+            },
+        }
 
     # Detect which follow-up capabilities are actually relevant to what
     # was just uploaded, and offer them as recommendations instead of
@@ -496,6 +515,38 @@ def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: by
         }
 
     yield {"type": "tool_result", "data": display_result}
+
+    if action == "compute_ifrs9" and ran_intent:
+        out = raw_result["output"]
+        yield {
+            "type": "component",
+            "component_type": "ifrs9_ecl",
+            "component_data": {
+                "total_ecl_sar": out.get("total_computed_ecl"),
+                "stage_1_count": out.get("stage_1_count"),
+                "stage_2_count": out.get("stage_2_count"),
+                "stage_3_count": out.get("stage_3_count"),
+                "top_5_risk": out.get("top_5_risk", []),
+                "pd_lgd_ead": out.get("pd_lgd_ead", {}),
+            },
+        }
+    elif action == "find_duplicates" and ran_intent and raw_result["output"].get("applicable"):
+        # Deliberately a summary only, not full cluster/member detail --
+        # that already has a full, signed-off interactive UI via the
+        # "duplicate_review" event above. Duplicating the same detail
+        # into a second, differently-shaped payload risks the two
+        # drifting apart the way tool_result sanitization once did.
+        out = raw_result["output"]
+        yield {
+            "type": "component",
+            "component_type": "duplicate_clusters",
+            "component_data": {
+                "total_clusters": out.get("total_clusters"),
+                "high_confidence_clusters": out.get("high_confidence_clusters"),
+                "needs_review_clusters": out.get("needs_review_clusters"),
+                "note": "Full per-cluster detail and Confirm/Reject actions are in the review cards above.",
+            },
+        }
 
     # For IFRS 9 specifically, offer the other two scenarios as one-click
     # follow-ups -- otherwise there's no way to see optimistic/adverse
