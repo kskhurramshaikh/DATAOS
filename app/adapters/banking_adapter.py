@@ -126,9 +126,50 @@ def run_ifrs9(payload: dict) -> dict:
     modeling_cols = ["RATING", "FACILITY_TYPE", "DPD", "ORIGINATION", "MATURITY", "EAD"]
     has_modeling_cols = all(c in df.columns for c in modeling_cols)
 
+    customer_lookup = None
+    customer_csv_content = payload.get("customer_csv_content")
+    if customer_csv_content:
+        customer_lookup = _build_customer_name_lookup(customer_csv_content)
+
     if has_modeling_cols:
-        return _run_ifrs9_modeled(df, payload.get("scenario", "base"))
+        return _run_ifrs9_modeled(df, payload.get("scenario", "base"), customer_lookup)
     return _run_ifrs9_simple_aggregation(df)
+
+
+def _build_customer_name_lookup(customer_csv_content: str) -> dict | None:
+    """Builds a CUST_ID -> name map from a separate customer sheet
+    (e.g. Customer_MDM), for joining real names onto the IFRS 9 sheet's
+    top_5_risk table when the loan sheet itself has no name column --
+    only when an EXACT 'cust_id' column exists on the customer side
+    (confirmed against the real Banking_Demo_Dataset.xlsx: CUST_ID is
+    the actual shared key between Customer_MDM and IFRS9_Portfolio;
+    NATIONAL_ID only exists on the customer sheet, not the loan sheet).
+    Returns None (never guesses) if it doesn't."""
+    try:
+        cust_df = pd.read_csv(io.StringIO(customer_csv_content))
+    except Exception:
+        return None
+    id_col = _find_column_exact(cust_df.columns, ["cust_id"])
+    name_col = _find_column(cust_df.columns, ["full_name", "name", "customer_name"])
+    if not id_col or not name_col:
+        return None
+    return {
+        str(row[id_col]): str(row[name_col])
+        for _, row in cust_df.iterrows()
+        if pd.notna(row[id_col]) and pd.notna(row[name_col])
+    }
+
+
+def _find_column_exact(columns, keywords: list[str]):
+    """Like _find_column, but only matches a column whose normalized
+    name IS one of the keywords, not just contains it as a substring --
+    for join keys, where 'loan_id' accidentally containing 'id' as a
+    substring would be a wrong, silent mismatch, not just an imprecise
+    one."""
+    for c in columns:
+        if str(c).lower().replace(" ", "_") in keywords:
+            return c
+    return None
 
 
 def _run_ifrs9_simple_aggregation(df: pd.DataFrame) -> dict:
@@ -406,7 +447,7 @@ def _compute_staging(df: pd.DataFrame) -> tuple[pd.Series, list[str], list[str]]
     return stage, evaluated, not_evaluated
 
 
-def _run_ifrs9_modeled(df: pd.DataFrame, scenario: str) -> dict:
+def _run_ifrs9_modeled(df: pd.DataFrame, scenario: str, customer_lookup: dict | None = None) -> dict:
     if scenario not in MACRO_SCENARIOS:
         raise ValueError(f"Unknown scenario '{scenario}' -- choose one of: {list(MACRO_SCENARIOS.keys())}")
 
@@ -485,12 +526,21 @@ def _run_ifrs9_modeled(df: pd.DataFrame, scenario: str) -> dict:
     # gracefully omitted if the file has no name-like column at all,
     # rather than guessing.
     name_col = _find_column(df.columns, ["full_name", "name", "customer_name"])
-    id_col = _find_column(df.columns, ["national_id", "cust_id", "customer_id", "id"])
+    id_col = _find_column(df.columns, ["loan_id", "national_id", "cust_id", "customer_id", "id"])
+    cust_id_col = _find_column_exact(df.columns, ["cust_id"]) if customer_lookup else None
     top_5_risk = []
     top5_idx = computed_ecl.sort_values(ascending=False).head(5).index
     for idx in top5_idx:
         entry = {"ecl_sar": round(float(computed_ecl.loc[idx]), 2)}
-        entry["name"] = str(df.loc[idx, name_col]) if name_col else f"Record {idx}"
+        joined_name = None
+        if cust_id_col:
+            joined_name = customer_lookup.get(str(df.loc[idx, cust_id_col]))
+        if joined_name:
+            entry["name"] = joined_name
+        elif name_col:
+            entry["name"] = str(df.loc[idx, name_col])
+        else:
+            entry["name"] = f"Record {idx}"
         if id_col:
             entry["id"] = str(df.loc[idx, id_col])
         top_5_risk.append(entry)

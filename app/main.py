@@ -361,35 +361,7 @@ def _dataset_upload_events(dataset_name: str, raw_bytes: bytes, csv_content: str
     # running them automatically -- the user decides what happens next
     # with their own data, same principle as the review-before-Gold gate.
     if ran_intent == "add_dataset":
-        recommendations = []
-        if filename and filename.lower().endswith((".xlsx", ".xls")):
-            sheet_names = dataset_adapter.list_excel_sheet_names(raw_bytes)
-            if any("ndi" in s.lower() for s in sheet_names):
-                recommendations.append({
-                    "action": "assess_ndi",
-                    "label": "📊 Assess NDI readiness",
-                    "description": "Compute a data-governance readiness reading from the NDI sheet in this workbook.",
-                })
-            if any("ifrs" in s.lower() for s in sheet_names):
-                recommendations.append({
-                    "action": "select_ifrs9_scenario",
-                    "label": "💰 Compute IFRS 9 (PD, LGD & ECL)",
-                    "description": "Model probability of default, loss given default, and expected credit loss -- pick a macro scenario to model.",
-                })
-        silver_csv_for_check = raw_result.get("output", {}).get("storage", {}).get("silver")
-        if silver_csv_for_check:
-            try:
-                with open(silver_csv_for_check, "r", encoding="utf-8") as f:
-                    landed_csv = f.read()
-                if dedup_adapter.is_applicable(landed_csv):
-                    recommendations.append({
-                        "action": "find_duplicates",
-                        "label": "🔁 Find duplicate customers",
-                        "description": "Check this dataset for near-duplicate customer records needing review.",
-                    })
-            except OSError:
-                pass
-
+        recommendations = _followup_recommendations(raw_result["output"]["dataset_name"], raw_bytes, filename)
         if recommendations:
             yield {
                 "type": "recommendations",
@@ -418,6 +390,66 @@ def _dataset_upload_events(dataset_name: str, raw_bytes: bytes, csv_content: str
 # flow above: these are optional, on-demand actions, not automatic
 # side effects of uploading a file.
 # ---------------------------------------------------------------------
+
+def _followup_recommendations(dataset_name: str, raw_bytes: bytes | None, filename: str | None, exclude_action: str | None = None) -> list[dict]:
+    """The standing set of 'what would you like to do next' chips --
+    reused after the initial upload AND after every recommended-action
+    completion (IFRS 9, NDI, duplicates), so a user isn't stuck with
+    only scenario-variant chips after running one analysis and has to
+    re-upload to reach the others. exclude_action omits whichever
+    capability just ran (offering it again right after running it is
+    redundant, and for IFRS 9 the scenario-variant chips already cover
+    that case)."""
+    recommendations = []
+    if raw_bytes:
+        try:
+            sheet_names = dataset_adapter.list_excel_sheet_names(raw_bytes)
+        except Exception:
+            sheet_names = []
+        if exclude_action != "assess_ndi" and any("ndi" in s.lower() for s in sheet_names):
+            recommendations.append({
+                "action": "assess_ndi",
+                "label": "📊 Assess NDI readiness",
+                "description": "Compute a data-governance readiness reading from the NDI sheet in this workbook.",
+            })
+        if exclude_action not in ("select_ifrs9_scenario", "compute_ifrs9") and any("ifrs" in s.lower() for s in sheet_names):
+            recommendations.append({
+                "action": "select_ifrs9_scenario",
+                "label": "💰 Compute IFRS 9 (PD, LGD & ECL)",
+                "description": "Model probability of default, loss given default, and expected credit loss -- pick a macro scenario to model.",
+            })
+    if exclude_action != "find_duplicates":
+        try:
+            silver_csv = dataset_adapter.read_silver_csv(dataset_name)
+            if dedup_adapter.is_applicable(silver_csv):
+                recommendations.append({
+                    "action": "find_duplicates",
+                    "label": "🔁 Find duplicate customers",
+                    "description": "Check this dataset for near-duplicate customer records needing review.",
+                })
+        except ValueError:
+            pass
+    return recommendations
+
+
+def _find_customer_sheet_csv(raw_bytes: bytes, sheet_names: list[str]) -> str | None:
+    """Locates a customer/MDM-style sheet in the same workbook as the
+    IFRS 9 sheet, for joining real names onto the top_5_risk table --
+    the IFRS 9 sheet itself is loan-level (loan IDs, no customer name
+    column). Best-effort: returns None if nothing matching is found,
+    so run_ifrs9 falls back to its existing loan-ID-only display
+    rather than guessing at a sheet that isn't there."""
+    customer_sheet = next(
+        (s for s in sheet_names if "customer" in s.lower() or "mdm" in s.lower()),
+        None,
+    )
+    if not customer_sheet:
+        return None
+    try:
+        return dataset_adapter.extract_specific_sheet_csv(raw_bytes, customer_sheet)
+    except ValueError:
+        return None
+
 
 def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: bytes | None, user_id: int, conv_id: int, scenario: str = "base"):
     if action == "select_ifrs9_scenario":
@@ -473,7 +505,11 @@ def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: by
                 yield {"type": "status", "stage": action, "label": f"Running {intent}..."}
                 sheet_csv = dataset_adapter.extract_specific_sheet_csv(raw_bytes, sheet)
                 output = banking_adapter.run_ndi({"csv_content": sheet_csv}) if action == "assess_ndi" \
-                    else banking_adapter.run_ifrs9({"csv_content": sheet_csv, "scenario": scenario})
+                    else banking_adapter.run_ifrs9({
+                        "csv_content": sheet_csv,
+                        "scenario": scenario,
+                        "customer_csv_content": _find_customer_sheet_csv(raw_bytes, sheet_names) if action == "compute_ifrs9" else None,
+                    })
             else:  # find_duplicates
                 yield {"type": "status", "stage": "dedup", "label": "Checking for duplicate customer records..."}
                 silver_csv = dataset_adapter.read_silver_csv(dataset_name)
@@ -548,27 +584,34 @@ def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: by
             },
         }
 
-    # For IFRS 9 specifically, offer the other two scenarios as one-click
-    # follow-ups -- otherwise there's no way to see optimistic/adverse
-    # without re-triggering the chip and guessing there's a scenario
-    # parameter at all.
-    if action == "compute_ifrs9" and ran_intent:
-        other_scenarios = [s for s in banking_adapter.MACRO_SCENARIOS if s != scenario]
-        scenario_labels = {"optimistic": "📈 Optimistic scenario", "base": "📊 Base scenario", "adverse": "📉 Adverse scenario"}
-        recommendations = [
-            {
-                "action": "compute_ifrs9",
-                "scenario": s,
-                "label": scenario_labels.get(s, s.title()),
-                "description": banking_adapter.MACRO_SCENARIOS[s]["description"],
+    # After ANY completed action, offer the standing "what next" menu --
+    # the other capabilities, not just (for IFRS 9) the other scenarios
+    # of the same one. Without this, clicking IFRS 9 from the initial
+    # upload chips led to a dead end: only "optimistic"/"adverse" showed
+    # up, with no way back to NDI or duplicates short of re-uploading.
+    if ran_intent:
+        recommendations = []
+        if action == "compute_ifrs9":
+            other_scenarios = [s for s in banking_adapter.MACRO_SCENARIOS if s != scenario]
+            scenario_labels = {"optimistic": "📈 Optimistic scenario", "base": "📊 Base scenario", "adverse": "📉 Adverse scenario"}
+            recommendations.extend([
+                {
+                    "action": "compute_ifrs9",
+                    "scenario": s,
+                    "label": scenario_labels.get(s, s.title()),
+                    "description": banking_adapter.MACRO_SCENARIOS[s]["description"],
+                }
+                for s in other_scenarios
+            ])
+            recommendations.extend(_followup_recommendations(dataset_name, raw_bytes, None, exclude_action="select_ifrs9_scenario"))
+        else:
+            recommendations.extend(_followup_recommendations(dataset_name, raw_bytes, None, exclude_action=action))
+        if recommendations:
+            yield {
+                "type": "recommendations",
+                "dataset_name": dataset_name,
+                "options": recommendations,
             }
-            for s in other_scenarios
-        ]
-        yield {
-            "type": "recommendations",
-            "dataset_name": dataset_name,
-            "options": recommendations,
-        }
 
     charts = suggest_visualization(ran_intent or intent, raw_result)
     if charts:
