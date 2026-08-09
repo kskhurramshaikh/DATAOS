@@ -24,6 +24,8 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression, LogisticRegression
 
+from app.adapters import dataset_adapter, dedup_adapter
+
 
 def _find_column(columns, keywords: list[str]):
     for c in columns:
@@ -113,6 +115,130 @@ def run_ndi(payload: dict) -> dict:
             "derivable from a plain scorecard sheet alone."
         ),
         "top_gap_domains": gaps[:5],
+    }
+
+
+# ---------------------------------------------------------------------
+# SAMA compliance and Customer 360 -- both cross-cutting views built
+# from data DataOS already computes elsewhere (dataset quality metrics,
+# the duplicate-review audit log), not new measurements of their own.
+# SAMA's official 8 compliance domains are DG, DQ, DIS, RMD, DC, PDP,
+# BIA, DS -- DataOS only has a real, computed signal for four of them
+# today (DQ, PDP, RMD, DG). The other four (DIS, DC, BIA, DS) are
+# marked "not_measured" rather than given an invented score -- same
+# principle as the IFRS 9 training-data disclosure and the NDI
+# methodology-gap note: a specific-looking percentage for something
+# DataOS has no actual telemetry for would be worse than admitting the
+# gap outright.
+# ---------------------------------------------------------------------
+
+def compute_sama_compliance(dataset_name: str) -> dict:
+    ds = dataset_adapter.list_datasets({"dataset_name": dataset_name})["datasets"][0]
+    total_records = ds["rows"]
+    null_counts = ds["null_counts"]
+    columns = ds["columns"]
+
+    # DQ -- overall data-quality reading: average null rate across the
+    # columns that actually have any nulls, inverted to a "clean %".
+    if null_counts and total_records:
+        avg_null_rate = sum(null_counts.values()) / (len(columns) * total_records)
+        dq_score = round(max(0.0, 100 - avg_null_rate * 100), 1)
+    else:
+        dq_score = 100.0
+
+    # PDP (PDPL) -- completeness specifically on PII-bearing columns
+    # (email/phone/national ID), since that's what PDPL actually
+    # governs -- a generic null rate isn't the same signal.
+    pii_cols = [c for c in columns if any(k in c.lower() for k in ("email", "phone", "national_id"))]
+    if pii_cols and total_records:
+        pii_null_total = sum(null_counts.get(c, 0) for c in pii_cols)
+        pdp_score = round(max(0.0, 100 - 100 * pii_null_total / (len(pii_cols) * total_records)), 1)
+    else:
+        pdp_score = None
+
+    pending = dedup_adapter.get_pending_count(dataset_name)
+    decided = dedup_adapter.get_audit_log(dataset_name, limit=10000)
+    total_clusters = pending + len(decided)
+
+    # DG -- governance-process completion: how much of the duplicate
+    # review queue has actually been decided, not left pending.
+    dg_score = round(100 * len(decided) / total_clusters, 1) if total_clusters else 100.0
+
+    # RMD -- unresolved duplicate risk data undermines anything built
+    # on top of it (IFRS 9 exposure figures, customer risk profiles);
+    # score reflects how much of that risk is still unresolved.
+    rmd_score = round(100 * (1 - pending / total_clusters), 1) if total_clusters else 100.0
+
+    domain_scores = [
+        {"code": "DG", "name": "Data Governance", "score": dg_score, "status": "measured"},
+        {"code": "DQ", "name": "Data Quality", "score": dq_score, "status": "measured"},
+        {"code": "DIS", "name": "Data Integration & Sharing", "score": None, "status": "not_measured"},
+        {"code": "RMD", "name": "Risk Management Data", "score": rmd_score, "status": "measured"},
+        {"code": "DC", "name": "Data Classification", "score": None, "status": "not_measured"},
+        {"code": "PDP", "name": "Personal Data Protection", "score": pdp_score, "status": "measured" if pdp_score is not None else "not_measured"},
+        {"code": "BIA", "name": "Business Impact Assessment", "score": None, "status": "not_measured"},
+        {"code": "DS", "name": "Data Security", "score": None, "status": "not_measured"},
+    ]
+
+    modeling_cols = ["RATING", "FACILITY_TYPE", "DPD", "ORIGINATION", "MATURITY", "EAD"]
+    ifrs9_ready = all(c in columns for c in modeling_cols)
+
+    checks = [
+        {"label": "Data Governance", "status": "ok" if dg_score >= 80 else "warn", "value": f"{dg_score}% of duplicate reviews decided"},
+        {"label": "MDM", "status": "ok" if pending == 0 else "warn", "value": f"{pending} duplicate cluster(s) still pending review"},
+        {"label": "Data Classification", "status": "not_measured", "value": "Not yet instrumented"},
+        {"label": "PDPL", "status": "ok" if (pdp_score or 0) >= 90 else "warn", "value": f"{pdp_score}% PII field completeness" if pdp_score is not None else "No PII columns detected"},
+        {"label": "IFRS 9 + Basel III readiness", "status": "ok" if ifrs9_ready else "warn", "value": "Modeling columns present" if ifrs9_ready else "Missing required modeling columns"},
+    ]
+
+    if pending > 0:
+        priority_alert = f"RMD domain: {pending} unresolved duplicate cluster(s) still need review -- affects reliability of downstream risk figures until decided."
+    else:
+        measured = [d for d in domain_scores if d["status"] == "measured"]
+        lowest = min(measured, key=lambda d: d["score"]) if measured else None
+        priority_alert = f"{lowest['name']} is the lowest-scoring measured domain at {lowest['score']}%." if lowest else "No measured domains yet -- upload and review a dataset first."
+
+    return {
+        "checks": checks,
+        "domain_scores": domain_scores,
+        "priority_alert": priority_alert,
+        "methodology_note": (
+            "DG, DQ, RMD, and PDP are computed from real signals already tracked by DataOS -- "
+            "the duplicate-review audit log and dataset null-rate metrics, not invented figures. "
+            "DIS, DC, BIA, and DS have no corresponding measurement in DataOS today and are shown "
+            "as not_measured rather than given a placeholder score."
+        ),
+    }
+
+
+def compute_customer_360(dataset_name: str) -> dict:
+    ds = dataset_adapter.list_datasets({"dataset_name": dataset_name})["datasets"][0]
+    total_records = ds["rows"]
+
+    entries = dedup_adapter.get_audit_log(dataset_name, limit=10000)
+    confirmed = [e for e in entries if e["status"] == "confirmed_duplicate"]
+    # Each confirmed cluster of N members represents N-1 "extra" records
+    # that a real golden-record merge would collapse into one -- golden-
+    # record merge execution itself isn't built yet (see change log item
+    # 2), so this is a projection based on real review decisions, not an
+    # executed count.
+    extra_records = sum(max(len(e["members"]) - 1, 0) for e in confirmed)
+    golden_records_estimate = max(total_records - extra_records, 0)
+    uniqueness_ratio = round(100 * golden_records_estimate / total_records, 1) if total_records else None
+
+    return {
+        "total_records": total_records,
+        "golden_records_estimate": golden_records_estimate,
+        "uniqueness_ratio": uniqueness_ratio,
+        "uniqueness_target": 99.0,
+        "duplicate_clusters_confirmed": len(confirmed),
+        "duplicate_records_involved": extra_records,
+        "note": (
+            "golden_records_estimate assumes every confirmed duplicate group would collapse to "
+            "one record if golden-record merge were executed -- that merge step isn't built yet, "
+            "so this is a projection from real review decisions, not an executed count. No "
+            "historical trend is shown -- DataOS doesn't track data-quality history over time yet."
+        ),
     }
 
 

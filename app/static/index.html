@@ -143,6 +143,21 @@
   .comp-risk-table tr:last-child td { border-bottom: none; }
   .comp-section-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; margin: 14px 0 8px; }
   .comp-note { font-size: 11.5px; color: var(--muted); margin-top: 10px; font-style: italic; }
+  .sama-checks { display: flex; flex-direction: column; gap: 1px; background: var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 12px; }
+  .sama-check-row { display: flex; align-items: center; gap: 10px; background: var(--bg); padding: 8px 12px; font-size: 12.5px; }
+  .sama-check-status {
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+    padding: 2px 7px; border-radius: 20px; flex-shrink: 0; min-width: 68px; text-align: center;
+    background: rgba(255,255,255,0.06); color: var(--muted);
+  }
+  .sama-check-status.good { background: rgba(91,220,140,0.16); color: #5bdc8c; }
+  .sama-check-status.warn { background: rgba(255,190,90,0.16); color: #ffbe5a; }
+  .sama-check-label { color: var(--text); font-weight: 600; min-width: 130px; }
+  .sama-check-value { color: var(--muted); flex: 1; }
+  .sama-alert {
+    background: rgba(255,190,90,0.10); border: 1px solid rgba(255,190,90,0.3); border-radius: 8px;
+    padding: 10px 12px; font-size: 12.5px; color: #ffbe5a; margin-bottom: 4px;
+  }
 
   /* Duplicate review -- redesigned for a non-technical reviewer (bank
      exec), not a data analyst. Cards lead with a plain-language
@@ -689,6 +704,57 @@ function renderDuplicateClustersSummary(container, d) {
   container.appendChild(card);
 }
 
+function renderSAMAComplianceView(container, d) {
+  const card = document.createElement("div");
+  card.className = "comp-card";
+
+  const statusClass = (s) => (s === "ok" ? "good" : s === "warn" ? "warn" : "");
+  const statusLabel = (s) => (s === "ok" ? "OK" : s === "warn" ? "Attention" : "Not measured");
+
+  const checksHtml = (d.checks || []).map((c) => `
+    <div class="sama-check-row">
+      <span class="sama-check-status ${statusClass(c.status)}">${statusLabel(c.status)}</span>
+      <span class="sama-check-label">${escapeHtml(c.label)}</span>
+      <span class="sama-check-value">${escapeHtml(c.value || "")}</span>
+    </div>
+  `).join("");
+
+  const domainsHtml = (d.domain_scores || []).map((dom) => `
+    <div class="comp-tile">
+      <div class="comp-tile-value ${dom.status === "not_measured" ? "" : statusClass(dom.score >= 80 ? "ok" : "warn")}">
+        ${dom.status === "not_measured" ? "—" : dom.score + "%"}
+      </div>
+      <div class="comp-tile-label">${escapeHtml(dom.code)} · ${escapeHtml(dom.name)}</div>
+    </div>
+  `).join("");
+
+  card.innerHTML = `
+    <div class="comp-title">SAMA compliance status</div>
+    <div class="sama-checks">${checksHtml}</div>
+    ${d.priority_alert ? `<div class="sama-alert">⚠ ${escapeHtml(d.priority_alert)}</div>` : ""}
+    <div class="comp-section-label">8-domain compliance scores</div>
+    <div class="comp-tiles">${domainsHtml}</div>
+    ${d.methodology_note ? `<div class="comp-note">${escapeHtml(d.methodology_note)}</div>` : ""}
+  `;
+  container.appendChild(card);
+}
+
+function renderCustomer360KPIBar(container, d) {
+  const card = document.createElement("div");
+  card.className = "comp-card";
+  const ratioClass = d.uniqueness_ratio != null && d.uniqueness_ratio >= d.uniqueness_target ? "good" : "warn";
+  card.innerHTML = `
+    <div class="comp-title">Customer 360</div>
+    <div class="comp-tiles">
+      <div class="comp-tile"><div class="comp-tile-value">${d.golden_records_estimate ?? "—"}</div><div class="comp-tile-label">Golden records (est.)</div></div>
+      <div class="comp-tile"><div class="comp-tile-value ${ratioClass}">${d.uniqueness_ratio != null ? d.uniqueness_ratio + "%" : "—"}</div><div class="comp-tile-label">Uniqueness (target ${d.uniqueness_target ?? 99}%+)</div></div>
+      <div class="comp-tile"><div class="comp-tile-value warn">${d.duplicate_records_involved ?? 0}</div><div class="comp-tile-label">Duplicate records involved</div></div>
+    </div>
+    ${d.note ? `<div class="comp-note">${escapeHtml(d.note)}</div>` : ""}
+  `;
+  container.appendChild(card);
+}
+
 // Lightweight markdown -> HTML: bold and bullet lists only, which is
 // all the reply-formatting prompt ever asks the model to use. Escapes
 // first so nothing in the text can inject markup.
@@ -874,6 +940,10 @@ function addStreamingBotMessage() {
         renderIFRS9ECLView(componentsContainer, componentData);
       } else if (componentType === "duplicate_clusters") {
         renderDuplicateClustersSummary(componentsContainer, componentData);
+      } else if (componentType === "sama_compliance") {
+        renderSAMAComplianceView(componentsContainer, componentData);
+      } else if (componentType === "customer_360") {
+        renderCustomer360KPIBar(componentsContainer, componentData);
       }
       scrollMessagesToBottom();
     },

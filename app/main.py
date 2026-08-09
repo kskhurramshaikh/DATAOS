@@ -429,6 +429,18 @@ def _followup_recommendations(dataset_name: str, raw_bytes: bytes | None, filena
                 })
         except ValueError:
             pass
+    if exclude_action != "sama_compliance":
+        recommendations.append({
+            "action": "sama_compliance",
+            "label": "🏦 SAMA compliance status",
+            "description": "Check data-governance, quality, and risk-data compliance signals against SAMA's compliance domains.",
+        })
+    if exclude_action != "customer_360":
+        recommendations.append({
+            "action": "customer_360",
+            "label": "👤 Customer 360 view",
+            "description": "See golden-record and data-quality KPIs for this dataset's customer base.",
+        })
     return recommendations
 
 
@@ -477,6 +489,8 @@ def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: by
         "assess_ndi": ("assess_ndi_readiness", "assess_data_governance_readiness", "ndi_scorecard_engine"),
         "compute_ifrs9": ("compute_ifrs9_ecl", "compute_expected_credit_loss", "ifrs9_ecl_engine"),
         "find_duplicates": ("find_duplicate_candidates", "detect_entity_duplicates", "rapidfuzz_dob_clustering"),
+        "sama_compliance": ("assess_sama_compliance", "assess_sama_compliance_status", "sama_compliance_scorer"),
+        "customer_360": ("assess_customer_360", "assess_customer_data_quality", "customer_360_analyzer"),
     }
     if action not in intent_map:
         yield {"type": "final", "reply": f"Unknown action '{action}'.", "conversation_id": conv_id, "ran_intent": None}
@@ -510,6 +524,10 @@ def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: by
                         "scenario": scenario,
                         "customer_csv_content": _find_customer_sheet_csv(raw_bytes, sheet_names) if action == "compute_ifrs9" else None,
                     })
+            elif action in ("sama_compliance", "customer_360"):
+                yield {"type": "status", "stage": action, "label": f"Running {intent}..."}
+                output = banking_adapter.compute_sama_compliance(dataset_name) if action == "sama_compliance" \
+                    else banking_adapter.compute_customer_360(dataset_name)
             else:  # find_duplicates
                 yield {"type": "status", "stage": "dedup", "label": "Checking for duplicate customer records..."}
                 silver_csv = dataset_adapter.read_silver_csv(dataset_name)
@@ -582,6 +600,15 @@ def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: by
                 "needs_review_clusters": out.get("needs_review_clusters"),
                 "note": "Full per-cluster detail and Confirm/Reject actions are in the review cards above.",
             },
+        }
+    elif action in ("sama_compliance", "customer_360") and ran_intent:
+        # compute_sama_compliance / compute_customer_360 already return
+        # exactly the component_data shape -- built that way deliberately,
+        # so no remapping needed here.
+        yield {
+            "type": "component",
+            "component_type": action,
+            "component_data": raw_result["output"],
         }
 
     # After ANY completed action, offer the standing "what next" menu --
