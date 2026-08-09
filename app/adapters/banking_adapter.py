@@ -247,6 +247,161 @@ def compute_sama_compliance(dataset_name: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------
+# NDI Radar View -- real SDAIA NDI v1.1 methodology (14 domains, 191
+# specs, official weights and 6-level maturity scale), per Dr. Saber's
+# DataOS2_NDI_Methodology_Spec.pdf (2026-08-09). Domain weights,
+# maturity/OE scales, compliance thresholds, and formulas below are
+# his exact stated values, not guessed.
+#
+# The per-domain maturity/compliance INPUTS are his preset BAJ demo
+# baseline (Section 2.6) -- an explicit instruction for this component,
+# unlike IFRS 9/SAMA/Customer 360 which all compute their inputs from
+# real uploaded data. Flagged for visibility, not silently normalized
+# to match the other components' pattern.
+#
+# IMPORTANT: applying his exact formula to his exact baseline table
+# produces 48.27/100 display score, 60.21% compliance, "Developing"
+# level -- NOT the 52.3/100, 63.4%, "Emerging" his document states as
+# the target. Verified twice by hand and once programmatically before
+# concluding this; not a rounding difference. Rather than silently
+# force the output to match his stated target (which would mean either
+# not implementing the real formula, or guessing at which domain score
+# has a typo), this returns what the formula actually computes, with
+# both figures disclosed so the discrepancy is visible, not hidden.
+# ---------------------------------------------------------------------
+
+NDI_DOMAINS = [
+    # code, name, spec_count, is_oe_domain
+    ("DG", "Data Governance", 18, False),
+    ("MDC", "Metadata & Data Catalogue", 14, True),
+    ("DQ", "Data Quality", 20, True),
+    ("DS", "Data Storage", 12, True),
+    ("CDM", "Content & Document Management", 10, False),
+    ("DMD", "Data Modelling & Architecture", 8, False),
+    ("DIS", "Data Integration & Sharing", 20, True),
+    ("RMD", "Reference & Master Data", 15, True),
+    ("BIA", "Business Intelligence & Analytics", 16, False),
+    ("DVR", "Data Value Realisation", 14, False),
+    ("OD", "Open Data", 8, True),
+    ("FOI", "Freedom of Information", 10, False),
+    ("DC", "Data Classification", 16, False),
+    ("PDP", "Personal Data Protection", 10, False),
+]
+
+NDI_OE_WEIGHT_PCT = 100 / 6  # 16.6667%, equal across the 6 OE domains
+
+NDI_MATURITY_LEVELS = [
+    (0.00, 0.24, "Capability No"),
+    (0.25, 1.24, "Emerging"),
+    (1.25, 2.49, "Developing"),
+    (2.50, 3.99, "Defined"),
+    (4.00, 4.74, "Managed"),
+    (4.75, 5.00, "Leading"),
+]
+
+# Dr. Saber's preset BAJ demo baseline (DataOS2_NDI_Methodology_Spec.pdf,
+# Section 2.6) -- fixed per-domain maturity score (0-5) and compliance %,
+# not derived from an uploaded file.
+NDI_BAJ_BASELINE = {
+    "DG": {"maturity": 2.8, "compliance_pct": 67, "evidence": "DGPM policy framework"},
+    "MDC": {"maturity": 2.0, "compliance_pct": 50, "evidence": "Partial data catalogue"},
+    "DQ": {"maturity": 2.5, "compliance_pct": 60, "evidence": "Automated DQ checks"},
+    "DS": {"maturity": 3.2, "compliance_pct": 75, "evidence": "Tier-1 storage compliant"},
+    "CDM": {"maturity": 2.1, "compliance_pct": 50, "evidence": "SharePoint-based DMS"},
+    "DMD": {"maturity": 2.3, "compliance_pct": 50, "evidence": "Enterprise data model v2"},
+    "DIS": {"maturity": 2.7, "compliance_pct": 65, "evidence": "API gateway 60% coverage"},
+    "RMD": {"maturity": 1.8, "compliance_pct": 47, "evidence": "340K duplicates pending"},
+    "BIA": {"maturity": 3.0, "compliance_pct": 75, "evidence": "Tableau + PowerBI deployed"},
+    "DVR": {"maturity": 2.4, "compliance_pct": 57, "evidence": "Value tracking in progress"},
+    "OD": {"maturity": 1.5, "compliance_pct": 38, "evidence": "Limited open data published"},
+    "FOI": {"maturity": 2.0, "compliance_pct": 50, "evidence": "FOI portal live"},
+    "DC": {"maturity": 2.6, "compliance_pct": 69, "evidence": "65% systems classified"},
+    "PDP": {"maturity": 2.9, "compliance_pct": 70, "evidence": "DPIA in progress"},
+}
+
+
+def _ndi_domain_weight_pct(code: str) -> float:
+    # All 14 domains weighted equally at 7.14%, except PDP adjusted to
+    # 7.1423% so the 14 weights sum to exactly 100% -- his exact stated
+    # rounding correction, not ours.
+    return 7.1423 if code == "PDP" else 7.14
+
+
+def _ndi_maturity_level(score: float) -> str:
+    for lo, hi, name in NDI_MATURITY_LEVELS:
+        if lo <= score <= hi:
+            return name
+    return "Capability No"
+
+
+def _ndi_compliance_status(pct: float) -> str:
+    if pct >= 80:
+        return "high"
+    if pct >= 50:
+        return "medium"
+    return "low"
+
+
+def compute_ndi_assessment() -> dict:
+    domains_out = []
+    weighted_maturity_sum = 0.0
+    oe_weighted_sum = 0.0
+    total_compliant_specs = 0
+    total_specs = 0
+
+    for code, name, spec_count, is_oe in NDI_DOMAINS:
+        baseline = NDI_BAJ_BASELINE[code]
+        weight_pct = _ndi_domain_weight_pct(code)
+        maturity = baseline["maturity"]
+        compliance_pct = baseline["compliance_pct"]
+
+        weighted_maturity_sum += maturity * weight_pct
+        if is_oe:
+            oe_weighted_sum += maturity * NDI_OE_WEIGHT_PCT
+        total_compliant_specs += round(spec_count * compliance_pct / 100)
+        total_specs += spec_count
+
+        domains_out.append({
+            "code": code,
+            "name": name,
+            "spec_count": spec_count,
+            "maturity_score": maturity,
+            "compliance_pct": compliance_pct,
+            "compliance_status": _ndi_compliance_status(compliance_pct),
+            "is_oe_domain": is_oe,
+            "evidence": baseline["evidence"],
+        })
+
+    overall_maturity_score = round(weighted_maturity_sum / 100, 3)
+    display_score = round(overall_maturity_score * 20, 1)
+    maturity_level = _ndi_maturity_level(overall_maturity_score)
+    overall_compliance_pct = round(100 * total_compliant_specs / total_specs, 1)
+    overall_oe_score = round(oe_weighted_sum / 100, 3)
+
+    return {
+        "overall_maturity_score": overall_maturity_score,
+        "display_score": display_score,
+        "maturity_level": maturity_level,
+        "overall_compliance_pct": overall_compliance_pct,
+        "overall_oe_score": overall_oe_score,
+        "total_specs": total_specs,
+        "domains": domains_out,
+        "stated_target": {"display_score": 52.3, "compliance_pct": 63.4, "maturity_level": "Emerging"},
+        "methodology_note": (
+            "Domain weights (7.14% x 13 + 7.1423% PDP), the 6-level maturity scale, the OE "
+            "domain set, and all scoring formulas are the official SDAIA NDI v1.1 methodology, "
+            "provided directly by Dr. Saber. The per-domain maturity/compliance inputs are his "
+            "preset BAJ demo baseline, not computed from an uploaded file -- unlike IFRS 9, "
+            "SAMA, and Customer 360, which compute their inputs from real uploaded data. "
+            "Applying his exact formula to his exact baseline table produces the figures shown "
+            "above, which differ from the target values his document states (52.3 / 63.4% / "
+            "Emerging) -- not a rounding difference. Shown as computed rather than forced to "
+            "match, pending his confirmation of which figure has the discrepancy."
+        ),
+    }
+
+
 def compute_customer_360(dataset_name: str) -> dict:
     ds = dataset_adapter.list_datasets({"dataset_name": dataset_name})["datasets"][0]
     total_records = ds["rows"]

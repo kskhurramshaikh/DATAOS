@@ -558,6 +558,18 @@ def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: by
             "component_data": raw_result["output"],
         }
 
+    if action == "assess_ndi" and ran_intent:
+        # Independent of the run_ndi output above (which still reads
+        # whatever's in the uploaded NDI sheet, unchanged) -- the radar
+        # view uses Dr. Saber's real SDAIA methodology applied to his
+        # fixed BAJ demo baseline, per his explicit instruction, not
+        # data from the uploaded file.
+        yield {
+            "type": "component",
+            "component_type": "ndi_assessment",
+            "component_data": banking_adapter.compute_ndi_assessment(),
+        }
+
     # After ANY completed action, offer the standing "what next" menu --
     # the other capabilities, not just (for IFRS 9) the other scenarios
     # of the same one. Without this, clicking IFRS 9 from the initial

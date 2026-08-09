@@ -366,6 +366,13 @@ def interpret_stream(conversation_history: list[dict], user_message: str):
                     "note": "Full per-cluster detail and Confirm/Reject actions are in the review cards above.",
                 },
             }
+        elif intent == "assess_ndi_readiness":
+            from app.adapters.banking_adapter import compute_ndi_assessment
+            yield {
+                "type": "component",
+                "component_type": "ndi_assessment",
+                "component_data": compute_ndi_assessment(),
+            }
 
     # Follow-up "what next" chips -- the actual gap this fixes.
     # interpreter.py never yielded a recommendations event for anything
