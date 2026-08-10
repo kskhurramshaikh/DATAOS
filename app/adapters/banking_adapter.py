@@ -604,6 +604,11 @@ ILLUSTRATIVE_TARGET_PD_BY_RATING = {
     "B": 0.1000, "CCC": 0.2500,
     "CC": 0.3969,   # interpolated between CCC (25%) and D (100%) -- kept & documented per Dr. Saber
     "C": 0.6300,    # interpolated between CCC (25%) and D (100%) -- kept & documented per Dr. Saber
+    # Note (Dr. Saber, 2026-08-10, closing 2.3): these are the ROUNDED
+    # (4-decimal) interpolation constants, used as-is -- not recomputed
+    # from full-precision geometric values at runtime. Any independent
+    # re-derivation must use these exact rounded constants (0.3969,
+    # 0.6300), not a fresh geometric calculation, to match the engine.
     "D": 1.0000,    # pinned exactly -- IFRS 9 default = PD 1 by definition
 }
 RATINGS_INTERPOLATED_NOT_IN_SABER_TABLE = ["CC", "C"]
