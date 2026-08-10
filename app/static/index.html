@@ -625,11 +625,15 @@ function renderIFRS9ECLView(container, d) {
 
   const totalEcl = d.total_ecl_sar != null ? Number(d.total_ecl_sar).toLocaleString(undefined, { maximumFractionDigits: 0 }) : "—";
   const s1 = d.stage_1_count ?? 0, s2 = d.stage_2_count ?? 0, s3 = d.stage_3_count ?? 0;
+  const reportingDateLine = d.reporting_date
+    ? `<div class="comp-ecl-sub">Reporting date: ${escapeHtml(d.reporting_date)}</div>`
+    : "";
 
   card.innerHTML = `
     <div class="comp-title">IFRS 9 — expected credit loss</div>
     <div class="comp-ecl-headline">${totalEcl} SAR</div>
     <div class="comp-ecl-sub">Total expected credit loss across the portfolio</div>
+    ${reportingDateLine}
     <div class="comp-donut-row">
       <canvas id="ecl-donut-${Date.now()}"></canvas>
       <div class="comp-stage-legend">

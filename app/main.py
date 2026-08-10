@@ -529,6 +529,7 @@ def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: by
                 "stage_3_count": out.get("stage_3_count"),
                 "top_5_risk": out.get("top_5_risk", []),
                 "pd_lgd_ead": out.get("pd_lgd_ead", {}),
+                "reporting_date": out.get("reporting_date"),
             },
         }
     elif action == "find_duplicates" and ran_intent and raw_result["output"].get("applicable"):

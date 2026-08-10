@@ -382,6 +382,7 @@ def interpret_stream(conversation_history: list[dict], user_message: str):
                     "stage_3_count": out.get("stage_3_count"),
                     "top_5_risk": out.get("top_5_risk", []),
                     "pd_lgd_ead": out.get("pd_lgd_ead", {}),
+                    "reporting_date": out.get("reporting_date"),
                 },
             }
         elif intent == "find_duplicate_candidates" and out.get("applicable"):
