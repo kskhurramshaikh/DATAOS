@@ -637,6 +637,13 @@ DEFAULT_LGD = 0.55  # used only for a facility type never in the table
 # of default as PD=1.
 IFRS9_ENGINE_MODE = "lookup"  # "lookup" (demo default) | "trained_model" (production-mode, requires bank historical data)
 
+# Pinned reporting/"as-of" date for lifetime PD's remaining-term
+# calculation. Per Dr. Saber's 2026-08-10 fix request: a dynamic
+# now() made ECL drift day to day, breaking reproducibility of demo
+# screenshots and independent re-derivations. Displayed on the IFRS 9
+# ECL View per his ask.
+IFRS9_REPORTING_DATE = "2026-08-07"
+
 # Macro scenario definitions -- Dr. Saber's exact structure from his
 # DataOS_IFRS9_Parameters file (Macroeconomic Scenarios sheet), sourced
 # by him to SAMA Quarterly Economic Reports. Includes both a PD
@@ -855,11 +862,15 @@ def _run_ifrs9_modeled(df: pd.DataFrame, scenario: str, customer_lookup: dict | 
     # overstated the compounding horizon for any loan already partway
     # through its term -- confirmed by Dr. Saber's 9 Aug review (LN-5102:
     # his reference point implies 7.28y remaining vs. the 11.74y full
-    # tenor the earlier version used). reference_date defaults to today
-    # (the actual reporting date for a live system) but can be pinned
-    # for a specific as-of date via payload.
+    # tenor the earlier version used). Per Dr. Saber's 2026-08-10
+    # follow-up: defaulting to dynamic now() made ECL drift day to day,
+    # so demo screenshots and independent re-derivations become
+    # irreproducible (his own re-check on 2026-08-10 landed on 7.27y
+    # for LN-5102, one day off his 7.28y reference, purely because a
+    # day had passed). Pinned to a fixed constant instead -- still
+    # overridable via payload for a future explicit as-of date.
     maturity = pd.to_datetime(df["MATURITY"], errors="coerce")
-    reporting_date = pd.to_datetime(reference_date) if reference_date else pd.Timestamp.now().normalize()
+    reporting_date = pd.to_datetime(reference_date) if reference_date else pd.Timestamp(IFRS9_REPORTING_DATE)
     term_years = ((maturity - reporting_date).dt.days / 365.25).clip(lower=0.1)
 
     base_pd, unknown_rating_mask = _predict_pd(df["RATING"])
