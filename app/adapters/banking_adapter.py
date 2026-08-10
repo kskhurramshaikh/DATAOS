@@ -485,7 +485,7 @@ def run_ifrs9(payload: dict) -> dict:
         customer_lookup = _build_customer_name_lookup(customer_csv_content)
 
     if has_modeling_cols:
-        return _run_ifrs9_modeled(df, payload.get("scenario", "base"), customer_lookup)
+        return _run_ifrs9_modeled(df, payload.get("scenario", "base"), customer_lookup, payload.get("reference_date"))
     return _run_ifrs9_simple_aggregation(df)
 
 
@@ -588,25 +588,30 @@ def _run_ifrs9_simple_aggregation(df: pd.DataFrame) -> dict:
 RATING_ORDER = ["AAA", "AA", "A", "BBB", "BB", "B", "CCC", "CC", "C", "D"]
 
 ILLUSTRATIVE_TARGET_PD_BY_RATING = {
-    # Base (Most Likely) 12-month PD, exactly as specified in Dr. Saber's
+    # Base (Most Likely) 12-month PD. Per Dr. Saber's decision on
+    # 2026-08-10: this table IS the demo engine's PD parameter (direct
+    # lookup), not merely a training target for a fitted model. His
+    # stated 8 grades (AAA-B, CCC) are exact from his
     # DataOS_IFRS9_Parameters file (PD Lookup Table by Credit Rating,
-    # referenced from SAMA Financial Stability Reports). His table
-    # doesn't include CC/C grades (it has 8: AAA/AA/A/BBB/BB/B/CCC/D) --
-    # our data has 10, so CC and C are geometrically interpolated
-    # between his CCC (25%) and D (100%) values, disclosed as such below.
+    # sourced to SAMA Financial Stability Reports). CC and C aren't in
+    # his 8-grade table -- geometrically interpolated between his CCC
+    # (25%) and D (100%) values, 3 equal log-steps, kept and formally
+    # documented as interpolated per his instruction. D is pinned to
+    # exactly 1.0 -- IFRS 9 defines default as PD=1 by definition; a
+    # fitted model can structurally never hit this exactly, which was
+    # his decisive reason for retiring the model from this demo path.
     "AAA": 0.0010, "AA": 0.0025, "A": 0.0060, "BBB": 0.0150, "BB": 0.0400,
     "B": 0.1000, "CCC": 0.2500,
-    "CC": 0.3969,   # interpolated between Dr. Saber's CCC (25%) and D (100%) -- not in his table
-    "C": 0.6300,    # interpolated between Dr. Saber's CCC (25%) and D (100%) -- not in his table
-    "D": 1.0000,
+    "CC": 0.3969,   # interpolated between CCC (25%) and D (100%) -- kept & documented per Dr. Saber
+    "C": 0.6300,    # interpolated between CCC (25%) and D (100%) -- kept & documented per Dr. Saber
+    "D": 1.0000,    # pinned exactly -- IFRS 9 default = PD 1 by definition
 }
 RATINGS_INTERPOLATED_NOT_IN_SABER_TABLE = ["CC", "C"]
 
 # LGD by facility type -- Dr. Saber's exact stated rates from his
-# DataOS_IFRS9_Parameters file (LGD Parameters by Facility Type sheet),
-# not our own invention. All 5 facility types present in this dataset
-# now have a direct, named rate from his file -- nothing left as an
-# unresolved placeholder.
+# DataOS_IFRS9_Parameters file (LGD Parameters by Facility Type sheet).
+# Per his 2026-08-10 decision, this is a direct lookup for the demo
+# engine, not a model-fitting target.
 ILLUSTRATIVE_TARGET_LGD_BY_FACILITY = {
     "تمويل عقاري": 0.25,      # Real Estate Financing -- strong collateral, ~75% recovery
     "تمويل مشاريع": 0.35,     # Project Financing -- structured, asset-backed but illiquid
@@ -615,7 +620,22 @@ ILLUSTRATIVE_TARGET_LGD_BY_FACILITY = {
     "تمويل شخصي": 0.30,       # Personal/Salary-Based Financing -- salary assignment, predictable recovery
     "بطاقة ائتمانية": 0.65,    # Credit Card / Unsecured -- no collateral, lowest recovery
 }
-DEFAULT_LGD = 0.55  # used only for a facility type never seen in training
+DEFAULT_LGD = 0.55  # used only for a facility type never in the table
+
+# Which PD/LGD source the demo ECL engine uses. Per Dr. Saber's
+# 2026-08-10 decision: "lookup" (direct table lookup) is the demo's
+# source of truth. "trained_model" (the fitted scikit-learn scorecard)
+# is kept as a labeled production-mode path -- a good story point for
+# "calibration to the bank's own real default history is the step
+# ahead" -- but is not used by the demo unless explicitly selected.
+# Two structural reasons a fitted model isn't the demo's source of
+# truth: (1) it's trained on synthetic data generated FROM this same
+# table, so it's circular -- it can only recover the table with added
+# noise, not learn anything independent; (2) a logistic regression on
+# rating rank can never output PD=1.0 exactly, so a defaulted D-grade
+# loan would display PD<100%, which conflicts with IFRS 9's definition
+# of default as PD=1.
+IFRS9_ENGINE_MODE = "lookup"  # "lookup" (demo default) | "trained_model" (production-mode, requires bank historical data)
 
 # Macro scenario definitions -- Dr. Saber's exact structure from his
 # DataOS_IFRS9_Parameters file (Macroeconomic Scenarios sheet), sourced
@@ -689,14 +709,27 @@ def _build_pd_model():
     return _pd_model
 
 
+def _lookup_pd(ratings: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """Direct lookup on ILLUSTRATIVE_TARGET_PD_BY_RATING -- the demo
+    engine's source of truth per Dr. Saber's 2026-08-10 decision.
+    Exact to the stated parameter for every rating, including D=1.0
+    exactly."""
+    unknown_mask = ~ratings.isin(ILLUSTRATIVE_TARGET_PD_BY_RATING)
+    probs = ratings.map(ILLUSTRATIVE_TARGET_PD_BY_RATING)
+    probs = probs.fillna(ILLUSTRATIVE_TARGET_PD_BY_RATING["B"])  # mid-range fallback for an unrecognized grade
+    return probs.astype(float), unknown_mask
+
+
 def _predict_pd(ratings: pd.Series) -> tuple[pd.Series, pd.Series]:
-    model = _build_pd_model()
-    rank_map = {r: i for i, r in enumerate(RATING_ORDER)}
-    ranks = ratings.map(rank_map)
-    unknown_mask = ranks.isna()
-    ranks_filled = ranks.fillna(rank_map["B"]).astype(int)  # mid-range fallback for an unrecognized grade
-    probs = model.predict_proba(ranks_filled.to_numpy().reshape(-1, 1))[:, 1]
-    return pd.Series(probs, index=ratings.index), unknown_mask
+    if IFRS9_ENGINE_MODE == "trained_model":
+        model = _build_pd_model()
+        rank_map = {r: i for i, r in enumerate(RATING_ORDER)}
+        ranks = ratings.map(rank_map)
+        unknown_mask = ranks.isna()
+        ranks_filled = ranks.fillna(rank_map["B"]).astype(int)  # mid-range fallback for an unrecognized grade
+        probs = model.predict_proba(ranks_filled.to_numpy().reshape(-1, 1))[:, 1]
+        return pd.Series(probs, index=ratings.index), unknown_mask
+    return _lookup_pd(ratings)
 
 
 def _build_lgd_model():
@@ -722,14 +755,26 @@ def _build_lgd_model():
     return _lgd_model, _lgd_facility_columns
 
 
+def _lookup_lgd(facility_types: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """Direct lookup on ILLUSTRATIVE_TARGET_LGD_BY_FACILITY -- the demo
+    engine's source of truth per Dr. Saber's 2026-08-10 decision. Exact
+    to the stated rate for every known facility type."""
+    unknown_mask = ~facility_types.isin(ILLUSTRATIVE_TARGET_LGD_BY_FACILITY)
+    result = facility_types.map(ILLUSTRATIVE_TARGET_LGD_BY_FACILITY)
+    result = result.fillna(DEFAULT_LGD)
+    return result.astype(float), unknown_mask
+
+
 def _predict_lgd(facility_types: pd.Series) -> tuple[pd.Series, pd.Series]:
-    model, columns = _build_lgd_model()
-    unknown_mask = ~facility_types.isin(columns)
-    dummies = pd.get_dummies(facility_types).reindex(columns=columns, fill_value=0)
-    preds = np.clip(model.predict(dummies.to_numpy()), 0.05, 0.95)
-    result = pd.Series(preds, index=facility_types.index)
-    result[unknown_mask] = DEFAULT_LGD  # never-seen facility type -- conservative fallback, not extrapolation
-    return result, unknown_mask
+    if IFRS9_ENGINE_MODE == "trained_model":
+        model, columns = _build_lgd_model()
+        unknown_mask = ~facility_types.isin(columns)
+        dummies = pd.get_dummies(facility_types).reindex(columns=columns, fill_value=0)
+        preds = np.clip(model.predict(dummies.to_numpy()), 0.05, 0.95)
+        result = pd.Series(preds, index=facility_types.index)
+        result[unknown_mask] = DEFAULT_LGD  # never-seen facility type -- conservative fallback, not extrapolation
+        return result, unknown_mask
+    return _lookup_lgd(facility_types)
 
 
 def _compute_staging(df: pd.DataFrame) -> tuple[pd.Series, list[str], list[str]]:
@@ -800,13 +845,22 @@ def _compute_staging(df: pd.DataFrame) -> tuple[pd.Series, list[str], list[str]]
     return stage, evaluated, not_evaluated
 
 
-def _run_ifrs9_modeled(df: pd.DataFrame, scenario: str, customer_lookup: dict | None = None) -> dict:
+def _run_ifrs9_modeled(df: pd.DataFrame, scenario: str, customer_lookup: dict | None = None, reference_date: str | None = None) -> dict:
     if scenario not in MACRO_SCENARIOS:
         raise ValueError(f"Unknown scenario '{scenario}' -- choose one of: {list(MACRO_SCENARIOS.keys())}")
 
-    origination = pd.to_datetime(df["ORIGINATION"], errors="coerce")
+    # IFRS 9 lifetime PD is measured over a loan's REMAINING contractual
+    # life from the reporting date, not its full original tenor from
+    # origination. Using origination-to-maturity (the earlier version)
+    # overstated the compounding horizon for any loan already partway
+    # through its term -- confirmed by Dr. Saber's 9 Aug review (LN-5102:
+    # his reference point implies 7.28y remaining vs. the 11.74y full
+    # tenor the earlier version used). reference_date defaults to today
+    # (the actual reporting date for a live system) but can be pinned
+    # for a specific as-of date via payload.
     maturity = pd.to_datetime(df["MATURITY"], errors="coerce")
-    term_years = ((maturity - origination).dt.days / 365.25).clip(lower=0.1)
+    reporting_date = pd.to_datetime(reference_date) if reference_date else pd.Timestamp.now().normalize()
+    term_years = ((maturity - reporting_date).dt.days / 365.25).clip(lower=0.1)
 
     base_pd, unknown_rating_mask = _predict_pd(df["RATING"])
     unknown_ratings = df.loc[unknown_rating_mask, "RATING"].unique().tolist()
@@ -922,33 +976,51 @@ def _run_ifrs9_modeled(df: pd.DataFrame, scenario: str, customer_lookup: dict | 
         },
         "modeled_pd_by_rating": modeled_pd_by_rating,
         "modeled_lgd_by_facility_type": modeled_lgd_by_facility_type,
-        "pd_model": "scikit-learn LogisticRegression (fitted)",
-        "lgd_model": "scikit-learn LinearRegression (fitted)",
+        "reporting_date": reporting_date.strftime("%Y-%m-%d"),
+        "pd_model": "direct lookup (demo mode)" if IFRS9_ENGINE_MODE == "lookup" else "scikit-learn LogisticRegression (fitted, production mode)",
+        "lgd_model": "direct lookup (demo mode)" if IFRS9_ENGINE_MODE == "lookup" else "scikit-learn LinearRegression (fitted, production mode)",
+        "engine_mode": IFRS9_ENGINE_MODE,
+        "pd_model_fitting_params": None if IFRS9_ENGINE_MODE == "lookup" else {
+            "feature": "rating rank, 0=AAA..9=D (single feature)",
+            "random_seed": 42,
+            "samples_per_grade": 300,
+            "training_labels": "Bernoulli draws at ILLUSTRATIVE_TARGET_PD_BY_RATING[rating]",
+        },
+        "lgd_model_fitting_params": None if IFRS9_ENGINE_MODE == "lookup" else {
+            "feature": "facility type, one-hot encoded",
+            "random_seed": 43,
+            "samples_per_facility": 200,
+            "training_labels": "Normal(target, sd=0.05) clipped to [0.01, 0.99] at ILLUSTRATIVE_TARGET_LGD_BY_FACILITY[facility]",
+        },
         "scenario_description": MACRO_SCENARIOS[scenario]["description"],
         "methodology_note": (
             "This methodology follows Dr. Mohamed Saber's DataOS_IFRS9_Parameters file directly "
             "-- his exact PD table, LGD-by-facility rates, staging rules, and macro scenario "
-            "structure, not our own invented numbers. PD is estimated with a fitted scikit-learn "
-            "LogisticRegression (the standard PD-scorecard technique), trained on his stated base "
-            "12-month PD values by rating (sourced by him to SAMA's Financial Stability Reports). "
-            "His table covers 8 of the 10 grades in this data; CC and C are geometrically "
-            "interpolated between his CCC and D values -- see modeled_pd_by_rating and the "
-            "RATINGS_INTERPOLATED_NOT_IN_SABER_TABLE note. Stage 1 uses 12-month PD; Stage 2/3 use "
-            "lifetime PD over the loan's remaining term, per IFRS 9's actual distinction. Staging "
-            "uses his multi-trigger SICR rules -- see staging_triggers_evaluated / "
-            "staging_triggers_not_evaluated for exactly which triggers this file's data actually "
-            "supports (only the DPD backstop today). LGD uses his exact stated rates for all 5 "
-            "facility types in this data (Real estate 25%, Project financing 35%, Commercial 45%, "
-            "Salary-based 30%, Unsecured/credit card 65%) -- fitted with scikit-learn "
-            "LinearRegression, not looked up directly, but trained to land on his numbers. Both PD "
+            "structure, not our own invented numbers. Per his 2026-08-10 decision, PD and LGD are "
+            "DIRECT LOOKUPS on his stated tables for this demo, not a fitted model -- exact to the "
+            "stated parameter for every rating and facility type, including D pinned to exactly "
+            "1.0 (IFRS 9 defines default as PD=1 by definition). His PD table covers 8 of the 10 "
+            "grades in this data; CC and C are geometrically interpolated between his CCC and D "
+            "values, kept and formally documented as interpolated per his instruction -- see "
+            "modeled_pd_by_rating and the RATINGS_INTERPOLATED_NOT_IN_SABER_TABLE note. Stage 1 "
+            "uses 12-month PD; Stage 2/3 use lifetime PD over the loan's remaining term from the "
+            "reporting date, per IFRS 9's actual distinction. Staging uses his multi-trigger SICR "
+            "rules -- see staging_triggers_evaluated / staging_triggers_not_evaluated for exactly "
+            "which triggers this file's data actually supports (only the DPD backstop today). LGD "
+            "uses his exact stated rates for all 5 facility types in this data (Real estate 25%, "
+            "Project financing 35%, Commercial 45%, Salary-based 30%, Unsecured/credit card 65%), "
+            "looked up directly. A fitted scikit-learn scorecard (LogisticRegression for PD, "
+            "LinearRegression for LGD) exists in this codebase behind IFRS9_ENGINE_MODE="
+            "'trained_model' -- labeled production mode, requires calibration to the bank's own "
+            "real default/recovery history, not used as this demo's source of truth. Both PD "
             "and LGD are adjusted by his scenario multipliers -- LGD isn't scenario-invariant "
             f"either (collateral recovers less under stress). This scenario ('{scenario}') applies "
             f"{MACRO_SCENARIOS[scenario]['pd_multiplier']}x to PD and "
             f"{MACRO_SCENARIOS[scenario]['lgd_multiplier']}x to LGD. "
             "expected_ecl_across_scenarios is his probability-weighted blend across all three "
-            "(25%/55%/20%). What remains illustrative, pending his historical data: the underlying "
-            "training figures themselves (not fitted from this bank's actual defaults/recoveries, "
-            "which don't exist yet) -- the parameters and mechanism are his and real; the "
+            "(25%/55%/20%). What remains illustrative, pending his historical data: whether these "
+            "stated parameters themselves hold against this bank's actual defaults/recoveries, "
+            "which don't exist yet -- the parameters and mechanism are his and real; the "
             "calibration-to-actual-outcomes step is what's still ahead."
         ),
     }
