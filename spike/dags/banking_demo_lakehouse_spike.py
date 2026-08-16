@@ -31,6 +31,10 @@ Deploy notes (see the handoff message for full context):
   - Python packages (pyiceberg, duckdb, boto3, pandas, openpyxl, scikit-learn,
     rapidfuzz) are installed at BUILD time via the Dockerfile, not a runtime
     env var -- faster startup, no surprises from a slow first-boot install.
+  - Bronze storage and the Iceberg warehouse are DELIBERATELY SEPARATE
+    buckets (see BUCKET vs ICEBERG_BUCKET below) -- SeaweedFS's Iceberg
+    REST Catalog will not let a bucket be both a plain object-store bucket
+    and a registered table-bucket at the same time.
 """
 from __future__ import annotations
 
@@ -53,7 +57,20 @@ CATALOG_PORT = os.environ.get("SEAWEEDFS_ICEBERG_CATALOG_PORT", "8181")
 S3_ENDPOINT = f"http://{SEAWEEDFS_HOST}:{S3_PORT}"
 CATALOG_URI = f"http://{SEAWEEDFS_HOST}:{CATALOG_PORT}"
 
+# Raw Bronze object storage (plain S3 bucket -- the demo .xlsx lives here).
 BUCKET = "dataos-spike"
+
+# Dedicated Iceberg table-bucket for Silver/Gold. MUST be a different name
+# from BUCKET above: SeaweedFS's Iceberg REST Catalog refuses to register a
+# bucket as a table-bucket if that name is already a plain object-store
+# bucket (confirmed directly -- `s3tables.bucket -create -name dataos-spike`
+# errors with "already used by an object store bucket", since dataos-spike
+# already holds the raw Bronze file). Needs a one-time manual registration
+# on dataos-spike-storage's Shell tab before the next DAG run:
+#   weed shell
+#   s3tables.bucket -create -name dataos-spike-iceberg -account default
+ICEBERG_BUCKET = "dataos-spike-iceberg"
+
 # SeaweedFS's default (unconfigured) S3 credentials -- fine for a sandboxed
 # spike; production hosting will set real ones, tracked as a follow-up, not
 # silently treated as done here.
@@ -90,7 +107,9 @@ def _iceberg_catalog():
             # on, so every later request (e.g. /v1/namespaces) 404s. This
             # property is pyiceberg's real, documented mechanism for that --
             # verified against the installed library source, not guessed.
-            "warehouse": f"s3://{BUCKET}/",
+            # Points at ICEBERG_BUCKET, NOT BUCKET -- see the comment on
+            # ICEBERG_BUCKET above for why they must be separate buckets.
+            "warehouse": f"s3://{ICEBERG_BUCKET}/",
             "s3.endpoint": S3_ENDPOINT,
             "s3.access-key-id": S3_ACCESS_KEY,
             "s3.secret-access-key": S3_SECRET_KEY,
