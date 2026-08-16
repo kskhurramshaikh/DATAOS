@@ -31,10 +31,10 @@ Deploy notes (see the handoff message for full context):
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN   (already set for Airflow's own
                                   metadata DB -- reused as the Iceberg
                                   catalog DB too; see _iceberg_catalog())
-  - Python packages (pyiceberg[pyarrow,sql-postgres], duckdb, boto3, pandas,
-    openpyxl, scikit-learn, rapidfuzz) are installed at BUILD time via the
-    Dockerfile, not a runtime env var -- faster startup, no surprises from a
-    slow first-boot install.
+  - Python packages (pyiceberg[pyarrow], duckdb, boto3, pandas, openpyxl,
+    scikit-learn, rapidfuzz, psycopg2-binary) are installed at BUILD time
+    via the Dockerfile, not a runtime env var -- faster startup, no
+    surprises from a slow first-boot install.
   - Bronze storage and the Iceberg warehouse are DELIBERATELY SEPARATE
     buckets (see BUCKET vs ICEBERG_BUCKET below) -- SeaweedFS's Iceberg
     tooling will not let a bucket be both a plain object-store bucket
@@ -54,22 +54,35 @@ Deploy notes (see the handoff message for full context):
     uploads for larger Iceberg writes fail with a generic
     "AWS Error INTERNAL_FAILURE during UploadPart" -- not caused by data
     size or content, just the client guessing wrong about the endpoint.
-  - CATALOG BACKEND: pyiceberg SqlCatalog on Postgres, NOT SeaweedFS's own
-    built-in Iceberg REST Catalog. Storage is unchanged -- every Parquet/
-    Avro/metadata-JSON file still lives in SeaweedFS's dataos-spike-iceberg
-    S3 bucket, exactly as decided. Only the CATALOG (the small "which
-    metadata version is current" pointer, and its atomic compare-and-swap
-    on commit) moved. Reason: iceberg_concurrent_writer_test.py failed
-    reproducibly (twice, identically -- 8 concurrent writers, only 7
-    landed) against SeaweedFS's built-in catalog. Traced directly into
-    SeaweedFS's own handlers_commit.go source: two concurrent commits can
-    compute the same next metadata-version filename, both write it, and
-    the loser's own cleanup step deletes the file the winner's pointer now
-    depends on -- a real race in SeaweedFS's current catalog code, not a
-    client-side bug. Postgres's transactional UPDATE makes that race
-    structurally impossible, and it's the same catalog model Trino/Spark's
-    JDBC catalog uses, so it doesn't conflict with the Section 03
-    Trino+Spark production plan.
+  - CATALOG BACKEND: PostgresIcebergCatalog (pg_iceberg_catalog.py, this
+    same folder) on Postgres, NOT SeaweedFS's own built-in Iceberg REST
+    Catalog, and NOT pyiceberg's own SqlCatalog either. Storage is
+    unchanged -- every Parquet/Avro/metadata-JSON file still lives in
+    SeaweedFS's dataos-spike-iceberg S3 bucket, exactly as decided. Only
+    the CATALOG (the small "which metadata version is current" pointer,
+    and its atomic compare-and-swap on commit) moved.
+      Two things had to be true to get there:
+      1. SeaweedFS's built-in catalog failed iceberg_concurrent_writer_test.py
+         reproducibly (twice, identically -- 8 concurrent writers, only 7
+         landed). Traced directly into SeaweedFS's own handlers_commit.go
+         source: two concurrent commits can compute the same next
+         metadata-version filename, both write it, and the loser's own
+         cleanup step deletes the file the winner's pointer now depends
+         on -- a real race in SeaweedFS's current catalog code.
+      2. pyiceberg's own SqlCatalog (the obvious Postgres-backed fix)
+         requires sqlalchemy>=2.0.18, which is incompatible with Airflow
+         2.10.4's own SQLAlchemy-1.4-based ORM models in this same image
+         (confirmed directly: installing it broke Airflow's own
+         TaskInstance model at boot). So the catalog here is
+         PostgresIcebergCatalog -- a small hand-rolled implementation of
+         pyiceberg's Catalog interface using only psycopg2, replicating
+         SqlCatalog's exact schema/commit protocol without importing
+         sqlalchemy at all. Tested directly against a real Postgres
+         instance with the same 8-worker concurrent scenario before
+         shipping: 4/4 clean runs, 8 rows/8 snapshots every time.
+      Same catalog model (one row per table, atomic UPDATE...WHERE
+      commit) Trino/Spark's JDBC catalog already uses, so this doesn't
+      conflict with the Section 03 Trino+Spark production plan.
 """
 from __future__ import annotations
 
@@ -142,7 +155,8 @@ DEMO_FILE_KEY = "bronze/Banking_Demo_Dataset.xlsx"
 # module docstring for why it's not under /opt/airflow, which the
 # persistent disk covers). Every task that needs to import from app/ --
 # both silver_transform (header detection) and gold_compute (banking_adapter)
-# -- needs this on sys.path first.
+# -- needs this on sys.path first. pg_iceberg_catalog.py lives in this same
+# dags/ folder, so it's importable directly once this path is set too.
 SPIKE_DAGS_ROOT = "/opt/spike-dags"
 
 
@@ -156,20 +170,22 @@ def _s3_client():
 
 
 def _iceberg_catalog():
-    """Returns a fresh SqlCatalog client. Data/metadata files still write to
-    SeaweedFS S3 (ICEBERG_BUCKET, via the s3.* properties below) -- only the
-    atomic "current version" pointer lives in Postgres now. See module
-    docstring for the concurrent-writer bug this replaces SeaweedFS's
-    built-in catalog to fix. Intentionally a fresh instance per call (not a
-    shared module-level singleton) -- iceberg_concurrent_writer_test.py
-    specifically relies on each concurrent worker getting its own client."""
+    """Returns a fresh PostgresIcebergCatalog client. Data/metadata files
+    still write to SeaweedFS S3 (ICEBERG_BUCKET, via the s3.* properties
+    below) -- only the atomic "current version" pointer lives in Postgres
+    now, via a hand-rolled psycopg2-only catalog (see module docstring for
+    why not pyiceberg's own SqlCatalog). Intentionally a fresh instance per
+    call (not a shared module-level singleton) --
+    iceberg_concurrent_writer_test.py specifically relies on each
+    concurrent worker getting its own client and its own DB connection."""
     if not ICEBERG_CATALOG_DB_URI:
         raise RuntimeError(
             "No Iceberg catalog DB connection string found -- set "
             "ICEBERG_CATALOG_DB_URI or AIRFLOW__DATABASE__SQL_ALCHEMY_CONN."
         )
-    from pyiceberg.catalog.sql import SqlCatalog
-    return SqlCatalog(
+    sys.path.insert(0, SPIKE_DAGS_ROOT)
+    from pg_iceberg_catalog import PostgresIcebergCatalog
+    return PostgresIcebergCatalog(
         "dataos_spike",
         **{
             "uri": ICEBERG_CATALOG_DB_URI,
