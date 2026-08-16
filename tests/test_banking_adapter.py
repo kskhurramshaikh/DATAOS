@@ -108,7 +108,13 @@ LN-4,D,تمويل تجاري,150,2019-01-01,2023-01-01,80000,3,60000
 def test_ifrs9_modeled_path_used_when_attributes_present():
     result = banking_adapter.run_ifrs9({"csv_content": MODELED_IFRS9_CSV, "scenario": "base"})
     assert result["scenario"] == "base"
-    assert "scikit-learn LogisticRegression" in result["methodology_note"]
+    # Per Dr. Saber's 2026-08-10 decision, the demo engine uses direct
+    # parameter-table lookups, not the fitted scikit-learn scorecard --
+    # see IFRS9_ENGINE_MODE in banking_adapter.py. The fitted model is
+    # still in the codebase behind that flag, so check for the engine
+    # actually used by default, not the one it's no longer using.
+    assert "DIRECT LOOKUPS" in result["methodology_note"]
+    assert result["engine_mode"] == "lookup"
 
 
 def test_ifrs9_modeled_exposes_pd_and_lgd_as_first_class_results():
