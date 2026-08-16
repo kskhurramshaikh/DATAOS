@@ -41,6 +41,15 @@ Deploy notes (see the handoff message for full context):
     carry a title/report-name row above the actual headers, which a naive
     header=0 read misreads as data, producing "Unnamed: N" columns with
     mixed-type junk that pyarrow's pandas->Arrow conversion cannot handle.
+  - The Iceberg catalog's S3 properties EXPLICITLY set region + path-style
+    addressing (see _iceberg_catalog below) -- pyarrow's S3 filesystem
+    tries to auto-resolve a bucket's AWS region via a lookup SeaweedFS
+    doesn't properly support ("Unable to resolve region for bucket ..."
+    warning), and SeaweedFS (like most S3-compatible stores) needs
+    path-style URLs, not virtual-hosted-style. Left unset, multipart
+    uploads for larger Iceberg writes fail with a generic
+    "AWS Error INTERNAL_FAILURE during UploadPart" -- not caused by data
+    size or content, just the client guessing wrong about the endpoint.
 """
 from __future__ import annotations
 
@@ -63,6 +72,13 @@ CATALOG_PORT = os.environ.get("SEAWEEDFS_ICEBERG_CATALOG_PORT", "8181")
 
 S3_ENDPOINT = f"http://{SEAWEEDFS_HOST}:{S3_PORT}"
 CATALOG_URI = f"http://{SEAWEEDFS_HOST}:{CATALOG_PORT}"
+
+# SeaweedFS's s3tables admin registers buckets under this region by default
+# (confirmed directly from the ARN returned when registering
+# dataos-spike-iceberg: arn:aws:s3tables:us-east-1:default:bucket/...) --
+# pyarrow's S3 client needs this told to it explicitly rather than trying
+# to auto-resolve it, which SeaweedFS doesn't properly support.
+S3_REGION = os.environ.get("SEAWEEDFS_S3_REGION", "us-east-1")
 
 # Raw Bronze object storage (plain S3 bucket -- the demo .xlsx lives here).
 BUCKET = "dataos-spike"
@@ -127,6 +143,14 @@ def _iceberg_catalog():
             "s3.endpoint": S3_ENDPOINT,
             "s3.access-key-id": S3_ACCESS_KEY,
             "s3.secret-access-key": S3_SECRET_KEY,
+            # See module docstring: SeaweedFS can't answer pyarrow's
+            # auto-region-resolution lookup, and needs path-style S3 URLs
+            # (http://host:port/bucket/key) rather than virtual-hosted-style
+            # (http://bucket.host:port/key) -- without both of these,
+            # multipart uploads for Iceberg data/manifest files fail with a
+            # generic "AWS Error INTERNAL_FAILURE during UploadPart".
+            "s3.region": S3_REGION,
+            "s3.path-style-access": "true",
         },
     )
 
