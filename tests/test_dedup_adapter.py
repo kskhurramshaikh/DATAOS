@@ -83,7 +83,7 @@ def test_decide_cluster_updates_status(tmp_path, monkeypatch):
         ).fetchone()
     cluster_id = row["id"]
 
-    result = dedup_adapter.decide_cluster(cluster_id, "confirmed_duplicate")
+    result = dedup_adapter.decide_cluster(cluster_id, "confirmed_duplicate", "test_reviewer@example.com")
     assert result["status"] == "confirmed_duplicate"
 
     pending = dedup_adapter.get_pending_clusters("dedup_test_4")
@@ -92,7 +92,7 @@ def test_decide_cluster_updates_status(tmp_path, monkeypatch):
 
 def test_decide_cluster_rejects_invalid_status():
     try:
-        dedup_adapter.decide_cluster(1, "maybe")
+        dedup_adapter.decide_cluster(1, "maybe", "test_reviewer@example.com")
         assert False, "expected ValueError"
     except ValueError:
         pass
@@ -103,7 +103,7 @@ def test_decide_cluster_rejects_unknown_id(tmp_path, monkeypatch):
     from app.db import init_db
     init_db()
     try:
-        dedup_adapter.decide_cluster(99999, "not_duplicate")
+        dedup_adapter.decide_cluster(99999, "not_duplicate", "test_reviewer@example.com")
         assert False, "expected ValueError"
     except ValueError:
         pass
