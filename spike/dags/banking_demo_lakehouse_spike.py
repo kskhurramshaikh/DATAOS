@@ -7,7 +7,8 @@ infrastructure instead of local CSV + SQLite:
 
     Bronze  -> raw Banking_Demo_Dataset.xlsx bytes, written to SeaweedFS (S3 API)
     Silver  -> cleaned IFRS9_Portfolio + Customer_MDM, written as REAL Iceberg
-               tables (via SeaweedFS's own built-in Iceberg REST Catalog)
+               tables (data/metadata files in SeaweedFS S3; catalog pointer
+               in Postgres -- see _iceberg_catalog() below for why)
     Gold    -> IFRS 9 ECL, SAMA compliance, NDI radar, duplicate-detection
                outputs -- computed with the EXACT functions already live in
                production (banking_adapter.py), written as Iceberg tables
@@ -27,13 +28,16 @@ Deploy notes (see the handoff message for full context):
       SEAWEEDFS_INTERNAL_HOST   (from Render's Connect -> Internal tab
                                   on dataos-spike-storage)
       SEAWEEDFS_S3_PORT         8333
-      SEAWEEDFS_ICEBERG_CATALOG_PORT   8181
-  - Python packages (pyiceberg, duckdb, boto3, pandas, openpyxl, scikit-learn,
-    rapidfuzz) are installed at BUILD time via the Dockerfile, not a runtime
-    env var -- faster startup, no surprises from a slow first-boot install.
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN   (already set for Airflow's own
+                                  metadata DB -- reused as the Iceberg
+                                  catalog DB too; see _iceberg_catalog())
+  - Python packages (pyiceberg[pyarrow,sql-postgres], duckdb, boto3, pandas,
+    openpyxl, scikit-learn, rapidfuzz) are installed at BUILD time via the
+    Dockerfile, not a runtime env var -- faster startup, no surprises from a
+    slow first-boot install.
   - Bronze storage and the Iceberg warehouse are DELIBERATELY SEPARATE
     buckets (see BUCKET vs ICEBERG_BUCKET below) -- SeaweedFS's Iceberg
-    REST Catalog will not let a bucket be both a plain object-store bucket
+    tooling will not let a bucket be both a plain object-store bucket
     and a registered table-bucket at the same time.
   - silver_transform reuses the REAL header-detection logic from
     app/adapters/dataset_adapter.py (_read_sheet_with_header_detection)
@@ -50,6 +54,22 @@ Deploy notes (see the handoff message for full context):
     uploads for larger Iceberg writes fail with a generic
     "AWS Error INTERNAL_FAILURE during UploadPart" -- not caused by data
     size or content, just the client guessing wrong about the endpoint.
+  - CATALOG BACKEND: pyiceberg SqlCatalog on Postgres, NOT SeaweedFS's own
+    built-in Iceberg REST Catalog. Storage is unchanged -- every Parquet/
+    Avro/metadata-JSON file still lives in SeaweedFS's dataos-spike-iceberg
+    S3 bucket, exactly as decided. Only the CATALOG (the small "which
+    metadata version is current" pointer, and its atomic compare-and-swap
+    on commit) moved. Reason: iceberg_concurrent_writer_test.py failed
+    reproducibly (twice, identically -- 8 concurrent writers, only 7
+    landed) against SeaweedFS's built-in catalog. Traced directly into
+    SeaweedFS's own handlers_commit.go source: two concurrent commits can
+    compute the same next metadata-version filename, both write it, and
+    the loser's own cleanup step deletes the file the winner's pointer now
+    depends on -- a real race in SeaweedFS's current catalog code, not a
+    client-side bug. Postgres's transactional UPDATE makes that race
+    structurally impossible, and it's the same catalog model Trino/Spark's
+    JDBC catalog uses, so it doesn't conflict with the Section 03
+    Trino+Spark production plan.
 """
 from __future__ import annotations
 
@@ -68,10 +88,8 @@ from airflow.decorators import dag, task
 # ---------------------------------------------------------------------------
 SEAWEEDFS_HOST = os.environ["SEAWEEDFS_INTERNAL_HOST"]  # e.g. dataos-spike-storage-a1b2
 S3_PORT = os.environ.get("SEAWEEDFS_S3_PORT", "8333")
-CATALOG_PORT = os.environ.get("SEAWEEDFS_ICEBERG_CATALOG_PORT", "8181")
 
 S3_ENDPOINT = f"http://{SEAWEEDFS_HOST}:{S3_PORT}"
-CATALOG_URI = f"http://{SEAWEEDFS_HOST}:{CATALOG_PORT}"
 
 # SeaweedFS's s3tables admin registers buckets under this region by default
 # (confirmed directly from the ARN returned when registering
@@ -83,12 +101,14 @@ S3_REGION = os.environ.get("SEAWEEDFS_S3_REGION", "us-east-1")
 # Raw Bronze object storage (plain S3 bucket -- the demo .xlsx lives here).
 BUCKET = "dataos-spike"
 
-# Dedicated Iceberg table-bucket for Silver/Gold. MUST be a different name
-# from BUCKET above: SeaweedFS's Iceberg REST Catalog refuses to register a
-# bucket as a table-bucket if that name is already a plain object-store
-# bucket (confirmed directly -- `s3tables.bucket -create -name dataos-spike`
-# errors with "already used by an object store bucket", since dataos-spike
-# already holds the raw Bronze file). Registered successfully 2026-08-16:
+# Dedicated Iceberg table-bucket for Silver/Gold DATA (Parquet/Avro/metadata-
+# JSON files still live here in SeaweedFS S3 -- unaffected by the catalog
+# backend change below). MUST be a different name from BUCKET above:
+# SeaweedFS's S3 tooling refuses to register a bucket as a table-bucket if
+# that name is already a plain object-store bucket (confirmed directly --
+# `s3tables.bucket -create -name dataos-spike` errors with "already used by
+# an object store bucket", since dataos-spike already holds the raw Bronze
+# file). Registered successfully 2026-08-16:
 #   weed shell
 #   s3tables.bucket -create -name dataos-spike-iceberg -account default
 #   -> ARN: arn:aws:s3tables:us-east-1:default:bucket/dataos-spike-iceberg
@@ -99,6 +119,18 @@ ICEBERG_BUCKET = "dataos-spike-iceberg"
 # silently treated as done here.
 S3_ACCESS_KEY = os.environ.get("SEAWEEDFS_ACCESS_KEY", "any")
 S3_SECRET_KEY = os.environ.get("SEAWEEDFS_SECRET_KEY", "any")
+
+# Iceberg CATALOG database (the "which metadata version is current" pointer
+# -- see module docstring for why this is Postgres, not SeaweedFS's built-in
+# catalog). Reuses the same Postgres instance already provisioned for
+# Airflow's own metadata DB -- pragmatic for a spike (zero new cost, one
+# fewer resource to manage), not full isolation between the two concerns.
+# ICEBERG_CATALOG_DB_URI can be set separately if that reuse is ever worth
+# splitting apart; falls back to Airflow's own connection string otherwise.
+ICEBERG_CATALOG_DB_URI = os.environ.get(
+    "ICEBERG_CATALOG_DB_URI",
+    os.environ.get("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN", ""),
+)
 
 # The real demo file. For the spike it's fetched from wherever Khurram
 # uploads it in Step "upload the demo file" (see handoff notes) -- this DAG
@@ -124,21 +156,23 @@ def _s3_client():
 
 
 def _iceberg_catalog():
-    from pyiceberg.catalog.rest import RestCatalog
-    return RestCatalog(
-        name="dataos_spike",
-        uri=CATALOG_URI,
+    """Returns a fresh SqlCatalog client. Data/metadata files still write to
+    SeaweedFS S3 (ICEBERG_BUCKET, via the s3.* properties below) -- only the
+    atomic "current version" pointer lives in Postgres now. See module
+    docstring for the concurrent-writer bug this replaces SeaweedFS's
+    built-in catalog to fix. Intentionally a fresh instance per call (not a
+    shared module-level singleton) -- iceberg_concurrent_writer_test.py
+    specifically relies on each concurrent worker getting its own client."""
+    if not ICEBERG_CATALOG_DB_URI:
+        raise RuntimeError(
+            "No Iceberg catalog DB connection string found -- set "
+            "ICEBERG_CATALOG_DB_URI or AIRFLOW__DATABASE__SQL_ALCHEMY_CONN."
+        )
+    from pyiceberg.catalog.sql import SqlCatalog
+    return SqlCatalog(
+        "dataos_spike",
         **{
-            # SeaweedFS's Iceberg REST Catalog treats each S3 bucket as its
-            # own separate catalog (confirmed by its own error text: "each
-            # table bucket is a separate catalog, select one with
-            # warehouse=s3://<table-bucket>/"). Without this, pyiceberg's
-            # startup call to /v1/config has nothing to base a URL prefix
-            # on, so every later request (e.g. /v1/namespaces) 404s. This
-            # property is pyiceberg's real, documented mechanism for that --
-            # verified against the installed library source, not guessed.
-            # Points at ICEBERG_BUCKET, NOT BUCKET -- see the comment on
-            # ICEBERG_BUCKET above for why they must be separate buckets.
+            "uri": ICEBERG_CATALOG_DB_URI,
             "warehouse": f"s3://{ICEBERG_BUCKET}/",
             "s3.endpoint": S3_ENDPOINT,
             "s3.access-key-id": S3_ACCESS_KEY,
