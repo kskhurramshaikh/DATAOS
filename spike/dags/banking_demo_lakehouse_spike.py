@@ -82,6 +82,15 @@ def _iceberg_catalog():
         name="dataos_spike",
         uri=CATALOG_URI,
         **{
+            # SeaweedFS's Iceberg REST Catalog treats each S3 bucket as its
+            # own separate catalog (confirmed by its own error text: "each
+            # table bucket is a separate catalog, select one with
+            # warehouse=s3://<table-bucket>/"). Without this, pyiceberg's
+            # startup call to /v1/config has nothing to base a URL prefix
+            # on, so every later request (e.g. /v1/namespaces) 404s. This
+            # property is pyiceberg's real, documented mechanism for that --
+            # verified against the installed library source, not guessed.
+            "warehouse": f"s3://{BUCKET}/",
             "s3.endpoint": S3_ENDPOINT,
             "s3.access-key-id": S3_ACCESS_KEY,
             "s3.secret-access-key": S3_SECRET_KEY,
