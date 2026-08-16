@@ -312,7 +312,7 @@ def get_pending_clusters(dataset_safe_name: str) -> list[dict]:
 def get_pending_count(dataset_safe_name: str) -> int:
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT COUNT(*) as c FROM duplicate_clusters WHERE dataset_safe_name = ?",
+            "SELECT COUNT(*) as c FROM duplicate_clusters WHERE dataset_safe_name = ? AND status = 'pending'",
             (dataset_safe_name,),
         ).fetchone()
     return row["c"] if row else 0
