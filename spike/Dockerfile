@@ -14,7 +14,14 @@ USER airflow
 # pandas/openpyxl: reading the real .xlsx demo file's sheets
 # scikit-learn/rapidfuzz: dependencies of the already-signed-off
 #   banking_adapter.py code this DAG reuses as-is
-RUN pip install --no-cache-dir --user \
+#
+# No --user flag: this image's Python runs inside a virtualenv (confirmed
+# by the actual build error when --user was tried: "User site-packages are
+# not visible in this virtualenv"). Running as the airflow user (set above)
+# with a plain pip install is the correct, documented pattern for this
+# image -- it already writes to a location the airflow user can use
+# without needing root.
+RUN pip install --no-cache-dir \
     "pyiceberg[pyarrow]==0.11.1" \
     "duckdb==1.1.3" \
     "boto3>=1.35" \
