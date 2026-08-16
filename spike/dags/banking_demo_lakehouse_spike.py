@@ -35,11 +35,18 @@ Deploy notes (see the handoff message for full context):
     buckets (see BUCKET vs ICEBERG_BUCKET below) -- SeaweedFS's Iceberg
     REST Catalog will not let a bucket be both a plain object-store bucket
     and a registered table-bucket at the same time.
+  - silver_transform reuses the REAL header-detection logic from
+    app/adapters/dataset_adapter.py (_read_sheet_with_header_detection)
+    instead of a raw pd.read_excel(...) -- real exported workbooks often
+    carry a title/report-name row above the actual headers, which a naive
+    header=0 read misreads as data, producing "Unnamed: N" columns with
+    mixed-type junk that pyarrow's pandas->Arrow conversion cannot handle.
 """
 from __future__ import annotations
 
 import io
 import os
+import sys
 from datetime import datetime
 
 import boto3
@@ -65,10 +72,10 @@ BUCKET = "dataos-spike"
 # bucket as a table-bucket if that name is already a plain object-store
 # bucket (confirmed directly -- `s3tables.bucket -create -name dataos-spike`
 # errors with "already used by an object store bucket", since dataos-spike
-# already holds the raw Bronze file). Needs a one-time manual registration
-# on dataos-spike-storage's Shell tab before the next DAG run:
+# already holds the raw Bronze file). Registered successfully 2026-08-16:
 #   weed shell
 #   s3tables.bucket -create -name dataos-spike-iceberg -account default
+#   -> ARN: arn:aws:s3tables:us-east-1:default:bucket/dataos-spike-iceberg
 ICEBERG_BUCKET = "dataos-spike-iceberg"
 
 # SeaweedFS's default (unconfigured) S3 credentials -- fine for a sandboxed
@@ -82,6 +89,13 @@ S3_SECRET_KEY = os.environ.get("SEAWEEDFS_SECRET_KEY", "any")
 # reads it back out of Bronze in the silver_transform step, not off local
 # disk, so the pipeline is genuinely reading from real storage end to end.
 DEMO_FILE_KEY = "bronze/Banking_Demo_Dataset.xlsx"
+
+# /opt/spike-dags is where the Dockerfile bakes app/ on every deploy (see
+# module docstring for why it's not under /opt/airflow, which the
+# persistent disk covers). Every task that needs to import from app/ --
+# both silver_transform (header detection) and gold_compute (banking_adapter)
+# -- needs this on sys.path first.
+SPIKE_DAGS_ROOT = "/opt/spike-dags"
 
 
 def _s3_client():
@@ -115,6 +129,29 @@ def _iceberg_catalog():
             "s3.secret-access-key": S3_SECRET_KEY,
         },
     )
+
+
+def _prep_for_arrow(df: pd.DataFrame) -> pd.DataFrame:
+    """pyarrow's pandas->Arrow conversion requires each column to hold a
+    single consistent type. Real-world Excel sheets don't always guarantee
+    that even after correct header detection -- a column can hold a stray
+    int among mostly-string cells (or vice versa) once pandas reads it as
+    dtype 'object'. Rather than fail the whole ingest on one stray cell,
+    coerce genuinely mixed 'object' columns to string -- this matches how
+    these columns are already treated once they hit CSV elsewhere in the
+    app (dataset_adapter's Bronze/Silver/Gold path round-trips everything
+    through CSV, which stringifies uniformly). Columns that are already
+    single-typed are left untouched, so real numeric/date dtypes still
+    write to Iceberg as proper typed columns, not stringified."""
+    out = df.copy()
+    for col in out.columns:
+        if out[col].dtype == object:
+            non_null = out[col].dropna()
+            if non_null.empty:
+                continue
+            if len({type(v) for v in non_null}) > 1:
+                out[col] = out[col].apply(lambda v: None if pd.isna(v) else str(v))
+    return out
 
 
 @dag(
@@ -161,15 +198,22 @@ def banking_demo_lakehouse_spike():
 
     @task
     def silver_transform(bronze_result: dict) -> dict:
-        """Reads the raw Bronze bytes, extracts the two real sheets (same
-        header-detection logic as the live app's dataset_adapter.py), and
-        writes them as genuine Iceberg tables -- ACID, versioned, schema-
-        tracked, not just Parquet files with no guarantees."""
+        """Reads the raw Bronze bytes, extracts the two real sheets using
+        the SAME header-detection logic as the live app's
+        dataset_adapter.py (real exported workbooks often carry a title
+        row above the real headers -- a naive header=0 read misreads that
+        as data and produces junk 'Unnamed: N' columns), sanitizes any
+        still-mixed-type columns, and writes the result as genuine Iceberg
+        tables -- ACID, versioned, schema-tracked, not just Parquet files
+        with no guarantees."""
+        sys.path.insert(0, SPIKE_DAGS_ROOT)
+        from app.adapters.dataset_adapter import _read_sheet_with_header_detection
+
         s3 = _s3_client()
         raw_bytes = s3.get_object(Bucket=BUCKET, Key=bronze_result["bronze_key"])["Body"].read()
 
-        ifrs9_df = pd.read_excel(io.BytesIO(raw_bytes), sheet_name="IFRS9_Portfolio")
-        customer_df = pd.read_excel(io.BytesIO(raw_bytes), sheet_name="Customer_MDM")
+        ifrs9_df = _prep_for_arrow(_read_sheet_with_header_detection(raw_bytes, "IFRS9_Portfolio"))
+        customer_df = _prep_for_arrow(_read_sheet_with_header_detection(raw_bytes, "Customer_MDM"))
 
         catalog = _iceberg_catalog()
         catalog.create_namespace_if_not_exists("silver")
@@ -193,14 +237,11 @@ def banking_demo_lakehouse_spike():
         already signed off in production (app/adapters/banking_adapter.py)
         against the Silver Iceberg tables, writes Gold Iceberg tables.
         No new computation path -- same functions, different input source."""
-        import sys
         # banking_adapter.py internally does `from app.adapters import
         # dataset_adapter, dedup_adapter` -- so the package must be importable
         # as literally `app`, which means adding the PARENT of app/ to the
-        # path. /opt/spike-dags is where the Dockerfile bakes this code on
-        # every deploy (see module docstring for why it's not under
-        # /opt/airflow, which the persistent disk covers).
-        sys.path.insert(0, "/opt/spike-dags")
+        # path.
+        sys.path.insert(0, SPIKE_DAGS_ROOT)
         from app.adapters import banking_adapter as ba
 
         catalog = _iceberg_catalog()
