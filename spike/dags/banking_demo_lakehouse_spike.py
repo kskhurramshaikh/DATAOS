@@ -105,9 +105,22 @@ def banking_demo_lakehouse_spike():
         readable back out -- proves real, persistent object storage, not
         local disk that Render wipes on redeploy."""
         s3 = _s3_client()
-        existing = [b["Name"] for b in s3.list_buckets().get("Buckets", [])]
-        if BUCKET not in existing:
+        # Try-create, don't list-then-create: SeaweedFS's list_buckets()
+        # doesn't reliably reflect a bucket created as a plain folder
+        # through the Filer web UI (as this one was, by hand, before the
+        # DAG's first run) -- the existence check returned "not found" even
+        # though the bucket genuinely exists, so create_bucket() then failed
+        # with BucketAlreadyOwnedByYou. Catching that specific exception is
+        # the standard, robust idiom for idempotent bucket creation against
+        # any S3-compatible service -- it doesn't depend on list_buckets()
+        # being accurate, so it's correct whether the bucket already exists
+        # (from the Filer UI, or a prior DAG run) or doesn't exist at all.
+        try:
             s3.create_bucket(Bucket=BUCKET)
+        except s3.exceptions.BucketAlreadyOwnedByYou:
+            pass
+        except s3.exceptions.BucketAlreadyExists:
+            pass
 
         obj = s3.get_object(Bucket=BUCKET, Key=DEMO_FILE_KEY)
         raw_bytes = obj["Body"].read()
