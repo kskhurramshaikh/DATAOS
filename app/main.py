@@ -881,24 +881,39 @@ async def mdm_upload_dataset(file: UploadFile = File(...), dataset_name: str = F
         "sheet_used": sheet_used,
     }
 
-    if silver["held"]:
-        result["stage"] = "silver_held"
-        result["hold_reason"] = silver["hold_reason"]
-        dataset_adapter._upsert_dataset_record(
-            bronze["safe_name"], bronze["display_name"], 0, "silver_held",
-            result["rows"], result["columns"], [], silver["duplicate_rows_removed"],
-            silver["null_counts"], bronze["bronze_path"], silver["silver_path"], None,
-        )
-    else:
-        gold = dataset_adapter.promote_to_gold(bronze["safe_name"], silver["silver_df"])
-        result["stage"] = "gold"
-        result["dropped_columns"] = gold["dropped_columns"]
-        dataset_adapter._upsert_dataset_record(
-            bronze["safe_name"], bronze["display_name"], 0, "gold",
-            result["rows"], result["columns"], gold["dropped_columns"],
-            silver["duplicate_rows_removed"], silver["null_counts"],
-            bronze["bronze_path"], silver["silver_path"], gold["gold_path"],
-        )
+    # The two _upsert_dataset_record() calls below are the only DB writes
+    # in this endpoint -- until 2026-08-17 they were NOT wrapped in a
+    # try/except ValueError, unlike everything else in this file. That
+    # gap is exactly why a genuine, now-correctly-raised Postgres error
+    # (see db.py's _PgCursor.execute()) still came back as an opaque,
+    # undiagnosable 500 with zero detail even after that fix landed --
+    # confirmed directly by retesting against the live app. Wrapping it
+    # here brings this in line with every other DB-writing site in this
+    # file (auth.py's create_user, dedup_adapter's decide_cluster, etc.)
+    # -- Bronze/Silver files are already on disk by this point regardless
+    # of outcome, so this failure mode is specifically "the dataset
+    # record itself couldn't be written," worth its own clear message.
+    try:
+        if silver["held"]:
+            result["stage"] = "silver_held"
+            result["hold_reason"] = silver["hold_reason"]
+            dataset_adapter._upsert_dataset_record(
+                bronze["safe_name"], bronze["display_name"], 0, "silver_held",
+                result["rows"], result["columns"], [], silver["duplicate_rows_removed"],
+                silver["null_counts"], bronze["bronze_path"], silver["silver_path"], None,
+            )
+        else:
+            gold = dataset_adapter.promote_to_gold(bronze["safe_name"], silver["silver_df"])
+            result["stage"] = "gold"
+            result["dropped_columns"] = gold["dropped_columns"]
+            dataset_adapter._upsert_dataset_record(
+                bronze["safe_name"], bronze["display_name"], 0, "gold",
+                result["rows"], result["columns"], gold["dropped_columns"],
+                silver["duplicate_rows_removed"], silver["null_counts"],
+                bronze["bronze_path"], silver["silver_path"], gold["gold_path"],
+            )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     return result
 
