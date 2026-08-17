@@ -25,12 +25,24 @@ concern than this app's own write-path dataset storage -- keeping them
 separate means app/adapters/dataset_adapter.py doesn't need to import
 a dashboard-specific module to do its own file I/O.
 
-get_text() deliberately raises the STANDARD LIBRARY FileNotFoundError
-(not a boto3/botocore-specific exception) on a missing object -- so
-callers that used to catch FileNotFoundError against local disk (see
-dataset_adapter.py's read_silver_csv(), fixed 2026-08-17 for exactly
-this exception type) keep working unchanged regardless of which
-backend is actually storing the bytes.
+CI / LOCAL DEV FALLBACK (added after almost shipping a CI break --
+tests/test_dataset_adapter.py directly monkeypatches
+dataset_adapter.DATA_ROOT and asserts real local files exist, same
+load-bearing-test-fixture pattern db.py's DB_PATH monkeypatching
+already established for the Postgres migration; SEAWEEDFS_PUBLIC_URL/
+SEAWEEDFS_INTERNAL_HOST are also never set in GitHub Actions, same as
+LAKEHOUSE_DB_URI). put_text()/get_text() below fall back to plain local
+disk under a caller-supplied local_root when SeaweedFS isn't
+configured -- production (where it IS configured) always uses S3;
+CI/local dev transparently keeps working against local disk with the
+exact same path shape the old direct-local-disk implementation used,
+so no test file needed to change.
+
+get_text() raises the STANDARD LIBRARY FileNotFoundError (not a
+boto3/botocore-specific exception) on a missing object on EITHER
+backend -- so callers that used to catch FileNotFoundError against
+local disk (see dataset_adapter.py's read_silver_csv()) keep working
+unchanged regardless of which backend is actually storing the bytes.
 """
 import os
 
@@ -81,35 +93,55 @@ def _ensure_bucket(s3) -> None:
     _bucket_ready = True
 
 
-def put_text(key: str, content: str) -> str:
+def put_text(key: str, content: str, local_root: str | None = None) -> str:
     """Writes UTF-8 text as an object under APP_BUCKET, returns its
     s3://bucket/key URI -- stored verbatim in datasets.bronze_path/
     silver_path/gold_path (already plain TEXT columns, no schema
-    change needed to hold a URI instead of a local path)."""
-    if not is_configured():
+    change needed to hold a URI instead of a local path).
+
+    Falls back to plain local disk under local_root/key when SeaweedFS
+    isn't configured (CI/local dev -- see module docstring); returns
+    the local path in that case instead of an s3:// URI. Raises
+    ValueError if neither is available, same "fail loud, not silent"
+    posture as every other storage-layer error in this app."""
+    if is_configured():
+        s3 = _client()
+        _ensure_bucket(s3)
+        s3.put_object(Bucket=APP_BUCKET, Key=key, Body=content.encode("utf-8"))
+        return f"s3://{APP_BUCKET}/{key}"
+
+    if local_root is None:
         raise ValueError(
             "Object storage isn't configured (SEAWEEDFS_PUBLIC_URL / "
-            "SEAWEEDFS_INTERNAL_HOST not set) -- can't write dataset files."
+            "SEAWEEDFS_INTERNAL_HOST not set) and no local_root fallback "
+            "was given -- can't write dataset files."
         )
-    s3 = _client()
-    _ensure_bucket(s3)
-    s3.put_object(Bucket=APP_BUCKET, Key=key, Body=content.encode("utf-8"))
-    return f"s3://{APP_BUCKET}/{key}"
+    path = os.path.join(local_root, key)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return path
 
 
-def get_text(uri: str) -> str:
-    """Reads back a s3://bucket/key URI written by put_text(). Raises
-    the plain stdlib FileNotFoundError on a missing object -- see this
-    module's docstring for why that specific exception type matters."""
-    if not uri.startswith("s3://"):
-        raise ValueError(f"Not an s3:// URI: {uri!r}")
-    s3 = _client()
-    bucket, _, key = uri.removeprefix("s3://").partition("/")
-    try:
-        obj = s3.get_object(Bucket=bucket, Key=key)
-    except ClientError as e:
-        code = e.response.get("Error", {}).get("Code", "")
-        if code in ("NoSuchKey", "404", "NoSuchBucket"):
-            raise FileNotFoundError(f"No object at {uri}") from e
-        raise
-    return obj["Body"].read().decode("utf-8")
+def get_text(uri_or_path: str) -> str:
+    """Reads back whatever put_text() returned -- an s3://bucket/key
+    URI (production) or a plain local path (CI/local dev fallback, or
+    an explicit local_root call). Raises the plain stdlib
+    FileNotFoundError on a missing object/file either way -- see this
+    module's docstring for why that specific exception type matters to
+    callers. No local_root needed here: the path/URI returned by
+    put_text() is always already complete."""
+    if uri_or_path.startswith("s3://"):
+        s3 = _client()
+        bucket, _, key = uri_or_path.removeprefix("s3://").partition("/")
+        try:
+            obj = s3.get_object(Bucket=bucket, Key=key)
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("NoSuchKey", "404", "NoSuchBucket"):
+                raise FileNotFoundError(f"No object at {uri_or_path}") from e
+            raise
+        return obj["Body"].read().decode("utf-8")
+
+    with open(uri_or_path, "r", encoding="utf-8") as f:
+        return f.read()
