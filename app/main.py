@@ -57,7 +57,7 @@ from pydantic import BaseModel
 from app.compliance_agent import evaluate
 from app.router import route, NoCapabilityRegisteredError
 from app.capability_registry import CAPABILITY_REGISTRY
-from app.db import init_db
+from app.db import init_db, storage_status
 from app import auth, chat_store, lakehouse_client
 from app.adapters import dataset_adapter, banking_adapter, dedup_adapter
 from app.visualization import suggest_visualization
@@ -195,6 +195,21 @@ def api_info():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/debug/storage")
+def debug_storage():
+    """Which storage backend is actually running RIGHT NOW in this
+    process (Postgres vs the ephemeral SQLite fallback), plus live
+    golden_records/duplicate_clusters row counts -- added 2026-08-17
+    after a Postgres-should-be-active redeploy came back with an empty
+    Golden Record Registry and there was no way to tell from the
+    outside whether that meant "nothing's been created since the fix"
+    or "silently still on SQLite." See app/db.py's storage_status()
+    docstring for the full reasoning. Deliberately unauthenticated,
+    same pattern as /api/lakehouse/debug -- read-only, no secrets in
+    the response (the Postgres URI is masked to host only)."""
+    return storage_status()
 
 
 # ---------------------------------------------------------------------
