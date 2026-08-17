@@ -13,16 +13,14 @@
 # to merge records into a group.
 #
 # What v1 does: detect candidate duplicate groups, cluster them safely,
-# tier by confidence, persist them for human review, and gate Gold
-# promotion until every group has a decision.
-#
-# What v1 deliberately does NOT do: execute a merge -- decide which
-# record's data "wins" and write one consolidated record back to Gold.
-# That's real, separate, riskier logic. Flagged honestly as the next
-# iteration, not silently skipped.
+# tier by confidence, persist them for human review, gate Gold
+# promotion until every group has a decision, and (as of Item 3 --
+# see _execute_merge below) actually EXECUTE the merge the moment a
+# cluster is confirmed -- not just decide and stop there.
 
 import io
 import json
+from datetime import datetime, timezone
 
 import pandas as pd
 from rapidfuzz import fuzz
@@ -242,6 +240,163 @@ def sanitize_clusters_output_for_display(output: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------------
+# Golden Record merge execution (Item 3, MDM) -- this is what v1's own
+# docstring flagged as deliberately NOT built: "decide which record's
+# data wins and write one consolidated record back to Gold." That's
+# what this does now, for real, not an estimate.
+# ---------------------------------------------------------------------
+
+def _execute_merge(cluster_id: int, merged_by: str) -> dict:
+    """Survivorship strategy: the cluster member with the FEWEST missing
+    fields (across the dataset's real columns, not just name/DOB/phone)
+    becomes the base record. Any field still missing on the base is
+    filled from the first other member that has a non-null value for
+    it. Every field's contributing source row is recorded individually
+    -- not just the final merged value -- so a golden record's drill-
+    down can show exactly which source row each field came from, not
+    just present a black-box result.
+
+    Idempotent: re-confirming an already-merged cluster returns the
+    existing golden record rather than creating a duplicate one.
+
+    Reads the CURRENT Silver CSV for the dataset (not the name/DOB/phone
+    snapshot stored on the cluster at detection time) specifically to
+    get every real column, since a genuine merge has to reconcile the
+    whole record, not just the three fields used to detect the match.
+    """
+    with get_conn() as conn:
+        cluster_row = conn.execute(
+            "SELECT * FROM duplicate_clusters WHERE id = ?", (cluster_id,)
+        ).fetchone()
+        if cluster_row is None:
+            raise ValueError(f"No duplicate cluster found with id {cluster_id}.")
+        if cluster_row["status"] != "confirmed_duplicate":
+            raise ValueError(f"Cluster {cluster_id} is not confirmed_duplicate -- cannot merge.")
+
+        existing = conn.execute(
+            "SELECT id FROM golden_records WHERE cluster_id = ?", (cluster_id,)
+        ).fetchone()
+        if existing:
+            return get_golden_record_detail(existing["id"])
+
+    dataset_safe_name = cluster_row["dataset_safe_name"]
+    member_row_ids = json.loads(cluster_row["member_row_ids_json"])
+
+    silver_csv = dataset_adapter.read_silver_csv(dataset_safe_name)
+    df = pd.read_csv(io.StringIO(silver_csv))
+
+    id_col = _find_col(df.columns, ID_COL_CANDIDATES)
+    row_key_series = df[id_col].astype(str) if id_col else df.index.astype(str)
+    df = df.assign(_row_key=row_key_series)
+
+    member_rows = df[df["_row_key"].isin(member_row_ids)]
+    if member_rows.empty:
+        raise ValueError(
+            f"Could not find the source rows for cluster {cluster_id} in the current Silver data "
+            f"for '{dataset_safe_name}' -- the data may have changed since detection ran."
+        )
+
+    data_cols = [c for c in df.columns if c != "_row_key"]
+
+    completeness = member_rows[data_cols].notna().sum(axis=1)
+    base_idx = completeness.idxmax()
+    base_row = member_rows.loc[base_idx]
+
+    def _clean(val):
+        if hasattr(val, "item"):
+            val = val.item()
+        return val
+
+    merged_record: dict = {}
+    field_sources: dict = {}
+    for col in data_cols:
+        base_val = base_row[col]
+        if pd.notna(base_val):
+            merged_record[col] = _clean(base_val)
+            field_sources[col] = str(base_row["_row_key"])
+            continue
+        filled = False
+        for _, row in member_rows.iterrows():
+            val = row[col]
+            if pd.notna(val):
+                merged_record[col] = _clean(val)
+                field_sources[col] = str(row["_row_key"])
+                filled = True
+                break
+        if not filled:
+            merged_record[col] = None
+            field_sources[col] = None
+
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO golden_records
+               (dataset_safe_name, cluster_id, merged_data_json, field_sources_json,
+                source_row_ids_json, base_row_id, merged_by, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                dataset_safe_name, cluster_id,
+                json.dumps(merged_record, default=str, ensure_ascii=False),
+                json.dumps(field_sources, ensure_ascii=False),
+                json.dumps(member_row_ids),
+                str(base_row["_row_key"]),
+                merged_by, now,
+            ),
+        )
+        golden_record_id = cur.lastrowid
+        conn.commit()
+
+    return get_golden_record_detail(golden_record_id)
+
+
+def get_golden_record_detail(golden_record_id: int) -> dict:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM golden_records WHERE id = ?", (golden_record_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"No golden record found with id {golden_record_id}.")
+        cluster_row = conn.execute(
+            "SELECT * FROM duplicate_clusters WHERE id = ?", (row["cluster_id"],)
+        ).fetchone()
+
+    return {
+        "id": row["id"],
+        "dataset_safe_name": row["dataset_safe_name"],
+        "cluster_id": row["cluster_id"],
+        "merged_record": json.loads(row["merged_data_json"]),
+        "field_sources": json.loads(row["field_sources_json"]),
+        "source_row_ids": json.loads(row["source_row_ids_json"]),
+        "base_row_id": row["base_row_id"],
+        "merged_by": row["merged_by"],
+        "created_at": row["created_at"],
+        "source_summary": json.loads(cluster_row["member_summary_json"]) if cluster_row else [],
+        "confidence_tier": cluster_row["confidence_tier"] if cluster_row else None,
+    }
+
+
+def get_golden_records(dataset_safe_name: str | None = None, limit: int = 200) -> list[dict]:
+    with get_conn() as conn:
+        if dataset_safe_name:
+            rows = conn.execute(
+                "SELECT id FROM golden_records WHERE dataset_safe_name = ? ORDER BY created_at DESC LIMIT ?",
+                (dataset_safe_name, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id FROM golden_records ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+    return [get_golden_record_detail(r["id"]) for r in rows]
+
+
+# ---------------------------------------------------------------------
+# Decisions -- now trigger a real merge the moment a cluster is
+# confirmed, rather than leaving "confirmed" and "actually merged" as
+# two separate manual steps.
+# ---------------------------------------------------------------------
+
 def decide_cluster(cluster_id: int, status: str, decided_by: str) -> dict:
     if status not in ("confirmed_duplicate", "not_duplicate"):
         raise ValueError(f"Invalid status '{status}' -- must be 'confirmed_duplicate' or 'not_duplicate'.")
@@ -256,7 +411,19 @@ def decide_cluster(cluster_id: int, status: str, decided_by: str) -> dict:
         )
         conn.commit()
 
-    return {"id": cluster_id, "status": status, "decided_by": decided_by}
+    result = {"id": cluster_id, "status": status, "decided_by": decided_by}
+
+    if status == "confirmed_duplicate":
+        # The decision itself already committed above -- a merge failure
+        # here (e.g. Silver data changed underneath it) must not silently
+        # swallow that decision or pretend nothing happened. Surfaced as
+        # a separate field, not hidden behind a generic success response.
+        try:
+            result["golden_record"] = _execute_merge(cluster_id, merged_by=decided_by)
+        except ValueError as e:
+            result["merge_error"] = str(e)
+
+    return result
 
 
 def get_audit_log(dataset_safe_name: str | None = None, limit: int = 200) -> list[dict]:
@@ -328,6 +495,10 @@ def _bulk_confirm(dataset_safe_name: str | None, tier: str | None, decided_by: s
     exactly one dataset has pending clusters, that one is used
     automatically; if more than one does, this raises so the caller can
     ask which dataset was meant rather than guessing.
+
+    Each newly-confirmed cluster is merged immediately, same as a single
+    decide_cluster() confirm -- see decide_cluster()'s own comment for
+    why a merge failure doesn't swallow the confirmation itself.
     """
     with get_conn() as conn:
         if not dataset_safe_name:
@@ -366,12 +537,25 @@ def _bulk_confirm(dataset_safe_name: str | None, tier: str | None, decided_by: s
             )
             conn.commit()
 
-    return {
+    golden_records_created = 0
+    merge_errors = []
+    for cid in ids:
+        try:
+            _execute_merge(cid, merged_by=decided_by)
+            golden_records_created += 1
+        except ValueError as e:
+            merge_errors.append({"cluster_id": cid, "error": str(e)})
+
+    result = {
         "dataset_name": dataset_safe_name,
         "tier_confirmed": tier or "all",
         "clusters_confirmed": len(ids),
         "clusters_remaining_pending": get_pending_count(dataset_safe_name),
+        "golden_records_created": golden_records_created,
     }
+    if merge_errors:
+        result["merge_errors"] = merge_errors
+    return result
 
 
 def confirm_high_confidence(payload: dict) -> dict:
