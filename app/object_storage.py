@@ -56,13 +56,31 @@ before db.py's _PgCursor.execute() was fixed to re-raise as ValueError.
 Confirmed directly: POST /api/mdm/upload-dataset -> another blank 500
 on the very first real SeaweedFS write attempt. put_text()/get_text()
 below now catch any storage-layer exception and re-raise as ValueError
-with the real error text, matching db.py's fix exactly -- should have
-been done in the same pass as that fix, not found via a second live
-failure.
+with the real error text, matching db.py's fix exactly.
+
+PATH-STYLE ADDRESSING (found live, same day): once the error-surfacing
+fix above made the real error visible, PutObject came back with a
+genuine "403 Forbidden" -- not a code bug, a real SeaweedFS-compat
+issue. This codebase had never actually proven plain boto3 PutObject
+against this instance: app/lakehouse_client.py's own boto3 S3 client
+(the exact pattern _client() below was copied from) is READ-ONLY
+(list_objects_v2, get_object) -- it never writes. The only WRITE path
+ever proven working here is pyiceberg's Boto3FileIO (app/boto3_file_io.py),
+which plugs into a catalog explicitly configured with
+"s3.path-style-access": "true" (see app/lakehouse_client.py's
+_iceberg_catalog()). Without that, boto3 defaults to virtual-hosted-
+style bucket addressing (bucket.endpoint/key), which changes the Host
+header used in SigV4 request signing -- a well-known failure mode
+against self-hosted S3-compatible stores (SeaweedFS/MinIO/etc.) that
+don't handle that addressing style the same way AWS does, and
+manifests exactly as a signature-rejection 403. _client() below now
+sets addressing_style="path" explicitly, matching the one write path
+in this codebase already confirmed to work.
 """
 import os
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 SEAWEEDFS_PUBLIC_URL = os.environ.get("SEAWEEDFS_PUBLIC_URL", "")
@@ -70,6 +88,7 @@ SEAWEEDFS_INTERNAL_HOST = os.environ.get("SEAWEEDFS_INTERNAL_HOST", "")
 SEAWEEDFS_S3_PORT = os.environ.get("SEAWEEDFS_S3_PORT", "8333")
 SEAWEEDFS_ACCESS_KEY = os.environ.get("SEAWEEDFS_ACCESS_KEY", "any")
 SEAWEEDFS_SECRET_KEY = os.environ.get("SEAWEEDFS_SECRET_KEY", "any")
+SEAWEEDFS_S3_REGION = os.environ.get("SEAWEEDFS_S3_REGION", "us-east-1")
 
 APP_BUCKET = os.environ.get("DATAOS_APP_BUCKET", "dataos-app-datasets")
 
@@ -95,6 +114,11 @@ def _client():
         endpoint_url=_endpoint(),
         aws_access_key_id=SEAWEEDFS_ACCESS_KEY,
         aws_secret_access_key=SEAWEEDFS_SECRET_KEY,
+        region_name=SEAWEEDFS_S3_REGION,
+        # See PATH-STYLE ADDRESSING in the module docstring -- required
+        # for writes against this SeaweedFS instance; matches the one
+        # write path already proven working elsewhere in this codebase.
+        config=Config(s3={"addressing_style": "path"}),
     )
 
 
