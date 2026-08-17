@@ -208,6 +208,18 @@ def pipeline_task_log(run_id: str, task_id: str, try_number: int = 1):
     return lakehouse_client.get_task_log(run_id, task_id, try_number)
 
 
+@app.get("/api/lakehouse/debug")
+def lakehouse_debug(namespace: str = "silver", table_name: str = "ifrs9_portfolio"):
+    """Temporary diagnostic endpoint (Item 2 rollout) -- compares a plain
+    boto3 read against pyiceberg's own pyarrow-based read of the SAME
+    Iceberg metadata file, to isolate why load_table() comes back with
+    an empty body over the public SeaweedFS endpoint. See
+    lakehouse_client.debug_metadata_read()'s docstring for why this
+    exists instead of testing interactively (no Shell on this service's
+    Render plan). Remove once the underlying read issue is fixed."""
+    return lakehouse_client.debug_metadata_read(namespace=namespace, table_name=table_name)
+
+
 # ---------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------
