@@ -41,6 +41,19 @@
 # confidence" / "clear all pending") is likewise carried over from
 # chat's own smart-recommendation buttons, not left dashboard-only-
 # missing.
+#
+# ERROR-HANDLING NOTE (2026-08-17): several /api/mdm/* routes below
+# catch Exception broadly, not just ValueError -- a deliberate widening
+# added mid-debugging the Postgres migration, after upload-dataset's
+# ValueError-only handling turned out to hide a real, diagnosable
+# Postgres error as an opaque 500 with zero detail (fixed separately by
+# also wrapping db.py's own errors as ValueError -- see that file's
+# docstring). Rather than assume every remaining DB-writing route in
+# this file only ever raises ValueError, decide/bulk-confirm now also
+# catch bare Exception and surface str(e) as a 500 -- still visible in
+# the response body, not swallowed, just distinguished from an
+# intentional 400 by status code. Narrow this back to ValueError-only
+# once the Postgres migration has proven stable across these routes.
 
 import asyncio
 import json as json_lib
@@ -964,6 +977,8 @@ def mdm_decide(req: MdmDecisionRequest):
         return dedup_adapter.decide_cluster(req.cluster_id, req.status, decided_by=req.decided_by)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- diagnostic widening (see module docstring's ERROR-HANDLING NOTE): a plain 500 here means something non-ValueError is being raised and swallowed by FastAPI's default handler with zero detail. Surface it the same way as the upload-dataset fix, instead of guessing again.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @app.post("/api/mdm/duplicate-queue/bulk-confirm")
@@ -980,6 +995,8 @@ def mdm_bulk_confirm(req: MdmBulkConfirmRequest):
         return dedup_adapter.confirm_all_pending(payload)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as mdm_decide above.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @app.get("/api/mdm/golden-records")
