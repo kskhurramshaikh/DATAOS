@@ -2,19 +2,29 @@ import { Routes, Route, Navigate, Link, useLocation } from "react-router-dom";
 import Sidebar from "./components/Sidebar";
 import LakehouseZones from "./pages/LakehouseZones";
 import PipelineMonitoring from "./pages/PipelineMonitoring";
+import GoldenRecordRegistry from "./pages/GoldenRecordRegistry";
+import DuplicateQueue from "./pages/DuplicateQueue";
 import ComingSoon from "./pages/ComingSoon";
 
-const TABS = [
-  { key: "zones", label: "Zones", path: "/lakehouse" },
-  { key: "pipeline", label: "Pipeline Monitoring", path: "/lakehouse/pipeline" },
-];
+const TAB_GROUPS = {
+  lakehouse: [
+    { key: "zones", label: "Zones", path: "/lakehouse" },
+    { key: "pipeline", label: "Pipeline Monitoring", path: "/lakehouse/pipeline" },
+  ],
+  mdm: [
+    { key: "golden", label: "Golden Records", path: "/mdm" },
+    { key: "queue", label: "Duplicate Queue", path: "/mdm/queue" },
+  ],
+};
 
-function LakehouseTabs() {
+function TopTabs({ group }) {
   const location = useLocation();
+  const tabs = TAB_GROUPS[group];
+  if (!tabs) return <div className="h-[52px] border-b border-line bg-white" />;
   return (
     <div className="h-[52px] border-b border-line flex items-center justify-between px-6 bg-white">
       <div className="flex gap-1">
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <Link
             key={t.key}
             to={t.path}
@@ -31,22 +41,66 @@ function LakehouseTabs() {
   );
 }
 
+function LakehouseSection() {
+  return (
+    <>
+      <TopTabs group="lakehouse" />
+      <div className="flex-1 overflow-auto">
+        <Routes>
+          <Route path="/" element={<LakehouseZones />} />
+          <Route path="/pipeline" element={<PipelineMonitoring />} />
+        </Routes>
+      </div>
+    </>
+  );
+}
+
+function MdmSection() {
+  return (
+    <>
+      <TopTabs group="mdm" />
+      <div className="flex-1 overflow-auto">
+        <Routes>
+          <Route path="/" element={<GoldenRecordRegistry />} />
+          <Route path="/queue" element={<DuplicateQueue />} />
+        </Routes>
+      </div>
+    </>
+  );
+}
+
 export default function App() {
   return (
     <div className="flex h-screen bg-canvas font-sans text-ink">
       <Sidebar />
       <div className="flex-1 flex flex-col overflow-hidden">
-        <LakehouseTabs />
-        <div className="flex-1 overflow-auto">
-          <Routes>
-            <Route path="/" element={<Navigate to="/lakehouse" replace />} />
-            <Route path="/lakehouse" element={<LakehouseZones />} />
-            <Route path="/lakehouse/pipeline" element={<PipelineMonitoring />} />
-            <Route path="/mdm" element={<ComingSoon title="MDM" />} />
-            <Route path="/ndi" element={<ComingSoon title="NDI" />} />
-            <Route path="/governance" element={<ComingSoon title="Governance" />} />
-          </Routes>
-        </div>
+        <Routes>
+          <Route path="/" element={<Navigate to="/lakehouse" replace />} />
+          <Route path="/lakehouse/*" element={<LakehouseSection />} />
+          <Route path="/mdm/*" element={<MdmSection />} />
+          <Route
+            path="/ndi"
+            element={
+              <>
+                <TopTabs group={null} />
+                <div className="flex-1 overflow-auto">
+                  <ComingSoon title="NDI" />
+                </div>
+              </>
+            }
+          />
+          <Route
+            path="/governance"
+            element={
+              <>
+                <TopTabs group={null} />
+                <div className="flex-1 overflow-auto">
+                  <ComingSoon title="Governance" />
+                </div>
+              </>
+            }
+          />
+        </Routes>
       </div>
     </div>
   );
