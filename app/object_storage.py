@@ -12,12 +12,7 @@ Uses its OWN bucket (APP_BUCKET, default "dataos-app-datasets"), never
 with its own Postgres schema ("dataos_app"). This app's own Bronze/
 Silver/Gold dataset files must never be able to collide with or
 accidentally touch the real spike pipeline's Airflow-orchestrated
-Bronze data living in "dataos-spike". Auto-creates the bucket on first
-use if it doesn't exist yet (SeaweedFS auth is disabled on this
-instance -- confirmed during Item 1 -- so a plain CreateBucket call is
-all that's needed, no Iceberg-table-bucket registration like
-"dataos-spike-iceberg" required, since this is plain object storage,
-not an Iceberg warehouse).
+Bronze data living in "dataos-spike".
 
 Factored out into its own module (not added to lakehouse_client.py)
 because that module is a read-only dashboard-data layer, a different
@@ -25,18 +20,14 @@ concern than this app's own write-path dataset storage -- keeping them
 separate means app/adapters/dataset_adapter.py doesn't need to import
 a dashboard-specific module to do its own file I/O.
 
-CI / LOCAL DEV FALLBACK (added after almost shipping a CI break --
-tests/test_dataset_adapter.py directly monkeypatches
-dataset_adapter.DATA_ROOT and asserts real local files exist, same
-load-bearing-test-fixture pattern db.py's DB_PATH monkeypatching
-already established for the Postgres migration; SEAWEEDFS_PUBLIC_URL/
-SEAWEEDFS_INTERNAL_HOST are also never set in GitHub Actions, same as
-LAKEHOUSE_DB_URI). put_text()/get_text() below fall back to plain local
-disk under a caller-supplied local_root when SeaweedFS isn't
-configured -- production (where it IS configured) always uses S3;
-CI/local dev transparently keeps working against local disk with the
-exact same path shape the old direct-local-disk implementation used,
-so no test file needed to change.
+CI / LOCAL DEV FALLBACK: put_text()/get_text() below fall back to plain
+local disk under a caller-supplied local_root when SeaweedFS isn't
+configured (SEAWEEDFS_PUBLIC_URL / SEAWEEDFS_INTERNAL_HOST both unset,
+always true in GitHub Actions, same as LAKEHOUSE_DB_URI) -- production
+always uses S3 (via the relay for writes, see below), CI/local dev
+transparently keeps working against local disk with the exact same
+path shape the old direct-local-disk implementation used, so no test
+file needed to change.
 
 get_text() raises the STANDARD LIBRARY FileNotFoundError (not a
 boto3/botocore-specific exception) on a missing object on EITHER
@@ -44,45 +35,43 @@ backend -- so callers that used to catch FileNotFoundError against
 local disk (see dataset_adapter.py's read_silver_csv()) keep working
 unchanged regardless of which backend is actually storing the bytes.
 
-ERROR-SURFACING GAP (found live, same day, same class of mistake
-already fixed once in db.py): a real S3/network failure inside
-put_text() -- head_bucket, create_bucket, or put_object all talk to a
-real service over the network -- raises a raw botocore exception
-(ClientError, EndpointConnectionError, etc.), NOT a ValueError. Every
-caller up the chain (dataset_adapter.py's land_bronze/clean_to_silver,
-main.py's upload endpoints) only catches ValueError, exactly the same
-gap that turned real Postgres errors into opaque 500s earlier today
-before db.py's _PgCursor.execute() was fixed to re-raise as ValueError.
-Confirmed directly: POST /api/mdm/upload-dataset -> another blank 500
-on the very first real SeaweedFS write attempt. put_text()/get_text()
-below now catch any storage-layer exception and re-raise as ValueError
-with the real error text, matching db.py's fix exactly.
+WRITE RELAY (2026-08-17) -- ROOT CAUSE FOUND, CONFIRMED WITH A REAL
+COMPARATIVE TEST, NOT A GUESS: boto3 PutObject against SeaweedFS's
+public URL, path-style addressing, identical code/credentials --
+succeeds when run from dataos-spike-orchestrator (Singapore, same
+region as the storage service) and gets a genuine 403 when run from
+this app (Oregon). Proven with spike/dags/test_seaweed_write.py, which
+ran SIX combinations (boto3 vs pyarrow x internal vs public endpoint x
+addressing style) directly on the orchestrator's Shell tab. Ruled out
+along the way, with real evidence for each: boto3-vs-pyarrow as the
+cause (pyarrow has its OWN separate, pre-existing 0-byte-read quirk,
+unrelated); addressing style (path-style alone didn't fix it, tested
+live); payload size (a 2-byte test body got the identical 403); a
+manually-configured WAF (Khurram confirmed no custom Cloudflare zone on
+dataos-spike-storage); the request never reaching the container at all
+(confirmed via that service's own Render logs showing nothing at the
+failure timestamp). What's left, and the only thing consistent with
+every result: Render's platform edge treats cross-region write traffic
+to this specific service differently from same-region write traffic --
+regardless of client library or request shape.
 
-PATH-STYLE ADDRESSING (found live, same day): once the error-surfacing
-fix above made the real error visible, PutObject came back with a
-genuine "403 Forbidden". _client() below sets addressing_style="path"
-based on the hypothesis that virtual-hosted-style addressing was
-breaking SigV4 signing against this SeaweedFS instance -- CONFIRMED
-NOT SUFFICIENT: retested live after that fix deployed, still 403. The
-"proven write path" cited as evidence (pyiceberg's Boto3FileIO) turned
-out to run inside the Airflow DAG on the Singapore orchestrator, over
-INTERNAL networking -- not from this app (Oregon) over the PUBLIC
-endpoint at all, so it was never actually comparable evidence. This
-app has genuinely never proven a successful S3 WRITE over
-SEAWEEDFS_PUBLIC_URL from any code path -- only reads (list_objects_v2,
-get_object) were ever confirmed working cross-region.
-
-DIAGNOSTIC ADDED (2026-08-17) rather than guessing a third code fix
-blind: debug_write_test() below returns the FULL botocore error detail
-(Code, Message, RequestId, HostId, HTTPStatusCode) for list_buckets/
-head_bucket/create_bucket/put_object attempted in sequence -- str(e)
-alone was truncating whatever SeaweedFS's actual server-returned reason
-is. Exposed at /api/debug/storage-write in main.py. Working hypothesis
-going in: the public endpoint may be genuinely restricted to read
-operations at the infrastructure level (Render port exposure / a
-reverse-proxy / SeaweedFS's own gateway config), which no client-side
-boto3 change could fix -- this diagnostic exists to confirm or rule
-that out with real evidence instead of more guessing.
+Fix: SEAWEEDFS_WRITE_RELAY_URL, when set, routes every put_text() call
+through relay/main.py -- a small, separate, single-purpose FastAPI
+service deployed in Singapore (same region as SeaweedFS) whose only job
+is receiving a write over the public internet (with its own shared-
+secret auth) and performing it over INTERNAL networking, the one path
+already proven to work. Deliberately NOT an Airflow plugin bolted onto
+dataos-spike-orchestrator -- that service runs the already-signed-off
+Item 1 pipeline (committed date 2026-08-18); this relay is a fully
+separate, isolated service specifically so nothing about fixing dataset
+file storage can put that pipeline at risk. Reads are NOT relayed --
+get_text() below is completely unchanged, since GET/list already work
+fine cross-region (confirmed in the same test, and by Item 2's
+Lakehouse dashboard reading this way in production well before today).
+If SEAWEEDFS_WRITE_RELAY_URL isn't set, put_text() falls back to the
+direct-boto3 path below it -- which is now understood to be expected to
+fail from Oregon specifically, not a bug, just documented rather than
+silently masked.
 """
 import os
 
@@ -97,6 +86,13 @@ SEAWEEDFS_ACCESS_KEY = os.environ.get("SEAWEEDFS_ACCESS_KEY", "any")
 SEAWEEDFS_SECRET_KEY = os.environ.get("SEAWEEDFS_SECRET_KEY", "any")
 SEAWEEDFS_S3_REGION = os.environ.get("SEAWEEDFS_S3_REGION", "us-east-1")
 
+# See WRITE RELAY in the module docstring. Both unset until Khurram
+# deploys relay/ as its own Render service and wires these up -- until
+# then put_text() falls back to the direct path (expected to fail from
+# Oregon, per the same docstring section).
+SEAWEEDFS_WRITE_RELAY_URL = os.environ.get("SEAWEEDFS_WRITE_RELAY_URL", "")
+SEAWEEDFS_WRITE_RELAY_SECRET = os.environ.get("SEAWEEDFS_WRITE_RELAY_SECRET", "")
+
 APP_BUCKET = os.environ.get("DATAOS_APP_BUCKET", "dataos-app-datasets")
 
 _bucket_ready = False
@@ -105,7 +101,8 @@ _bucket_ready = False
 def _endpoint() -> str:
     """Same public-vs-internal fallback as lakehouse_client.py's
     _s3_endpoint() -- this app runs cross-region from the storage
-    service, so the public HTTPS URL is what actually works."""
+    service, so the public HTTPS URL is what actually works for reads
+    (writes now go through the relay instead -- see module docstring)."""
     if SEAWEEDFS_PUBLIC_URL:
         return SEAWEEDFS_PUBLIC_URL.rstrip("/")
     return f"http://{SEAWEEDFS_INTERNAL_HOST}:{SEAWEEDFS_S3_PORT}"
@@ -137,21 +134,50 @@ def _ensure_bucket(s3) -> None:
     _bucket_ready = True
 
 
+def _put_via_relay(key: str, content: str) -> str:
+    """Routes the write through relay/main.py (a separate Render
+    service in Singapore) instead of writing to SeaweedFS directly --
+    see WRITE RELAY in the module docstring for the full reasoning.
+    httpx is already a dependency of this app (requirements.txt), no
+    new package needed."""
+    import httpx
+
+    try:
+        resp = httpx.post(
+            f"{SEAWEEDFS_WRITE_RELAY_URL.rstrip('/')}/write",
+            json={"bucket": APP_BUCKET, "key": key, "content": content},
+            headers={"x-relay-secret": SEAWEEDFS_WRITE_RELAY_SECRET},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        raise ValueError(
+            f"Write relay rejected {key!r}: {e.response.status_code} {e.response.text[:300]}"
+        ) from e
+    except httpx.HTTPError as e:
+        raise ValueError(f"Write relay request failed for {key!r}: {e}") from e
+    return resp.json()["uri"]
+
+
 def put_text(key: str, content: str, local_root: str | None = None) -> str:
     """Writes UTF-8 text as an object under APP_BUCKET, returns its
     s3://bucket/key URI -- stored verbatim in datasets.bronze_path/
     silver_path/gold_path (already plain TEXT columns, no schema
     change needed to hold a URI instead of a local path).
 
-    Falls back to plain local disk under local_root/key when SeaweedFS
-    isn't configured (CI/local dev -- see module docstring); returns
-    the local path in that case instead of an s3:// URI.
+    When SEAWEEDFS_WRITE_RELAY_URL is set, the write goes through
+    relay/main.py instead of straight to SeaweedFS -- see WRITE RELAY
+    in the module docstring for why. Otherwise falls back to a direct
+    boto3 PutObject (expected to fail specifically from Oregon, per the
+    same docstring section -- not silently masked, still raises a clear
+    ValueError either way).
 
-    Any real S3/network failure (see ERROR-SURFACING GAP above) is
-    caught and re-raised as ValueError with the actual error text --
-    every caller already handles ValueError and surfaces it as a 400,
-    same pattern as db.py's own Postgres error handling."""
+    Falls back to plain local disk under local_root/key when SeaweedFS
+    isn't configured at all (CI/local dev); returns the local path in
+    that case instead of an s3:// URI."""
     if is_configured():
+        if SEAWEEDFS_WRITE_RELAY_URL:
+            return _put_via_relay(key, content)
         try:
             s3 = _client()
             _ensure_bucket(s3)
@@ -176,11 +202,15 @@ def put_text(key: str, content: str, local_root: str | None = None) -> str:
 def get_text(uri_or_path: str) -> str:
     """Reads back whatever put_text() returned -- an s3://bucket/key
     URI (production) or a plain local path (CI/local dev fallback, or
-    an explicit local_root call). Raises the plain stdlib
-    FileNotFoundError on a missing object/file either way -- see this
-    module's docstring for why that specific exception type matters to
-    callers. No local_root needed here: the path/URI returned by
-    put_text() is always already complete.
+    an explicit local_root call). UNCHANGED by the write-relay fix --
+    reads already work fine cross-region, confirmed both by
+    spike/dags/test_seaweed_write.py and by Item 2's Lakehouse
+    dashboard, which has read this way from Oregon in production well
+    before today. Raises the plain stdlib FileNotFoundError on a
+    missing object/file either way -- see this module's docstring for
+    why that specific exception type matters to callers. No local_root
+    needed here: the path/URI returned by put_text() is always already
+    complete.
 
     Any OTHER real S3/network failure (not a missing-object case) is
     caught and re-raised as ValueError, same reasoning as put_text()
@@ -205,8 +235,7 @@ def get_text(uri_or_path: str) -> str:
 
 def _full_error(e: Exception) -> dict:
     """Every field botocore actually has for a failure, not just the
-    truncated str(e) message -- see DIAGNOSTIC ADDED in the module
-    docstring for why this matters right now."""
+    truncated str(e) message."""
     if isinstance(e, ClientError):
         resp = e.response
         meta = resp.get("ResponseMetadata", {})
@@ -225,13 +254,16 @@ def _full_error(e: Exception) -> dict:
 
 def debug_write_test() -> dict:
     """Diagnostic (2026-08-17): attempts list_buckets / head_bucket /
-    create_bucket / put_object against APP_BUCKET in sequence, one
-    call each, capturing the FULL error detail for whichever step
-    fails -- see DIAGNOSTIC ADDED in the module docstring. Exposed at
-    /api/debug/storage-write. Deliberately does not delete the test
-    object it writes (if the write succeeds) -- leaves
-    "_debug_write_test.txt" in the bucket as visible proof a write
-    actually landed, harmless to leave there."""
+    create_bucket / put_object DIRECTLY (bypassing the relay, even if
+    configured) against APP_BUCKET in sequence, capturing full error
+    detail for whichever step fails. This is what originally proved the
+    write was a region-specific 403, not a code bug -- kept as-is
+    (still bypassing the relay on purpose) so it can be re-run any time
+    to confirm the direct path's status, independent of whether the
+    relay happens to be working. Exposed at /api/debug/storage-write.
+    Deliberately does not delete the test object it writes (if the
+    write succeeds) -- leaves "_debug_write_test.txt" in the bucket as
+    visible proof a write actually landed, harmless to leave there."""
     result: dict = {"bucket": APP_BUCKET, "endpoint": _endpoint(), "configured": is_configured()}
     if not is_configured():
         return result
