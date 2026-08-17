@@ -15,12 +15,28 @@ Read-only data access for the Lakehouse dashboard (Item 2 of the DataOS
     setup) -- s3://dataos-spike/airflow-logs/dag_id=X/run_id=Y/
     task_id=Z/attempt=N.log
 
-Everything here reads from services that are a genuinely separate
-deployment (dataos-spike-orchestrator / dataos-spike-storage) from this
-app (dataos-2-0-pipeline) -- LAKEHOUSE_DB_URI and SEAWEEDFS_INTERNAL_HOST
-must be set as env vars on THIS service too, duplicating the values
-already set on the spike orchestrator (not shared automatically -- two
-separate Render services).
+CROSS-REGION NOTE (2026-08-17): this app (dataos-2-0-pipeline) runs in
+Oregon; the spike services (dataos-spike-orchestrator/-storage, and
+their Postgres) run in Singapore. Render's private networking -- the
+internal hostnames like SEAWEEDFS_INTERNAL_HOST and Postgres's
+dpg-...-a short host -- only resolves WITHIN a region (confirmed
+directly: cross-region requests to those hostnames fail with "Name or
+service not known", not a permissions/timeout error). So this module
+talks to both services over their PUBLIC endpoints instead:
+  - LAKEHOUSE_DB_URI must be Postgres's *External* Database URL (from
+    the Render Postgres dashboard), not the internal one used by
+    Airflow/the spike orchestrator.
+  - SEAWEEDFS_PUBLIC_URL is the storage service's public HTTPS URL
+    (https://dataos-spike-storage.onrender.com). Render only exposes
+    ONE port publicly per service, chosen by that service's own PORT
+    env var -- dataos-spike-storage's PORT was changed from 8888
+    (SeaweedFS's Filer UI) to 8333 (the S3 API) specifically so this
+    app can reach it. If PORT ever gets changed back, this stops
+    working with a connection-refused-style error, not a silent one.
+  - Falls back to the internal-hostname construction if
+    SEAWEEDFS_PUBLIC_URL isn't set, so this still works unmodified if
+    this module is ever reused by something running in the same region
+    as the spike services.
 
 Every function here degrades gracefully (returns an explicit
 "not configured" / empty result) rather than raising when the required
@@ -37,6 +53,7 @@ import psycopg2
 import psycopg2.extras
 
 LAKEHOUSE_DB_URI = os.environ.get("LAKEHOUSE_DB_URI", "")
+SEAWEEDFS_PUBLIC_URL = os.environ.get("SEAWEEDFS_PUBLIC_URL", "")
 SEAWEEDFS_INTERNAL_HOST = os.environ.get("SEAWEEDFS_INTERNAL_HOST", "")
 SEAWEEDFS_S3_PORT = os.environ.get("SEAWEEDFS_S3_PORT", "8333")
 SEAWEEDFS_ACCESS_KEY = os.environ.get("SEAWEEDFS_ACCESS_KEY", "any")
@@ -51,8 +68,16 @@ DAG_ID = "banking_demo_lakehouse_spike"
 ZONE_NAMESPACES = {"bronze": None, "silver": "silver", "gold": "gold"}
 
 
+def _s3_endpoint() -> str:
+    """Public HTTPS endpoint if set (the cross-region path this app
+    actually needs), else falls back to the internal host:port form."""
+    if SEAWEEDFS_PUBLIC_URL:
+        return SEAWEEDFS_PUBLIC_URL.rstrip("/")
+    return f"http://{SEAWEEDFS_INTERNAL_HOST}:{SEAWEEDFS_S3_PORT}"
+
+
 def is_configured() -> bool:
-    return bool(LAKEHOUSE_DB_URI and SEAWEEDFS_INTERNAL_HOST)
+    return bool(LAKEHOUSE_DB_URI and (SEAWEEDFS_PUBLIC_URL or SEAWEEDFS_INTERNAL_HOST))
 
 
 def _pg_conn():
@@ -62,7 +87,7 @@ def _pg_conn():
 def _s3_client():
     return boto3.client(
         "s3",
-        endpoint_url=f"http://{SEAWEEDFS_INTERNAL_HOST}:{SEAWEEDFS_S3_PORT}",
+        endpoint_url=_s3_endpoint(),
         aws_access_key_id=SEAWEEDFS_ACCESS_KEY,
         aws_secret_access_key=SEAWEEDFS_SECRET_KEY,
     )
@@ -76,7 +101,7 @@ def _iceberg_catalog():
         **{
             "uri": LAKEHOUSE_DB_URI,
             "warehouse": f"s3://{ICEBERG_BUCKET}/",
-            "s3.endpoint": f"http://{SEAWEEDFS_INTERNAL_HOST}:{SEAWEEDFS_S3_PORT}",
+            "s3.endpoint": _s3_endpoint(),
             "s3.access-key-id": SEAWEEDFS_ACCESS_KEY,
             "s3.secret-access-key": SEAWEEDFS_SECRET_KEY,
             "s3.region": SEAWEEDFS_S3_REGION,
