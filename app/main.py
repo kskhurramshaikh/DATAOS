@@ -42,6 +42,13 @@
 # chat's own smart-recommendation buttons, not left dashboard-only-
 # missing.
 #
+# Item 4: SAMA Compliance Dashboard + Audit Log page. New
+# /api/governance/* endpoints below, dashboard pages under
+# "/dashboard/governance". Both wrap logic already computed and signed
+# off (banking_adapter.run_sama_compliance, dedup_adapter.get_audit_log)
+# -- presentation-only, same as Dev Queue item 4's own framing, no new
+# computation path introduced.
+#
 # ERROR-HANDLING NOTE (2026-08-17): several /api/mdm/* routes below
 # catch Exception broadly, not just ValueError -- a deliberate widening
 # added mid-debugging the Postgres migration, after upload-dataset's
@@ -1024,6 +1031,44 @@ def mdm_golden_record_detail(golden_record_id: int):
         return dedup_adapter.get_golden_record_detail(golden_record_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# ---------------------------------------------------------------------
+# Governance dashboard API (Item 4 -- SAMA Compliance Dashboard + Audit
+# Log page). Same unauthenticated, read-only pattern as the Lakehouse
+# and MDM dashboard endpoints above -- no new computation, both wrap
+# logic that's already built and signed off:
+#   - SAMA: banking_adapter.run_sama_compliance(), the exact function
+#     the chat "sama_compliance" chip and the typed-chat
+#     "assess_sama_compliance" intent already call. Its dataset
+#     resolution (payload.get("dataset_name") -> single-dataset
+#     auto-resolve -> honest "no dataset yet" state) is reused as-is,
+#     so this page never needs a dataset picker for the common case of
+#     one active dataset, and degrades honestly (not_measured, not a
+#     fabricated 100%) when there's more than one or none at all.
+#   - Audit Log: dedup_adapter.get_audit_log(None) -- the same durable
+#     decided-cluster history already exposed (behind auth) at
+#     /duplicates/audit-log for the chat app. This is a second,
+#     unauthenticated read of the identical data for the dashboard's
+#     own routed page, per Dev Queue item 4's "no new backend work,
+#     presentation-only" framing -- the capability itself was already
+#     built and closed 2026-08-06.
+# ---------------------------------------------------------------------
+
+@app.get("/api/governance/sama")
+def governance_sama(dataset_name: str | None = None):
+    try:
+        return banking_adapter.run_sama_compliance({"dataset_name": dataset_name} if dataset_name else {})
+    except ValueError as e:
+        # Only real failure mode here: more than one dataset exists and
+        # none was specified -- run_sama_compliance's own ambiguity
+        # message, surfaced as a 400 instead of an opaque 500.
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/governance/audit-log")
+def governance_audit_log(dataset_name: str | None = None):
+    return {"entries": dedup_adapter.get_audit_log(dataset_name, limit=500)}
 
 
 @app.post("/intent")

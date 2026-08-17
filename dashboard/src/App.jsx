@@ -5,6 +5,8 @@ import PipelineMonitoring from "./pages/PipelineMonitoring";
 import GoldenRecordRegistry from "./pages/GoldenRecordRegistry";
 import DuplicateQueue from "./pages/DuplicateQueue";
 import ComingSoon from "./pages/ComingSoon";
+import SamaDashboard from "./pages/SamaDashboard";
+import AuditLog from "./pages/AuditLog";
 
 const TAB_GROUPS = {
   lakehouse: [
@@ -14,6 +16,10 @@ const TAB_GROUPS = {
   mdm: [
     { key: "golden", label: "Golden Records", path: "/mdm" },
     { key: "queue", label: "Duplicate Queue", path: "/mdm/queue" },
+  ],
+  governance: [
+    { key: "sama", label: "SAMA Compliance", path: "/governance" },
+    { key: "audit", label: "Audit Log", path: "/governance/audit-log" },
   ],
 };
 
@@ -69,6 +75,20 @@ function MdmSection() {
   );
 }
 
+function GovernanceSection() {
+  return (
+    <>
+      <TopTabs group="governance" />
+      <div className="flex-1 overflow-auto">
+        <Routes>
+          <Route path="/" element={<SamaDashboard />} />
+          <Route path="/audit-log" element={<AuditLog />} />
+        </Routes>
+      </div>
+    </>
+  );
+}
+
 export default function App() {
   return (
     <div className="flex h-screen bg-canvas font-sans text-ink">
@@ -89,17 +109,7 @@ export default function App() {
               </>
             }
           />
-          <Route
-            path="/governance"
-            element={
-              <>
-                <TopTabs group={null} />
-                <div className="flex-1 overflow-auto">
-                  <ComingSoon title="Governance" />
-                </div>
-              </>
-            }
-          />
+          <Route path="/governance/*" element={<GovernanceSection />} />
         </Routes>
       </div>
     </div>

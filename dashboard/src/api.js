@@ -45,4 +45,7 @@ export const api = {
   getGoldenRecords: (datasetName) =>
     getJSON(`/mdm/golden-records${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
   getGoldenRecordDetail: (id) => getJSON(`/mdm/golden-records/${id}`),
+
+  getSama: (datasetName) => getJSON(`/governance/sama${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
+  getAuditLog: (datasetName) => getJSON(`/governance/audit-log${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
 };
