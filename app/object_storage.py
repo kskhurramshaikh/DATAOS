@@ -46,61 +46,62 @@ unchanged regardless of which backend is actually storing the bytes.
 
 ERROR-SURFACING GAP (found live, same day, same class of mistake
 already fixed once in db.py): a real S3/network failure inside
-put_text() -- head_bucket, create_bucket, or put_object all talk to a
-real service over the network -- raises a raw botocore exception
-(ClientError, EndpointConnectionError, etc.), NOT a ValueError. Every
-caller up the chain (dataset_adapter.py's land_bronze/clean_to_silver,
-main.py's upload endpoints) only catches ValueError, exactly the same
-gap that turned real Postgres errors into opaque 500s earlier today
-before db.py's _PgCursor.execute() was fixed to re-raise as ValueError.
-Confirmed directly: POST /api/mdm/upload-dataset -> another blank 500
-on the very first real SeaweedFS write attempt. put_text()/get_text()
-below now catch any storage-layer exception and re-raise as ValueError
-with the real error text, matching db.py's fix exactly.
+put_text() raises a raw exception (botocore's ClientError/
+BotoCoreError, or requests' RequestException for the presigned path
+below), NOT a ValueError. Every caller up the chain (dataset_adapter.
+py's land_bronze/clean_to_silver, main.py's upload endpoints) only
+catches ValueError, exactly the same gap that turned real Postgres
+errors into opaque 500s earlier the same day before db.py's
+_PgCursor.execute() was fixed to re-raise as ValueError. put_text()/
+get_text() below catch any storage-layer exception and re-raise as
+ValueError with the real error text, matching db.py's fix exactly.
 
-PATH-STYLE ADDRESSING (found live, same day): once the error-surfacing
-fix above made the real error visible, PutObject came back with a
-genuine "403 Forbidden". _client() below sets addressing_style="path"
-based on the hypothesis that virtual-hosted-style addressing was
-breaking SigV4 signing against this SeaweedFS instance -- CONFIRMED
-NOT SUFFICIENT: retested live after that fix deployed, still 403. The
-"proven write path" cited as evidence (pyiceberg's Boto3FileIO) turned
-out to run inside the Airflow DAG on the Singapore orchestrator, over
-INTERNAL networking -- not from this app (Oregon) over the PUBLIC
-endpoint at all, so it was never actually comparable evidence. This
-app has genuinely never proven a successful S3 WRITE over
-SEAWEEDFS_PUBLIC_URL from any code path -- only reads (list_objects_v2,
-get_object) were ever confirmed working cross-region.
+CROSS-REGION PUT 403 -- ROOT CAUSE AND FIX (2026-08-17):
+This app runs in Oregon; dataos-spike-storage (SeaweedFS) runs in
+Singapore, so every write here crosses Render's public edge (which
+runs on Cloudflare's network). Path-style addressing (an earlier fix
+attempt) was necessary but NOT sufficient -- boto3 PutObject still
+403'd from Oregon while the identical call succeeded from Singapore
+and while GET/LIST worked fine cross-region the whole time (confirmed
+via spike/dags/test_seaweed_write.py, run on the orchestrator's own
+Shell tab, and via dataos-spike-storage's Render logs showing the PUT
+never even reached the container -- a platform-edge block, not an
+app/SeaweedFS-level rejection).
 
-ROOT CAUSE CONFIRMED (2026-08-17, via spike/dags/test_seaweed_write.py,
-run directly on dataos-spike-orchestrator's Shell tab): boto3 PutObject
-against SeaweedFS's public URL, identical code/credentials/addressing --
-succeeds from Singapore (same region as the storage service), 403s from
-Oregon. Not a boto3-vs-pyarrow issue, not addressing style, not payload
-size, not a manually-configured WAF (no custom Cloudflare zone exists on
-dataos-spike-storage), and the request never reaches the container at
-all (confirmed via that service's own Render logs). Left standing: it's
-Render's own platform edge -- which runs on Cloudflare's network --
-treating cross-region write (PUT) traffic to this specific service
-differently from same-region write traffic, most plausibly an automated
-rule flagging requests carrying an AWS SigV4 `Authorization` header as
-bot-like/suspicious. This needs a fix at the Render/Cloudflare-edge
-level (a support ticket, or a plan/settings change on that service) --
-no client-side code change here can work around a request that's being
-blocked before it ever reaches the container. Dataset FILE storage
-(Bronze/Silver/Gold CSVs) stays on the CI-only local-disk fallback in
-production until that's resolved -- direct writes from this app will
-keep failing with the ValueError below until then.
+An 8-variant isolation test (app/object_storage.py's debug_write_ladder(),
+still below, run live from this app in Oregon) found the actual
+trigger: it is NOT the SigV4 signature and NOT the client's TLS/HTTP
+fingerprint -- manually SigV4-signed PUTs sent via plain `requests`
+(default Python User-Agent, default TLS) passed cleanly (variants 06,
+07), and a Chrome-impersonated boto3 call with an overridden User-Agent
+string still 403'd (variant 02). The actual differentiator is boto3's
+OWN client machinery: it silently attaches additional SDK-identifying
+headers (amz-sdk-invocation-id, amz-sdk-request, and its full Botocore
+User-Agent string) beyond the signature and beyond whatever
+Config(user_agent=...) overrides, and Render's edge scores THOSE as
+bot-like specifically on cross-region write traffic to this service.
+Reads never hit this because list_objects_v2/get_object were always
+issued through the same boto3 client and never blocked -- so the block
+isn't "boto3" in general, it's specifically boto3's write-path request
+shape scored differently for PUT than for GET/LIST by whatever rule is
+doing the scoring.
 
-DIAGNOSTIC (2026-08-17): debug_write_test() below returns the FULL
-botocore error detail (Code, Message, RequestId, HostId, HTTPStatusCode,
-headers -- including the cf-ray header that identified this as a
-Cloudflare-layer block) for list_buckets/head_bucket/create_bucket/
-put_object attempted in sequence -- str(e) alone truncates SeaweedFS/
-Render's actual server-returned reason. Exposed at
-/api/debug/storage-write. Kept as a live, re-runnable check for
-confirming whether/when the platform-level block has actually been
-lifted, without needing another code change to find out.
+FIX: put_text() below no longer calls s3.put_object() directly.
+It still uses boto3 to CREATE a presigned PUT URL (generate_presigned_
+url is a local, offline signing operation -- no network call, so it
+can't be blocked), then sends the actual bytes with a plain `requests.
+put()` call carrying no boto3-added headers at all. This was variant
+03 in the ladder test: presigned URL + plain `requests`, default
+Python User-Agent, default TLS -- passed clean (200), no impersonation
+or special headers needed. get_text() is UNCHANGED (still direct boto3
+GET) since reads were never blocked.
+
+DIAGNOSTIC (2026-08-17): debug_write_test() (list_buckets/head_bucket/
+create_bucket/put_object via boto3, on purpose -- kept as-is so it
+keeps demonstrating the boto3-direct 403 if Render's edge behaviour
+ever changes) and debug_write_ladder() (the 8-variant isolation test
+that found the fix above) are both kept as live, re-runnable checks,
+exposed at /api/debug/storage-write. Not used by the real write path.
 """
 import os
 
@@ -145,6 +146,13 @@ def _client():
 
 
 def _ensure_bucket(s3) -> None:
+    """HEAD/CREATE bucket are cheap, low-frequency calls (once per
+    process, cached) -- left on direct boto3 since they aren't on the
+    hot write path and weren't part of what the ladder test proved
+    blocked (only PutObject was). If this ever also 403s cross-region,
+    the same presigned-URL-not-needed workaround doesn't apply (HEAD/
+    CREATE have no body-carrying presigned equivalent worth building)
+    -- would need revisiting then, not before."""
     global _bucket_ready
     if _bucket_ready:
         return
@@ -153,6 +161,16 @@ def _ensure_bucket(s3) -> None:
     except ClientError:
         s3.create_bucket(Bucket=APP_BUCKET)
     _bucket_ready = True
+
+
+def _presigned_put_url(key: str, content_type: str = "text/plain") -> str:
+    s3 = _client()
+    return s3.generate_presigned_url(
+        "put_object",
+        Params={"Bucket": APP_BUCKET, "Key": key, "ContentType": content_type},
+        ExpiresIn=300,
+        HttpMethod="PUT",
+    )
 
 
 def put_text(key: str, content: str, local_root: str | None = None) -> str:
@@ -165,18 +183,29 @@ def put_text(key: str, content: str, local_root: str | None = None) -> str:
     isn't configured (CI/local dev -- see module docstring); returns
     the local path in that case instead of an s3:// URI.
 
-    Any real S3/network failure (see ROOT CAUSE CONFIRMED above -- this
-    currently means every real attempt from this app, until the
-    Render/Cloudflare-edge block is lifted) is caught and re-raised as
-    ValueError with the actual error text -- every caller already
-    handles ValueError and surfaces it as a 400, same pattern as db.py's
-    own Postgres error handling."""
+    IMPLEMENTATION (see CROSS-REGION PUT 403 in the module docstring):
+    generates a presigned PUT URL via boto3 (local/offline signing, no
+    network call, can't be blocked), then sends the bytes with plain
+    `requests.put()` -- proven clean from Oregon (ladder variant 03).
+    Deliberately does NOT call s3.put_object() -- that's the exact call
+    the ladder test proved gets 403'd cross-region by Render's edge.
+
+    Any real failure (network error, non-2xx from the presigned PUT, or
+    a local-fallback I/O error) is caught and re-raised as ValueError
+    with the actual error text -- every caller already handles
+    ValueError and surfaces it as a 400, same pattern as db.py's own
+    Postgres error handling."""
     if is_configured():
         try:
             s3 = _client()
             _ensure_bucket(s3)
-            s3.put_object(Bucket=APP_BUCKET, Key=key, Body=content.encode("utf-8"))
-        except (ClientError, BotoCoreError) as e:
+            import requests
+
+            url = _presigned_put_url(key, content_type="text/plain")
+            body = content.encode("utf-8")
+            r = requests.put(url, data=body, headers={"Content-Type": "text/plain"}, timeout=30)
+            r.raise_for_status()
+        except Exception as e:  # requests.RequestException, ClientError, BotoCoreError, etc.
             raise ValueError(f"Object storage write failed for {key!r}: {e}") from e
         return f"s3://{APP_BUCKET}/{key}"
 
@@ -202,12 +231,13 @@ def get_text(uri_or_path: str) -> str:
     callers. No local_root needed here: the path/URI returned by
     put_text() is always already complete.
 
-    Reads are UNAFFECTED by the write-side platform block -- GET/list
-    already work fine cross-region (confirmed repeatedly, including by
-    Item 2's Lakehouse dashboard reading this way in production well
-    before today). Any OTHER real S3/network failure (not a missing-
-    object case) is caught and re-raised as ValueError, same reasoning
-    as put_text() above."""
+    UNCHANGED by the write-side fix above -- reads go straight through
+    boto3's own GetObject, which was never part of the block (GET/list
+    have worked fine cross-region the whole time, confirmed repeatedly,
+    including by Item 2's Lakehouse dashboard reading this way in
+    production well before this fix). Any OTHER real S3/network
+    failure (not a missing-object case) is caught and re-raised as
+    ValueError, same reasoning as put_text() above."""
     if uri_or_path.startswith("s3://"):
         s3 = _client()
         bucket, _, key = uri_or_path.removeprefix("s3://").partition("/")
@@ -248,16 +278,14 @@ def _full_error(e: Exception) -> dict:
 
 def debug_write_test() -> dict:
     """Diagnostic (2026-08-17): attempts list_buckets / head_bucket /
-    create_bucket / put_object against APP_BUCKET in sequence, one
-    call each, capturing the FULL error detail for whichever step
-    fails -- see DIAGNOSTIC in the module docstring. Exposed at
-    /api/debug/storage-write. This is the check that identified the
-    block as Cloudflare/Render-edge-layer (server: cloudflare, cf-ray
-    header, HTML error body) rather than an app/SeaweedFS-level error --
-    kept as a live, re-runnable way to confirm whether that block has
-    been lifted, without needing another code change first. Deliberately
-    does not delete the test object it writes (if the write succeeds) --
-    leaves "_debug_write_test.txt" in the bucket as visible proof a
+    create_bucket / put_object via DIRECT boto3 (on purpose -- this
+    intentionally still uses the call proven to 403 cross-region, so
+    it keeps demonstrating Render's edge behaviour rather than testing
+    the fixed put_text() path). Exposed at /api/debug/storage-write.
+    Kept as a live, re-runnable check for confirming whether/when the
+    platform-level block on direct boto3 PUTs has changed. Deliberately
+    does not delete the test object it writes (if the write succeeds)
+    -- leaves "_debug_write_test.txt" in the bucket as visible proof a
     write actually landed, harmless to leave there."""
     result: dict = {"bucket": APP_BUCKET, "endpoint": _endpoint(), "configured": is_configured()}
     if not is_configured():
@@ -290,8 +318,14 @@ def debug_write_test() -> dict:
     except (ClientError, BotoCoreError) as e:
         result["put_object_error"] = _full_error(e)
 
-    # 2026-08-17: also run the write LADDER (see below) from the same
-    # endpoint, so no main.py change is needed to get the evidence.
+    try:
+        result["real_write_path_check"] = {
+            "note": "put_text() now uses presigned URL + requests, not direct boto3 PUT -- this confirms THAT path works",
+            "uri": put_text("_debug_write_test_via_put_text.txt", "ok via fixed put_text()"),
+        }
+    except ValueError as e:
+        result["real_write_path_check_error"] = str(e)
+
     try:
         result["ladder"] = debug_write_ladder()
     except Exception as e:  # never let the ladder break the base diagnostic
@@ -301,16 +335,19 @@ def debug_write_test() -> dict:
 
 
 # ---------------------------------------------------------------------
-# WRITE LADDER (2026-08-17): instead of guessing what Render's edge is
-# keying on for the cross-region PUT 403, send the SAME 2-byte PUT from
-# this (Oregon) process in several deliberately different shapes, one
-# variable at a time, and report exactly how the edge answered each --
-# status, server, cf-ray, cf-mitigated, and whether the body is a
-# Cloudflare challenge page ("cdn-cgi/challenge-platform") vs a WAF/IP
-# block ("Error 1020" / "Access denied"). Whichever variant is the FIRST
-# to pass tells us what to change in put_text(). Exposed at
-# /api/debug/storage-write (under the "ladder" key). Nothing here is used by the real
-# write path yet.
+# WRITE LADDER (2026-08-17): the 8-variant isolation test that found
+# the fix above. Sends the same 2-byte PUT to SeaweedFS's public URL
+# from this (Oregon) process in several deliberately different shapes,
+# one variable at a time, and reports exactly how the edge answered
+# each -- status, server, cf-ray, cf-mitigated, and whether the body is
+# a Cloudflare challenge page vs a WAF/IP block. RESULT (2026-08-17,
+# live run): 01 (boto3 baseline) and 02 (boto3 + Chrome UA override)
+# both 403'd; 03 through 07 (presigned URL, or manual SigV4 header,
+# each via plain `requests` or curl_cffi) all passed 200 -- confirming
+# the trigger is boto3's own added SDK headers, not the signature or
+# TLS fingerprint. See CROSS-REGION PUT 403 in the module docstring.
+# Kept as a live, re-runnable check. Exposed at /api/debug/storage-write
+# (under the "ladder" key). Not used by the real write path.
 # ---------------------------------------------------------------------
 
 _CHROME_UA = (
@@ -409,7 +446,7 @@ def debug_write_ladder() -> dict:
         return {"status": r["ResponseMetadata"]["HTTPStatusCode"], "note": "boto3 list_objects_v2 control"}
     run("00_boto3_list_control", v_read)
 
-    # 1. boto3 baseline PUT (exactly what put_text does today)
+    # 1. boto3 baseline PUT (proven blocked, kept as regression check)
     def v_boto3():
         s3 = _client()
         try:
@@ -436,7 +473,7 @@ def debug_write_ladder() -> dict:
             return _describe_http(meta.get("HTTPStatusCode"), meta.get("HTTPHeaders", {}), "") | {"raw": str(e)[:200]}
     run("02_boto3_chrome_ua", v_boto3_ua)
 
-    # 3. presigned URL (no Authorization header) + requests, default UA
+    # 3. presigned URL (no Authorization header) + requests, default UA -- THE FIX
     def v_presigned_requests():
         import requests
         s3 = _client()
@@ -454,7 +491,7 @@ def debug_write_ladder() -> dict:
         return _describe_http(r.status_code, dict(r.headers), r.text)
     run("04_presigned_requests_browser_headers", v_presigned_requests_browser)
 
-    # 5. presigned URL + curl_cffi impersonating Chrome (real browser TLS/HTTP2 fingerprint)
+    # 5. presigned URL + curl_cffi impersonating Chrome
     def v_presigned_cffi():
         from curl_cffi import requests as cffi
         s3 = _client()
@@ -472,7 +509,7 @@ def debug_write_ladder() -> dict:
         return _describe_http(r.status_code, dict(r.headers), r.text)
     run("06_sigv4_header_curl_cffi_chrome", v_sigv4_cffi)
 
-    # 7. SigV4 in headers + plain requests, default UA (isolates header-vs-fingerprint against 03)
+    # 7. SigV4 in headers + plain requests, default UA
     def v_sigv4_requests():
         import requests
         url = f"{base}/{APP_BUCKET}/_ladder/07_sigv4_requests.txt"
