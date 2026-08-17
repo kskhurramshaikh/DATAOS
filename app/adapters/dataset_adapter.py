@@ -23,6 +23,16 @@
 # since they only ever pass these paths back to this module's own
 # functions, never interpret them directly.
 #
+# DATA_ROOT below is now only a CI/local-dev FALLBACK, passed through to
+# object_storage.put_text() as local_root -- used only when SeaweedFS
+# isn't configured (never the case on Render, always the case in GitHub
+# Actions). This is exactly why DATA_ROOT still exists as an attribute
+# on this module: tests/test_dataset_adapter.py directly monkeypatches
+# it per-test for isolation, the same pattern app/db.py's DB_PATH
+# already established for the Postgres migration -- confirmed by
+# reading that test file before finalizing this change, after almost
+# shipping a version with no CI fallback at all.
+#
 # Bronze: the raw upload, untouched.
 # Silver: exact duplicate rows removed, nulls reported (not invented --
 #         no values are guessed or filled in).
@@ -44,6 +54,7 @@
 import csv
 import io
 import json
+import os
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -51,6 +62,7 @@ import pandas as pd
 from app import object_storage
 from app.db import get_conn
 
+DATA_ROOT = os.environ.get("DATAOS_DATA_ROOT", "data")  # CI/local-dev fallback only -- see module docstring
 NULL_RATE_HOLD_THRESHOLD = 0.10  # >10% null in any column holds at Silver -- for normal-sized datasets
 GOLD_DROP_COLUMN_THRESHOLD = 0.50  # >50% null in a column drops it from Gold
 # A small reference/lookup table (e.g. a 7-row LGD rate table) hits a much
@@ -284,7 +296,9 @@ def land_bronze(dataset_name: str, csv_content: str) -> dict:
     if df.empty:
         raise ValueError("The uploaded file parsed as CSV but contains no rows.")
 
-    bronze_path = object_storage.put_text(f"bronze/{safe_name}/{timestamp}_raw.csv", csv_content)
+    bronze_path = object_storage.put_text(
+        f"bronze/{safe_name}/{timestamp}_raw.csv", csv_content, local_root=DATA_ROOT
+    )
 
     return {
         "safe_name": safe_name,
@@ -299,7 +313,9 @@ def clean_to_silver(safe_name: str, df: pd.DataFrame) -> dict:
     silver_df = df.drop_duplicates()
     duplicate_rows_removed = len(df) - len(silver_df)
 
-    silver_path = object_storage.put_text(f"silver/{safe_name}/cleaned.csv", silver_df.to_csv(index=False))
+    silver_path = object_storage.put_text(
+        f"silver/{safe_name}/cleaned.csv", silver_df.to_csv(index=False), local_root=DATA_ROOT
+    )
 
     null_counts = {col: int(cnt) for col, cnt in null_counts_before.items() if cnt > 0}
     rows = len(silver_df)
@@ -345,7 +361,9 @@ def promote_to_gold(safe_name: str, silver_df: pd.DataFrame) -> dict:
         if dropped_columns:
             curated_df = silver_df.drop(columns=dropped_columns)
 
-    gold_path = object_storage.put_text(f"gold/{safe_name}/data.csv", curated_df.to_csv(index=False))
+    gold_path = object_storage.put_text(
+        f"gold/{safe_name}/data.csv", curated_df.to_csv(index=False), local_root=DATA_ROOT
+    )
 
     return {
         "gold_path": gold_path,
@@ -410,17 +428,17 @@ def run(payload: dict) -> dict:
 
 def read_silver_csv(safe_name: str) -> str:
     """Reads back the already-landed Silver CSV for a dataset that was
-    uploaded earlier -- now from SeaweedFS (see module docstring), not
-    local disk. Lets a follow-up action (like running duplicate
-    detection after the fact) reuse already-cleaned data instead of
-    needing the original file re-uploaded.
+    uploaded earlier -- now from SeaweedFS in production (see module
+    docstring), local disk in CI/local dev. Lets a follow-up action
+    (like running duplicate detection after the fact) reuse already-
+    cleaned data instead of needing the original file re-uploaded.
 
     object_storage.get_text() raises the same stdlib FileNotFoundError
     a missing local file would have, so this still degrades to a clear
     ValueError instead of a raw traceback for any object that's
     genuinely gone (e.g. deleted directly in SeaweedFS) -- just no
-    longer expected on every redeploy, since the object store is real
-    persistent storage, not container-local disk."""
+    longer expected on every redeploy, since production storage is now
+    real persistent storage, not container-local disk."""
     with get_conn() as conn:
         row = conn.execute(
             "SELECT silver_path FROM datasets WHERE safe_name = ?", (safe_name,)
