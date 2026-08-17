@@ -22,6 +22,17 @@
 # Same tradeoff note as before applies to this fallback path only: a
 # local/CI run's SQLite file is disposable, not meant to persist.
 #
+# DIAGNOSTIC NOTE (2026-08-17): the first version of this fix (commit
+# ac0bed3) silently degrades to the SQLite fallback if LAKEHOUSE_DB_URI
+# isn't actually present in the RUNTIME environment on Render for any
+# reason (typo'd env var name, not attached to this specific service,
+# etc) -- and because that fallback boots and serves requests exactly
+# as successfully as the Postgres path, there is NO visible symptom
+# distinguishing "using Postgres" from "silently back on ephemeral
+# SQLite" from the outside. storage_status() below exists specifically
+# to answer that question with certainty instead of guessing across
+# another redeploy cycle -- see /api/debug/storage in main.py.
+#
 # The Postgres path is a thin sqlite3-compatible WRAPPER (_Connection/
 # _Cursor below), not a rewrite of the four files that call get_conn()
 # (auth.py, chat_store.py, dataset_adapter.py, dedup_adapter.py). Three
@@ -384,3 +395,42 @@ def get_conn():
     else:
         with _sqlite_get_conn() as conn:
             yield conn
+
+
+def storage_status() -> dict:
+    """Answers 'which backend is actually running, right now, in this
+    process' with certainty -- see the DIAGNOSTIC NOTE above for why
+    this exists. Exposed at /api/debug/storage. Masks the DB URI (host
+    only) rather than ever returning it whole -- it contains real
+    Postgres credentials."""
+    postgres = _is_postgres()
+    status: dict = {
+        "backend": "postgres" if postgres else "sqlite",
+        "postgres_configured": postgres,
+        "schema": PG_SCHEMA if postgres else None,
+        "sqlite_path": None if postgres else DB_PATH,
+    }
+    if postgres:
+        # Host only -- never the full URI, which carries credentials.
+        host_part = PG_DB_URI.split("@")[-1].split("/")[0] if "@" in PG_DB_URI else "(unrecognized URI shape)"
+        status["postgres_host"] = host_part
+        try:
+            with get_conn() as conn:
+                gr = conn.execute("SELECT COUNT(*) AS c FROM golden_records").fetchone()
+                dc = conn.execute("SELECT COUNT(*) AS c FROM duplicate_clusters").fetchone()
+                status["golden_records_count"] = gr["c"] if gr else 0
+                status["duplicate_clusters_count"] = dc["c"] if dc else 0
+                status["reachable"] = True
+        except Exception as e:  # noqa: BLE001 -- this IS the diagnostic; surface it, don't hide it
+            status["reachable"] = False
+            status["error"] = f"{type(e).__name__}: {e}"
+    else:
+        status["golden_records_count"] = None
+        status["duplicate_clusters_count"] = None
+        status["note"] = (
+            "PG_DB_URI is empty in this process -- neither DATAOS_APP_DB_URI nor "
+            "LAKEHOUSE_DB_URI is set in the runtime environment, so this is running "
+            "on the ephemeral SQLite fallback. If this is Render (not CI), check "
+            "that LAKEHOUSE_DB_URI is actually attached to THIS service's env vars."
+        )
+    return status
