@@ -43,11 +43,27 @@ boto3/botocore-specific exception) on a missing object on EITHER
 backend -- so callers that used to catch FileNotFoundError against
 local disk (see dataset_adapter.py's read_silver_csv()) keep working
 unchanged regardless of which backend is actually storing the bytes.
+
+ERROR-SURFACING GAP (found live, same day, same class of mistake
+already fixed once in db.py): a real S3/network failure inside
+put_text() -- head_bucket, create_bucket, or put_object all talk to a
+real service over the network -- raises a raw botocore exception
+(ClientError, EndpointConnectionError, etc.), NOT a ValueError. Every
+caller up the chain (dataset_adapter.py's land_bronze/clean_to_silver,
+main.py's upload endpoints) only catches ValueError, exactly the same
+gap that turned real Postgres errors into opaque 500s earlier today
+before db.py's _PgCursor.execute() was fixed to re-raise as ValueError.
+Confirmed directly: POST /api/mdm/upload-dataset -> another blank 500
+on the very first real SeaweedFS write attempt. put_text()/get_text()
+below now catch any storage-layer exception and re-raise as ValueError
+with the real error text, matching db.py's fix exactly -- should have
+been done in the same pass as that fix, not found via a second live
+failure.
 """
 import os
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 SEAWEEDFS_PUBLIC_URL = os.environ.get("SEAWEEDFS_PUBLIC_URL", "")
 SEAWEEDFS_INTERNAL_HOST = os.environ.get("SEAWEEDFS_INTERNAL_HOST", "")
@@ -101,13 +117,19 @@ def put_text(key: str, content: str, local_root: str | None = None) -> str:
 
     Falls back to plain local disk under local_root/key when SeaweedFS
     isn't configured (CI/local dev -- see module docstring); returns
-    the local path in that case instead of an s3:// URI. Raises
-    ValueError if neither is available, same "fail loud, not silent"
-    posture as every other storage-layer error in this app."""
+    the local path in that case instead of an s3:// URI.
+
+    Any real S3/network failure (see ERROR-SURFACING GAP above) is
+    caught and re-raised as ValueError with the actual error text --
+    every caller already handles ValueError and surfaces it as a 400,
+    same pattern as db.py's own Postgres error handling."""
     if is_configured():
-        s3 = _client()
-        _ensure_bucket(s3)
-        s3.put_object(Bucket=APP_BUCKET, Key=key, Body=content.encode("utf-8"))
+        try:
+            s3 = _client()
+            _ensure_bucket(s3)
+            s3.put_object(Bucket=APP_BUCKET, Key=key, Body=content.encode("utf-8"))
+        except (ClientError, BotoCoreError) as e:
+            raise ValueError(f"Object storage write failed for {key!r}: {e}") from e
         return f"s3://{APP_BUCKET}/{key}"
 
     if local_root is None:
@@ -130,7 +152,11 @@ def get_text(uri_or_path: str) -> str:
     FileNotFoundError on a missing object/file either way -- see this
     module's docstring for why that specific exception type matters to
     callers. No local_root needed here: the path/URI returned by
-    put_text() is always already complete."""
+    put_text() is always already complete.
+
+    Any OTHER real S3/network failure (not a missing-object case) is
+    caught and re-raised as ValueError, same reasoning as put_text()
+    above."""
     if uri_or_path.startswith("s3://"):
         s3 = _client()
         bucket, _, key = uri_or_path.removeprefix("s3://").partition("/")
@@ -140,7 +166,9 @@ def get_text(uri_or_path: str) -> str:
             code = e.response.get("Error", {}).get("Code", "")
             if code in ("NoSuchKey", "404", "NoSuchBucket"):
                 raise FileNotFoundError(f"No object at {uri_or_path}") from e
-            raise
+            raise ValueError(f"Object storage read failed for {uri_or_path}: {e}") from e
+        except BotoCoreError as e:
+            raise ValueError(f"Object storage read failed for {uri_or_path}: {e}") from e
         return obj["Body"].read().decode("utf-8")
 
     with open(uri_or_path, "r", encoding="utf-8") as f:
