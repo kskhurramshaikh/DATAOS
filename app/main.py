@@ -1051,3 +1051,8 @@ def handle_intent(req: IntentRequest):
         "routing": {"capability": routed["capability"], "tool": routed["tool"]},
         "output": routed["result"],
     }
+
+
+# CANARY (2026-08-17): tiny no-op comment to trigger a redeploy and
+# confirm both DB (already proven) and dataset FILES (via the fixed
+# presigned-URL write path) survive a real redeploy together.
