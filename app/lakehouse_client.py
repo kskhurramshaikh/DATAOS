@@ -43,9 +43,18 @@ env vars aren't set yet, so the rest of the app keeps working before
 this cross-service wiring is completed. Per-table read errors inside
 get_zone_stats() are surfaced in the response (not silently swallowed)
 -- catalog metadata reads succeeding while actual data-file reads fail
-is a real, distinct failure mode (seen directly: tables/last-run-status
-came back correctly over the public SeaweedFS endpoint while row counts
-came back 0), so hiding that error would have made it undiagnosable.
+is a real, distinct failure mode.
+
+OPEN ISSUE (2026-08-17): plain boto3 GetObject against the public
+SeaweedFS endpoint works fine (confirmed -- Bronze's file listing, and
+task-log fetches, both work). But pyiceberg's own file-read path (which
+goes through pyarrow's S3FileSystem, not boto3, for load_table()'s
+metadata-JSON read) comes back with an EMPTY body for the exact same
+kind of object over the same endpoint -- "Invalid JSON: EOF while
+parsing a value ... input_value=''". debug_metadata_read() below fetches
+the identical file both ways for direct comparison, since this app has
+no Shell access (Render free tier) to test interactively the way the
+spike orchestrator can.
 """
 from __future__ import annotations
 
@@ -294,3 +303,76 @@ def get_task_log(run_id: str, task_id: str, try_number: int = 1) -> dict:
         return {"configured": True, "log": obj["Body"].read().decode("utf-8", errors="replace")}
     except Exception as e:  # noqa: BLE001
         return {"configured": True, "log": None, "error": str(e)}
+
+
+def debug_metadata_read(namespace: str = "silver", table_name: str = "ifrs9_portfolio") -> dict:
+    """Diagnostic (no Shell access on this Render free-tier service, so
+    this is the only way to compare the two read paths directly): fetches
+    the SAME Iceberg metadata JSON file two different ways --
+      1. plain boto3 GetObject (known-working path, per Bronze/task-logs)
+      2. pyiceberg's own file-read (pyarrow's S3FileSystem under the hood)
+    -- and reports both outcomes side by side, to isolate whether the
+    empty-body problem is pyarrow-specific or something broader."""
+    result: dict = {"namespace": namespace, "table_name": table_name}
+
+    # Step 1: find the exact metadata_location for this table, straight
+    # from the catalog's Postgres row -- no Iceberg file-reading involved
+    # yet, just a plain SQL lookup.
+    try:
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT metadata_location FROM iceberg_tables "
+                    "WHERE table_namespace = %s AND table_name = %s",
+                    (namespace, table_name),
+                )
+                row = cur.fetchone()
+        finally:
+            conn.close()
+        if not row:
+            result["error"] = f"No catalog row for {namespace}.{table_name}"
+            return result
+        metadata_location = row[0]
+        result["metadata_location"] = metadata_location
+    except Exception as e:  # noqa: BLE001
+        result["error"] = f"Postgres lookup failed: {e}"
+        return result
+
+    # metadata_location looks like s3://dataos-spike-iceberg/silver/.../NNNNN.metadata.json
+    # -- strip the s3:// scheme and bucket to get the plain key boto3 needs.
+    without_scheme = metadata_location.removeprefix("s3://")
+    bucket, _, key = without_scheme.partition("/")
+
+    # Step 2: plain boto3 GetObject on that exact key.
+    try:
+        s3 = _s3_client()
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        body = obj["Body"].read()
+        result["boto3_read"] = {
+            "bucket": bucket,
+            "key": key,
+            "content_length_bytes": len(body),
+            "first_100_chars": body[:100].decode("utf-8", errors="replace"),
+        }
+    except Exception as e:  # noqa: BLE001
+        result["boto3_read"] = {"error": str(e)}
+
+    # Step 3: pyiceberg's own read path (pyarrow's S3FileSystem under the
+    # hood) -- the one that's been coming back empty.
+    try:
+        from pyiceberg.io import load_file_io
+
+        catalog = _iceberg_catalog()
+        io = load_file_io(properties=catalog.properties, location=metadata_location)
+        input_file = io.new_input(metadata_location)
+        with input_file.open() as f:
+            content = f.read()
+        result["pyarrow_read"] = {
+            "content_length_bytes": len(content),
+            "first_100_chars": content[:100].decode("utf-8", errors="replace") if content else "",
+        }
+    except Exception as e:  # noqa: BLE001
+        result["pyarrow_read"] = {"error": f"{type(e).__name__}: {e}"}
+
+    return result
