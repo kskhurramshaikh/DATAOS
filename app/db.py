@@ -60,9 +60,21 @@
 # always harmless, so there's no reason to pin down each Postgres
 # version's exact keyword classification before fixing this.
 #
+# FOURTH FIX, same day: that reserved-word fix alone did NOT resolve the
+# upload-dataset 500 -- meaning either that hypothesis was wrong, or a
+# second, different Postgres error exists on the same path. Rather than
+# guess a third time, _PgCursor.execute() below now re-raises any real
+# psycopg2 error as a ValueError carrying the actual Postgres error
+# text. Every caller in this codebase already catches ValueError and
+# returns its message verbatim as a 400 (auth.py, dataset_adapter.py,
+# dedup_adapter.py, every relevant route in main.py) -- so a genuine
+# SQL problem is now visible in the API response body immediately,
+# instead of an opaque 500 with no way to tell what happened short of
+# server log access this environment doesn't have.
+#
 # The Postgres path is a thin sqlite3-compatible WRAPPER (_Connection/
 # _Cursor below), not a rewrite of the four files that call get_conn()
-# (auth.py, chat_store.py, dataset_adapter.py, dedup_adapter.py). Four
+# (auth.py, chat_store.py, dataset_adapter.py, dedup_adapter.py). Five
 # sqlite3-isms/Postgres-isms those files never had to know about:
 #   1. '?' placeholders -> '%s' (psycopg2's paramstyle).
 #   2. cur.lastrowid -- every table here has an 'id' PK, so a bare
@@ -78,6 +90,8 @@
 #      expects via .replace("T"," ") and to avoid touching every caller
 #      that stores its own datetime.now(...).isoformat() string).
 #   4. bare `rows` / `role` column references -- see THIRD BUG above.
+#   5. real Postgres errors surfacing as ValueError -- see FOURTH FIX
+#      above -- instead of an opaque, undiagnosable 500.
 # Row access (row["col"]) matches on both backends: sqlite3.Row and
 # psycopg2's RealDictCursor rows both support it.
 
@@ -133,11 +147,18 @@ class _PgCursor:
         if is_insert and "RETURNING" not in stripped.upper():
             pg_sql = f"{pg_sql.rstrip().rstrip(';')} RETURNING id"
 
-        self._cur.execute(pg_sql, params)
+        import psycopg2
+
+        try:
+            self._cur.execute(pg_sql, params)
+        except psycopg2.Error as e:
+            # See FOURTH FIX in the module docstring. Re-raised as
+            # ValueError, not swallowed and not left to propagate as an
+            # opaque 500 -- every caller already handles ValueError by
+            # surfacing e's message directly.
+            raise ValueError(f"Postgres error executing query: {e}") from e
 
         if is_insert:
-            import psycopg2
-
             try:
                 row = self._cur.fetchone()
                 self.lastrowid = row["id"] if row else None
