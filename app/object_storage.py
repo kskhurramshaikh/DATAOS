@@ -60,22 +60,29 @@ with the real error text, matching db.py's fix exactly.
 
 PATH-STYLE ADDRESSING (found live, same day): once the error-surfacing
 fix above made the real error visible, PutObject came back with a
-genuine "403 Forbidden" -- not a code bug, a real SeaweedFS-compat
-issue. This codebase had never actually proven plain boto3 PutObject
-against this instance: app/lakehouse_client.py's own boto3 S3 client
-(the exact pattern _client() below was copied from) is READ-ONLY
-(list_objects_v2, get_object) -- it never writes. The only WRITE path
-ever proven working here is pyiceberg's Boto3FileIO (app/boto3_file_io.py),
-which plugs into a catalog explicitly configured with
-"s3.path-style-access": "true" (see app/lakehouse_client.py's
-_iceberg_catalog()). Without that, boto3 defaults to virtual-hosted-
-style bucket addressing (bucket.endpoint/key), which changes the Host
-header used in SigV4 request signing -- a well-known failure mode
-against self-hosted S3-compatible stores (SeaweedFS/MinIO/etc.) that
-don't handle that addressing style the same way AWS does, and
-manifests exactly as a signature-rejection 403. _client() below now
-sets addressing_style="path" explicitly, matching the one write path
-in this codebase already confirmed to work.
+genuine "403 Forbidden". _client() below sets addressing_style="path"
+based on the hypothesis that virtual-hosted-style addressing was
+breaking SigV4 signing against this SeaweedFS instance -- CONFIRMED
+NOT SUFFICIENT: retested live after that fix deployed, still 403. The
+"proven write path" cited as evidence (pyiceberg's Boto3FileIO) turned
+out to run inside the Airflow DAG on the Singapore orchestrator, over
+INTERNAL networking -- not from this app (Oregon) over the PUBLIC
+endpoint at all, so it was never actually comparable evidence. This
+app has genuinely never proven a successful S3 WRITE over
+SEAWEEDFS_PUBLIC_URL from any code path -- only reads (list_objects_v2,
+get_object) were ever confirmed working cross-region.
+
+DIAGNOSTIC ADDED (2026-08-17) rather than guessing a third code fix
+blind: debug_write_test() below returns the FULL botocore error detail
+(Code, Message, RequestId, HostId, HTTPStatusCode) for list_buckets/
+head_bucket/create_bucket/put_object attempted in sequence -- str(e)
+alone was truncating whatever SeaweedFS's actual server-returned reason
+is. Exposed at /api/debug/storage-write in main.py. Working hypothesis
+going in: the public endpoint may be genuinely restricted to read
+operations at the infrastructure level (Render port exposure / a
+reverse-proxy / SeaweedFS's own gateway config), which no client-side
+boto3 change could fix -- this diagnostic exists to confirm or rule
+that out with real evidence instead of more guessing.
 """
 import os
 
@@ -115,9 +122,6 @@ def _client():
         aws_access_key_id=SEAWEEDFS_ACCESS_KEY,
         aws_secret_access_key=SEAWEEDFS_SECRET_KEY,
         region_name=SEAWEEDFS_S3_REGION,
-        # See PATH-STYLE ADDRESSING in the module docstring -- required
-        # for writes against this SeaweedFS instance; matches the one
-        # write path already proven working elsewhere in this codebase.
         config=Config(s3={"addressing_style": "path"}),
     )
 
@@ -197,3 +201,66 @@ def get_text(uri_or_path: str) -> str:
 
     with open(uri_or_path, "r", encoding="utf-8") as f:
         return f.read()
+
+
+def _full_error(e: Exception) -> dict:
+    """Every field botocore actually has for a failure, not just the
+    truncated str(e) message -- see DIAGNOSTIC ADDED in the module
+    docstring for why this matters right now."""
+    if isinstance(e, ClientError):
+        resp = e.response
+        meta = resp.get("ResponseMetadata", {})
+        return {
+            "type": "ClientError",
+            "code": resp.get("Error", {}).get("Code"),
+            "message": resp.get("Error", {}).get("Message"),
+            "request_id": meta.get("RequestId"),
+            "host_id": meta.get("HostId"),
+            "http_status": meta.get("HTTPStatusCode"),
+            "http_headers": dict(meta.get("HTTPHeaders", {})),
+            "raw": str(e),
+        }
+    return {"type": type(e).__name__, "raw": str(e)}
+
+
+def debug_write_test() -> dict:
+    """Diagnostic (2026-08-17): attempts list_buckets / head_bucket /
+    create_bucket / put_object against APP_BUCKET in sequence, one
+    call each, capturing the FULL error detail for whichever step
+    fails -- see DIAGNOSTIC ADDED in the module docstring. Exposed at
+    /api/debug/storage-write. Deliberately does not delete the test
+    object it writes (if the write succeeds) -- leaves
+    "_debug_write_test.txt" in the bucket as visible proof a write
+    actually landed, harmless to leave there."""
+    result: dict = {"bucket": APP_BUCKET, "endpoint": _endpoint(), "configured": is_configured()}
+    if not is_configured():
+        return result
+
+    s3 = _client()
+
+    try:
+        resp = s3.list_buckets()
+        result["list_buckets"] = [b["Name"] for b in resp.get("Buckets", [])]
+    except (ClientError, BotoCoreError) as e:
+        result["list_buckets_error"] = _full_error(e)
+
+    try:
+        s3.head_bucket(Bucket=APP_BUCKET)
+        result["head_bucket"] = "exists"
+    except ClientError as e:
+        result["head_bucket_error"] = _full_error(e)
+        try:
+            s3.create_bucket(Bucket=APP_BUCKET)
+            result["create_bucket"] = "created"
+        except (ClientError, BotoCoreError) as ce:
+            result["create_bucket_error"] = _full_error(ce)
+    except BotoCoreError as e:
+        result["head_bucket_error"] = _full_error(e)
+
+    try:
+        s3.put_object(Bucket=APP_BUCKET, Key="_debug_write_test.txt", Body=b"ok")
+        result["put_object"] = "ok"
+    except (ClientError, BotoCoreError) as e:
+        result["put_object_error"] = _full_error(e)
+
+    return result
