@@ -1,1 +1,2 @@
 pg_iceberg_catalog.py
+test_seaweed_write.py
