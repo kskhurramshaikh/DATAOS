@@ -31,8 +31,7 @@ talks to both services over their PUBLIC endpoints instead:
     ONE port publicly per service, chosen by that service's own PORT
     env var -- dataos-spike-storage's PORT was changed from 8888
     (SeaweedFS's Filer UI) to 8333 (the S3 API) specifically so this
-    app can reach it. If PORT ever gets changed back, this stops
-    working with a connection-refused-style error, not a silent one.
+    app can reach it.
   - Falls back to the internal-hostname construction if
     SEAWEEDFS_PUBLIC_URL isn't set, so this still works unmodified if
     this module is ever reused by something running in the same region
@@ -41,7 +40,12 @@ talks to both services over their PUBLIC endpoints instead:
 Every function here degrades gracefully (returns an explicit
 "not configured" / empty result) rather than raising when the required
 env vars aren't set yet, so the rest of the app keeps working before
-this cross-service wiring is completed.
+this cross-service wiring is completed. Per-table read errors inside
+get_zone_stats() are surfaced in the response (not silently swallowed)
+-- catalog metadata reads succeeding while actual data-file reads fail
+is a real, distinct failure mode (seen directly: tables/last-run-status
+came back correctly over the public SeaweedFS endpoint while row counts
+came back 0), so hiding that error would have made it undiagnosable.
 """
 from __future__ import annotations
 
@@ -182,15 +186,27 @@ def get_zone_stats() -> dict:
                 ]:
                     try:
                         table_ids = catalog.list_tables(namespace)
-                    except Exception:
+                    except Exception as e:  # noqa: BLE001
                         table_ids = []
+                        zones[zone_key] = {"error": f"list_tables failed: {e}"}
+                        continue
+
                     total_rows = 0
+                    table_errors = []
                     for tid in table_ids:
                         try:
                             table = catalog.load_table(tid)
                             total_rows += len(table.scan().to_pandas())
-                        except Exception:
-                            pass
+                        except Exception as e:  # noqa: BLE001
+                            # Surfaced, not swallowed -- catalog metadata
+                            # reads and actual data-file reads are a
+                            # genuinely different failure mode, seen
+                            # directly (2026-08-17): tables/last-run-status
+                            # came back correctly while row counts came
+                            # back silently 0 under the old swallow-all
+                            # version of this code.
+                            table_errors.append(f"{'.'.join(tid)}: {e}")
+
                     run_info = _last_task_run(cur, task_id) or {}
                     zones[zone_key] = {
                         "tables": len(table_ids),
@@ -199,6 +215,8 @@ def get_zone_stats() -> dict:
                         "last_state": run_info.get("last_state"),
                         "freshness": _freshness_label(run_info.get("last_run_at")),
                     }
+                    if table_errors:
+                        zones[zone_key]["table_read_errors"] = table_errors
         finally:
             conn.close()
     except Exception as e:  # noqa: BLE001
