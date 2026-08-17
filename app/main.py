@@ -19,15 +19,24 @@
 # time out, conclude the instance died, and restart it mid-request.
 # That's a real failure that happened during testing, not a theoretical
 # one -- see _run_in_thread() below.
+#
+# Item 2 (DataOS 3.0 Development Queue): Lakehouse Zones + Pipeline
+# Monitoring. The new React dashboard (built by dashboard/, output baked
+# into app/static/dashboard/ at Docker build time -- see the repo-root
+# Dockerfile's frontend-build stage) is served at "/dashboard", reading
+# live data from the spike infrastructure via app/lakehouse_client.py's
+# three new /api/lakehouse/* and /api/pipeline/* endpoints below. The
+# chat interface itself is untouched -- still "/app", same as before.
 
 import asyncio
 import json as json_lib
+import os
 import queue
 import threading
 import time
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -35,7 +44,7 @@ from app.compliance_agent import evaluate
 from app.router import route, NoCapabilityRegisteredError
 from app.capability_registry import CAPABILITY_REGISTRY
 from app.db import init_db
-from app import auth, chat_store
+from app import auth, chat_store, lakehouse_client
 from app.adapters import dataset_adapter, banking_adapter, dedup_adapter
 from app.visualization import suggest_visualization
 from app.interpreter import interpret, interpret_stream, explain_result
@@ -45,6 +54,13 @@ app = FastAPI(title="DataOS 2.0 -- Pipeline Rails")
 init_db()
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+# Dashboard's built static assets (JS/CSS bundle) -- only mounted if the
+# frontend build actually produced output, so this app still boots fine
+# in a dev/test environment that skipped the Node build stage.
+_DASHBOARD_DIST = "app/static/dashboard"
+if os.path.isdir(_DASHBOARD_DIST):
+    app.mount("/dashboard/assets", StaticFiles(directory=f"{_DASHBOARD_DIST}/assets"), name="dashboard-assets")
 
 
 class IntentRequest(BaseModel):
@@ -118,10 +134,10 @@ async def _run_in_thread(sync_generator):
 # ---------------------------------------------------------------------
 # Landing page (item 9) -- the marketing/product landing page is now
 # the actual front door at "/". The conversational chat UI (sign up,
-# log in, talk to DataOS) has moved to "/app" -- linked from the
-# landing page's "Sign up / Log in" button, top-right nav. Nothing
-# about the chat UI itself changed; it's the same file, just served
-# at a different route.
+# log in, talk to DataOS) is at "/app"; the new dashboard (item 2 on)
+# is at "/dashboard" -- both linked from the landing page, letting the
+# visitor choose their entry point up front, per the 2026-08-12
+# meeting outcome.
 # ---------------------------------------------------------------------
 
 @app.get("/")
@@ -132,6 +148,23 @@ def root():
 @app.get("/app")
 def chat_app():
     return FileResponse("app/static/index.html")
+
+
+@app.get("/dashboard")
+@app.get("/dashboard/{full_path:path}")
+def dashboard_app(full_path: str = ""):
+    """Serves the dashboard's built index.html for every dashboard route
+    -- a standard SPA catch-all, since React Router handles the actual
+    path matching client-side. Falls back to a plain message if the
+    frontend hasn't been built into this image (e.g. a Dockerfile that
+    skipped the Node build stage)."""
+    index_path = f"{_DASHBOARD_DIST}/index.html"
+    if os.path.isfile(index_path):
+        return FileResponse(index_path)
+    return PlainTextResponse(
+        "Dashboard build not found in this image -- check the Dockerfile's frontend-build stage.",
+        status_code=503,
+    )
 
 
 @app.get("/api/info")
@@ -148,6 +181,31 @@ def api_info():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------
+# Lakehouse dashboard API (Item 2) -- reads REAL data from the spike
+# infrastructure via app/lakehouse_client.py. See that module's own
+# docstring for exactly what's queried and from where. Deliberately
+# unauthenticated for now, matching the read-only, no-secrets-exposed
+# nature of what these return (row counts, run status, log text) --
+# revisit if/when this dashboard needs its own access control distinct
+# from the chat app's user accounts.
+# ---------------------------------------------------------------------
+
+@app.get("/api/lakehouse/zones")
+def lakehouse_zones():
+    return lakehouse_client.get_zone_stats()
+
+
+@app.get("/api/pipeline/runs")
+def pipeline_runs(limit: int = 10):
+    return lakehouse_client.get_pipeline_runs(limit=limit)
+
+
+@app.get("/api/pipeline/logs/{run_id}/{task_id}")
+def pipeline_task_log(run_id: str, task_id: str, try_number: int = 1):
+    return lakehouse_client.get_task_log(run_id, task_id, try_number)
 
 
 # ---------------------------------------------------------------------
