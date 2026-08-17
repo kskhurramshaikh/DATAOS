@@ -132,7 +132,7 @@
   }
   .btn-ghost:hover { border-color: var(--maroon); }
 
-  .nav-cta { display: flex; align-items: center; gap: 14px; }
+  .nav-cta { display: flex; align-items: center; gap: 10px; }
   .nav-links-wrap { display: flex; align-items: center; gap: 36px; }
 
   .menu-toggle { display: none; background: none; border: none; color: var(--text); font-size: 22px; cursor: pointer; }
@@ -162,8 +162,14 @@
     font-size: 18px; color: var(--text-dim); max-width: 46ch; line-height: 1.65;
     margin-bottom: 34px;
   }
-  .hero-ctas { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 64px; }
+  .hero-ctas { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin-bottom: 18px; }
   .btn-lg { padding: 13px 24px; font-size: 15px; }
+  .hero-ctas-sub { margin-bottom: 64px; }
+  .link-quiet {
+    font-size: 13.5px; color: var(--text-dim); text-decoration: none; border-bottom: 1px solid var(--line);
+    padding-bottom: 1px; transition: color 0.15s ease, border-color 0.15s ease;
+  }
+  .link-quiet:hover { color: var(--maroon); border-color: var(--maroon); }
 
   .hero-grid { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 56px; align-items: start; }
 
@@ -306,6 +312,7 @@
   }
   .cta-inner h2 { font-family: var(--serif); font-weight: 480; font-size: 34px; margin-bottom: 14px; }
   .cta-inner p { color: var(--text-dim); font-size: 15.5px; margin-bottom: 30px; }
+  .cta-inner-ctas { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
 
   /* ---------------- Footer ---------------- */
   footer { border-top: 1px solid var(--line); padding: 44px 0; }
@@ -326,7 +333,7 @@
     .sector-grid { grid-template-columns: 1fr 1fr; }
   }
   @media (max-width: 680px) {
-    nav.links, .nav-cta .btn-ghost { display: none; }
+    nav.links { display: none; }
     .menu-toggle { display: block; }
     .flow-row { grid-template-columns: 1fr; }
     .flow-step::after { display: none !important; }
@@ -353,7 +360,8 @@
         <a href="#sectors">Sectors &amp; standards</a>
       </nav>
       <div class="nav-cta">
-        <a class="btn btn-ghost" href="/app">Sign up / Log in</a>
+        <a class="btn btn-ghost" href="/dashboard">Dashboard</a>
+        <a class="btn btn-primary" href="/app">Chat</a>
       </div>
     </div>
     <button class="menu-toggle" aria-label="Menu">☰</button>
@@ -365,10 +373,13 @@
     <div>
       <span class="eyebrow">Agentic data governance · built for Vision 2030</span>
       <h1>Ask your data anything.<br><em>Governed at every step.</em></h1>
-      <p class="lede">DataOS is the one place your data, ML, and governance teams work — a single conversational front door over a real, license-verified open-source stack, with a compliance agent checking every request before anything runs.</p>
+      <p class="lede">DataOS is the one place your data, ML, and governance teams work — a single agentic platform over a real, license-verified open-source stack, with a compliance agent checking every request before anything runs. Work through a governed dashboard, or just talk to your data — your call.</p>
       <div class="hero-ctas">
-        <a class="btn btn-primary btn-lg" href="/app">Sign up / Log in →</a>
-        <a class="btn btn-ghost btn-lg" href="#flow">See how it works</a>
+        <a class="btn btn-primary btn-lg" href="/dashboard">Open Dashboard →</a>
+        <a class="btn btn-ghost btn-lg" href="/app">Talk to DataOS →</a>
+      </div>
+      <div class="hero-ctas-sub">
+        <a class="link-quiet" href="#flow">See how it works</a>
       </div>
     </div>
     <div class="console reveal" id="console-demo">
@@ -442,8 +453,8 @@
       </div>
       <div class="pillar reveal">
         <div class="pillar-icon"></div>
-        <h3>Conversational interface</h3>
-        <p>Sign in and talk to your data directly. The same governed pipeline sits behind every message.</p>
+        <h3>Two ways in, one governed core</h3>
+        <p>A visual dashboard for browsing zones and pipeline runs, or a conversational interface to just ask — both sit on the exact same governed pipeline underneath.</p>
       </div>
     </div>
   </div>
@@ -565,9 +576,12 @@
 <section class="cta-band">
   <div class="wrap">
     <div class="cta-inner reveal">
-      <h2>Talk to your data. Governed at every step.</h2>
-      <p>Sign up and try DataOS on your own dataset in minutes.</p>
-      <a class="btn btn-primary btn-lg" href="/app">Sign up / Log in →</a>
+      <h2>Governed at every step. Your way in.</h2>
+      <p>Browse zones and pipeline runs on the dashboard, or just talk to your data — both run on the same governed core.</p>
+      <div class="cta-inner-ctas">
+        <a class="btn btn-primary btn-lg" href="/dashboard">Open Dashboard →</a>
+        <a class="btn btn-ghost btn-lg" href="/app">Talk to DataOS →</a>
+      </div>
     </div>
   </div>
 </section>
