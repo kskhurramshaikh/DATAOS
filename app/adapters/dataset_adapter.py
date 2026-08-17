@@ -6,25 +6,22 @@
 # filesystem layout directly, same invisibility contract every adapter
 # in DataOS 2.0 holds.
 #
-# For this pass: local disk under data/{bronze,silver,gold}/, not a
-# managed object store. That's a deliberate, disclosed tradeoff for the
-# demo phase -- on Render's free tier this is ephemeral (wiped on
-# redeploy), same caveat as the chat auth database. Swapping this for a
-# real S3-compatible bucket is a storage-layer change only; nothing
-# above this file needs to know about it when that happens.
-#
-# CONFIRMED LIVE (2026-08-17): unlike the chat auth database (now on
-# Postgres, see app/db.py), this file's local-disk tradeoff is STILL
-# ACTIVE -- a redeploy after uploading a dataset wipes its Bronze/
-# Silver/Gold files while the dataset's Postgres row (now durable)
-# survives, leaving a real record pointing at a missing file. Confirmed
-# directly: read_silver_csv() below hit a raw FileNotFoundError against
-# the live app after a canary redeploy. Now caught there and surfaced
-# as a clear ValueError instead of a raw traceback -- but the
-# underlying limitation (files not yet moved to SeaweedFS, which this
-# same app is already wired to for the Lakehouse dashboard) is still
-# open, pending a decision on whether it's worth the larger file-I/O
-# rewrite this file's own docstring already anticipated above.
+# MOVED TO SEAWEEDFS (2026-08-17): Bronze/Silver/Gold files used to live
+# on local disk -- a deliberate, disclosed demo-phase tradeoff (ephemeral
+# on Render's free tier, wiped on redeploy). That stopped being
+# acceptable once Item 3 made a dataset's Postgres row durable (see
+# app/db.py) while its underlying file wasn't: confirmed live, a
+# redeploy after upload left a real dataset record pointing at a
+# missing file, surfacing as a raw FileNotFoundError against
+# read_silver_csv(). Now backed by app/object_storage.py -- the SAME
+# SeaweedFS instance already wired into this app for the Lakehouse
+# dashboard (Item 2), own bucket ("dataos-app-datasets", separate from
+# the real spike pipeline's "dataos-spike"), no new Render resource.
+# bronze_path/silver_path/gold_path (already plain TEXT columns) now
+# hold s3://dataos-app-datasets/... URIs instead of local paths --
+# nothing above this file (main.py, dedup_adapter.py) needed to change,
+# since they only ever pass these paths back to this module's own
+# functions, never interpret them directly.
 #
 # Bronze: the raw upload, untouched.
 # Silver: exact duplicate rows removed, nulls reported (not invented --
@@ -47,14 +44,13 @@
 import csv
 import io
 import json
-import os
 from datetime import datetime, timezone
 
 import pandas as pd
 
+from app import object_storage
 from app.db import get_conn
 
-DATA_ROOT = os.environ.get("DATAOS_DATA_ROOT", "data")
 NULL_RATE_HOLD_THRESHOLD = 0.10  # >10% null in any column holds at Silver -- for normal-sized datasets
 GOLD_DROP_COLUMN_THRESHOLD = 0.50  # >50% null in a column drops it from Gold
 # A small reference/lookup table (e.g. a 7-row LGD rate table) hits a much
@@ -288,11 +284,7 @@ def land_bronze(dataset_name: str, csv_content: str) -> dict:
     if df.empty:
         raise ValueError("The uploaded file parsed as CSV but contains no rows.")
 
-    bronze_dir = os.path.join(DATA_ROOT, "bronze", safe_name)
-    os.makedirs(bronze_dir, exist_ok=True)
-    bronze_path = os.path.join(bronze_dir, f"{timestamp}_raw.csv")
-    with open(bronze_path, "w", encoding="utf-8") as f:
-        f.write(csv_content)
+    bronze_path = object_storage.put_text(f"bronze/{safe_name}/{timestamp}_raw.csv", csv_content)
 
     return {
         "safe_name": safe_name,
@@ -307,10 +299,7 @@ def clean_to_silver(safe_name: str, df: pd.DataFrame) -> dict:
     silver_df = df.drop_duplicates()
     duplicate_rows_removed = len(df) - len(silver_df)
 
-    silver_dir = os.path.join(DATA_ROOT, "silver", safe_name)
-    os.makedirs(silver_dir, exist_ok=True)
-    silver_path = os.path.join(silver_dir, "cleaned.csv")
-    silver_df.to_csv(silver_path, index=False)
+    silver_path = object_storage.put_text(f"silver/{safe_name}/cleaned.csv", silver_df.to_csv(index=False))
 
     null_counts = {col: int(cnt) for col, cnt in null_counts_before.items() if cnt > 0}
     rows = len(silver_df)
@@ -356,10 +345,7 @@ def promote_to_gold(safe_name: str, silver_df: pd.DataFrame) -> dict:
         if dropped_columns:
             curated_df = silver_df.drop(columns=dropped_columns)
 
-    gold_dir = os.path.join(DATA_ROOT, "gold", safe_name)
-    os.makedirs(gold_dir, exist_ok=True)
-    gold_path = os.path.join(gold_dir, "data.csv")
-    curated_df.to_csv(gold_path, index=False)
+    gold_path = object_storage.put_text(f"gold/{safe_name}/data.csv", curated_df.to_csv(index=False))
 
     return {
         "gold_path": gold_path,
@@ -424,19 +410,17 @@ def run(payload: dict) -> dict:
 
 def read_silver_csv(safe_name: str) -> str:
     """Reads back the already-landed Silver CSV for a dataset that was
-    uploaded earlier. Lets a follow-up action (like running duplicate
-    detection after the fact) reuse already-cleaned data on disk instead
-    of needing the original file re-uploaded.
+    uploaded earlier -- now from SeaweedFS (see module docstring), not
+    local disk. Lets a follow-up action (like running duplicate
+    detection after the fact) reuse already-cleaned data instead of
+    needing the original file re-uploaded.
 
-    KNOWN LIMITATION (confirmed live, 2026-08-17): the dataset's
-    Postgres row is durable (see app/db.py), but the actual Bronze/
-    Silver/Gold files are still on local disk -- ephemeral, wiped on
-    redeploy, per this module's own header docstring. So a redeploy
-    after an upload can leave a real, correctly-persisted dataset
-    record pointing at a file that no longer exists. Caught here and
-    turned into a clear ValueError (surfaced as a 400, same pattern as
-    every other error in this file) instead of a raw FileNotFoundError
-    leaking to the UI."""
+    object_storage.get_text() raises the same stdlib FileNotFoundError
+    a missing local file would have, so this still degrades to a clear
+    ValueError instead of a raw traceback for any object that's
+    genuinely gone (e.g. deleted directly in SeaweedFS) -- just no
+    longer expected on every redeploy, since the object store is real
+    persistent storage, not container-local disk."""
     with get_conn() as conn:
         row = conn.execute(
             "SELECT silver_path FROM datasets WHERE safe_name = ?", (safe_name,)
@@ -444,14 +428,11 @@ def read_silver_csv(safe_name: str) -> str:
     if row is None or not row["silver_path"]:
         raise ValueError(f"No landed Silver data found for dataset '{safe_name}'.")
     try:
-        with open(row["silver_path"], "r", encoding="utf-8") as f:
-            return f.read()
+        return object_storage.get_text(row["silver_path"])
     except FileNotFoundError:
         raise ValueError(
-            f"'{safe_name}' is recorded as uploaded, but its underlying file is missing "
-            f"(dataset files still live on ephemeral local disk, separate from the "
-            f"database record which does persist -- likely wiped by a redeploy since "
-            f"upload). Re-upload '{safe_name}' to continue."
+            f"'{safe_name}' is recorded as uploaded, but its underlying Silver file is "
+            f"missing from object storage. Re-upload '{safe_name}' to continue."
         )
 
 
@@ -525,7 +506,14 @@ def promote_dataset(payload: dict) -> dict:
             "message": f"'{safe_name}' is already at stage '{row['stage']}', not held -- nothing to promote.",
         }
 
-    silver_df = pd.read_csv(row["silver_path"])
+    try:
+        silver_csv = object_storage.get_text(row["silver_path"])
+    except FileNotFoundError:
+        raise ValueError(
+            f"'{safe_name}' is recorded as held at Silver, but its underlying file is "
+            f"missing from object storage. Re-upload '{safe_name}' to continue."
+        )
+    silver_df = pd.read_csv(io.StringIO(silver_csv))
     gold = promote_to_gold(safe_name, silver_df)
 
     _upsert_dataset_record(
