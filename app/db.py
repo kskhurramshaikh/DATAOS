@@ -43,10 +43,27 @@
 # service automatically, no setup needed) specifically so that
 # ambiguity has a definitive answer too, not just the backend question.
 #
+# THIRD BUG found the same day, in real production use (not CI, which
+# never exercises SQL text against real Postgres): "datasets" has a
+# column literally named `rows`, and `messages` has one named `role` --
+# both plain enough that SQLite never blinked, but both sit close
+# enough to real SQL keyword territory (ROWS: window-frame syntax;
+# ROLE: GRANT/CREATE ROLE) that unquoted use as a bare column reference
+# in an INSERT/UPDATE genuinely 500'd against Postgres the first time a
+# real dataset upload exercised it -- POST /api/mdm/upload-dataset ->
+# 500, confirmed directly against the live app. CREATE TABLE with these
+# as bare column *definitions* had already succeeded fine (that's a
+# different grammar position), which is exactly why this didn't show up
+# until an actual INSERT ran. _RESERVED_COL_RE below defensively quotes
+# both wherever they appear as a standalone token in any SQL text this
+# wrapper executes -- quoting a word that turns out not to need it is
+# always harmless, so there's no reason to pin down each Postgres
+# version's exact keyword classification before fixing this.
+#
 # The Postgres path is a thin sqlite3-compatible WRAPPER (_Connection/
 # _Cursor below), not a rewrite of the four files that call get_conn()
-# (auth.py, chat_store.py, dataset_adapter.py, dedup_adapter.py). Three
-# sqlite3-isms those files rely on are translated transparently:
+# (auth.py, chat_store.py, dataset_adapter.py, dedup_adapter.py). Four
+# sqlite3-isms/Postgres-isms those files never had to know about:
 #   1. '?' placeholders -> '%s' (psycopg2's paramstyle).
 #   2. cur.lastrowid -- every table here has an 'id' PK, so a bare
 #      INSERT without an explicit RETURNING gets one appended
@@ -60,6 +77,7 @@
 #      to preserve the ISO-8601 'T' format the dashboard's JS already
 #      expects via .replace("T"," ") and to avoid touching every caller
 #      that stores its own datetime.now(...).isoformat() string).
+#   4. bare `rows` / `role` column references -- see THIRD BUG above.
 # Row access (row["col"]) matches on both backends: sqlite3.Row and
 # psycopg2's RealDictCursor rows both support it.
 
@@ -79,6 +97,16 @@ PG_SCHEMA = os.environ.get("DATAOS_APP_SCHEMA", "dataos_app")
 _CURRENT_TIMESTAMP_RE = re.compile(r"\bCURRENT_TIMESTAMP\b", re.IGNORECASE)
 _CURRENT_TIMESTAMP_PG = "to_char(CURRENT_TIMESTAMP AT TIME ZONE 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS')"
 
+# See THIRD BUG note above. Word-boundary matched, so this never touches
+# a compound identifier like duplicate_rows_removed (the underscore glues
+# it into one token as far as \b is concerned) -- only a standalone
+# "rows" or "role" token, exactly the column-reference usage that broke.
+_RESERVED_COL_RE = re.compile(r"\b(rows|role)\b", re.IGNORECASE)
+
+
+def _quote_reserved_cols(sql: str) -> str:
+    return _RESERVED_COL_RE.sub(lambda m: f'"{m.group(0).lower()}"', sql)
+
 
 def _is_postgres() -> bool:
     return bool(PG_DB_URI)
@@ -97,6 +125,7 @@ class _PgCursor:
 
     def execute(self, sql, params=()):
         pg_sql = _CURRENT_TIMESTAMP_RE.sub(_CURRENT_TIMESTAMP_PG, sql)
+        pg_sql = _quote_reserved_cols(pg_sql)
         pg_sql = pg_sql.replace("?", "%s")
 
         stripped = pg_sql.strip()
