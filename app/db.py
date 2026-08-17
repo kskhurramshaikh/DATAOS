@@ -33,6 +33,16 @@
 # to answer that question with certainty instead of guessing across
 # another redeploy cycle -- see /api/debug/storage in main.py.
 #
+# SEPARATE, EQUALLY IMPORTANT CONFUSION SOURCE found the same day:
+# Render keeps the OLD container fully serving traffic until the NEW
+# one passes its health check, so hitting the live URL while a deploy
+# is still building/testing shows the previous version with zero
+# visible sign that a newer one exists -- "the app is up" and "the
+# latest commit is live" are NOT the same fact. storage_status() now
+# also reports RENDER_GIT_COMMIT (a var Render injects into every
+# service automatically, no setup needed) specifically so that
+# ambiguity has a definitive answer too, not just the backend question.
+#
 # The Postgres path is a thin sqlite3-compatible WRAPPER (_Connection/
 # _Cursor below), not a rewrite of the four files that call get_conn()
 # (auth.py, chat_store.py, dataset_adapter.py, dedup_adapter.py). Three
@@ -398,13 +408,21 @@ def get_conn():
 
 
 def storage_status() -> dict:
-    """Answers 'which backend is actually running, right now, in this
-    process' with certainty -- see the DIAGNOSTIC NOTE above for why
-    this exists. Exposed at /api/debug/storage. Masks the DB URI (host
-    only) rather than ever returning it whole -- it contains real
-    Postgres credentials."""
+    """Answers two questions with certainty instead of guesswork, both
+    of which caused real confusion on 2026-08-17 -- see the module
+    docstring's DIAGNOSTIC NOTE and the note right below it:
+      1. Which storage backend is this PROCESS actually running on --
+         Postgres, or silently back on ephemeral SQLite?
+      2. Is the code THIS RESPONSE came from actually the latest commit
+         -- or is Render still serving the previous container while a
+         newer deploy builds/tests in the background (which it does
+         transparently, with zero visible difference from the outside)?
+    Exposed at /api/debug/storage. Masks the DB URI (host only) rather
+    than ever returning it whole -- it contains real Postgres
+    credentials."""
     postgres = _is_postgres()
     status: dict = {
+        "git_commit": os.environ.get("RENDER_GIT_COMMIT", "unknown (not running on Render, or var unset)"),
         "backend": "postgres" if postgres else "sqlite",
         "postgres_configured": postgres,
         "schema": PG_SCHEMA if postgres else None,
