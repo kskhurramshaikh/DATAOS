@@ -71,7 +71,7 @@ from app.compliance_agent import evaluate
 from app.router import route, NoCapabilityRegisteredError
 from app.capability_registry import CAPABILITY_REGISTRY
 from app.db import init_db, storage_status
-from app import auth, chat_store, lakehouse_client
+from app import auth, chat_store, lakehouse_client, object_storage
 from app.adapters import dataset_adapter, banking_adapter, dedup_adapter
 from app.visualization import suggest_visualization
 from app.interpreter import interpret, interpret_stream, explain_result
@@ -223,6 +223,20 @@ def debug_storage():
     same pattern as /api/lakehouse/debug -- read-only, no secrets in
     the response (the Postgres URI is masked to host only)."""
     return storage_status()
+
+
+@app.get("/api/debug/storage-write")
+def debug_storage_write():
+    """Diagnostic for the SeaweedFS write path specifically (2026-08-17)
+    -- added after a real 403 on PutObject survived a first fix attempt
+    (path-style addressing), to get the FULL server-returned error
+    detail instead of guessing a second time. See
+    object_storage.debug_write_test()'s own docstring for exactly what
+    it attempts. Deliberately unauthenticated, same pattern as every
+    other /api/debug/* and /api/lakehouse/debug endpoint -- read-only
+    in intent (the one object it writes, if it gets that far, is
+    harmless diagnostic proof left in the bucket on purpose)."""
+    return object_storage.debug_write_test()
 
 
 # ---------------------------------------------------------------------
