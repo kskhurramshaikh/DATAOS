@@ -909,14 +909,22 @@ def mdm_duplicate_queue(dataset_name: str | None = None):
     call. If no dataset_name is given, pending clusters are gathered
     across every dataset that has any (there's no dataset-agnostic
     "all pending" query in the adapter, since pending clusters are
-    always scoped to one dataset at a time by detection)."""
+    always scoped to one dataset at a time by detection). Each pending
+    cluster is tagged with its own dataset_name here, since the
+    underlying adapter's shape doesn't carry that -- the dashboard needs
+    it to safely target a specific dataset for bulk-confirm when more
+    than one dataset has pending clusters."""
     decided = dedup_adapter.get_audit_log(dataset_name)
     if dataset_name:
         pending = dedup_adapter.get_pending_clusters(dataset_name)
+        for c in pending:
+            c["dataset_name"] = dataset_name
     else:
         pending = []
         for d in dataset_adapter.list_datasets({})["datasets"]:
-            pending.extend(dedup_adapter.get_pending_clusters(d["dataset_name"]))
+            for c in dedup_adapter.get_pending_clusters(d["dataset_name"]):
+                c["dataset_name"] = d["dataset_name"]
+                pending.append(c)
     return {"pending": pending, "decided": decided}
 
 
