@@ -10,3 +10,6 @@ PyJWT
 openpyxl
 rapidfuzz
 python-multipart
+boto3
+psycopg2-binary
+pyiceberg[pyarrow]==0.11.1
