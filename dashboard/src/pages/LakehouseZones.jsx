@@ -2,10 +2,33 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import FlowConnector from "../components/FlowConnector";
 
+// Tailwind's build only includes classes it can find as complete literal
+// strings during its static scan -- a template literal like
+// `bg-${color}-soft` is invisible to that scan, so the styles would
+// silently be missing from the built CSS. Full literal strings per zone
+// avoids that trap.
 const ZONE_META = {
-  bronze: { label: "Bronze", color: "bronze", note: "Raw — unmodified" },
-  silver: { label: "Silver", color: "silver", note: "Cleaned — header-verified" },
-  gold: { label: "Gold", color: "gold", note: "Governed — IFRS 9 / NDI" },
+  bronze: {
+    label: "Bronze",
+    note: "Raw — unmodified",
+    card: "bg-bronze-soft border-bronze/20",
+    dot: "bg-bronze",
+    text: "text-bronze",
+  },
+  silver: {
+    label: "Silver",
+    note: "Cleaned — header-verified",
+    card: "bg-silver-soft border-silver/20",
+    dot: "bg-silver",
+    text: "text-silver",
+  },
+  gold: {
+    label: "Gold",
+    note: "Governed — IFRS 9 / NDI",
+    card: "bg-gold-soft border-gold/20",
+    dot: "bg-gold",
+    text: "text-gold",
+  },
 };
 
 function formatBytes(n) {
@@ -17,11 +40,12 @@ function formatBytes(n) {
 
 function ZoneCard({ zoneKey, data }) {
   const meta = ZONE_META[zoneKey];
+
   if (!data || data.error) {
     return (
-      <div className={`bg-${meta.color}-soft border border-${meta.color}/20 rounded-2xl px-5 py-4 min-w-[168px] flex flex-col gap-1.5`}>
-        <div className={`inline-flex items-center gap-1.5 text-xs font-bold text-${meta.color}`}>
-          <span className={`w-1.5 h-1.5 rounded-full bg-${meta.color} inline-block`} />
+      <div className={`${meta.card} border rounded-2xl px-5 py-4 min-w-[168px] flex flex-col gap-1.5`}>
+        <div className={`inline-flex items-center gap-1.5 text-xs font-bold ${meta.text} w-fit`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${meta.dot} inline-block`} />
           {meta.label}
         </div>
         <div className="text-[11px] text-ink-faint mt-1">
@@ -30,24 +54,23 @@ function ZoneCard({ zoneKey, data }) {
       </div>
     );
   }
-  const count = zoneKey === "bronze" ? data.tables : data.tables;
-  const sizeOrRows =
-    zoneKey === "bronze" ? formatBytes(data.size_bytes) : `${data.rows ?? 0} rows`;
+
+  const sizeOrRows = zoneKey === "bronze" ? formatBytes(data.size_bytes) : `${data.rows ?? 0} rows`;
 
   return (
-    <div className={`bg-${meta.color}-soft border border-${meta.color}/20 rounded-2xl px-5 py-4 min-w-[168px] flex flex-col gap-1.5`}>
-      <div className={`inline-flex items-center gap-1.5 text-xs font-bold text-${meta.color} w-fit`}>
-        <span className={`w-1.5 h-1.5 rounded-full bg-${meta.color} inline-block`} />
+    <div className={`${meta.card} border rounded-2xl px-5 py-4 min-w-[168px] flex flex-col gap-1.5`}>
+      <div className={`inline-flex items-center gap-1.5 text-xs font-bold ${meta.text} w-fit`}>
+        <span className={`w-1.5 h-1.5 rounded-full ${meta.dot} inline-block`} />
         {meta.label}
       </div>
       <div className="text-[11.5px] text-ink-soft">
-        <span className="font-mono font-semibold text-ink">{count}</span> {zoneKey === "bronze" ? "files" : "tables"}
+        <span className="font-mono font-semibold text-ink">{data.tables ?? 0}</span> {zoneKey === "bronze" ? "files" : "tables"}
       </div>
       <div className="text-[11.5px] text-ink-soft">
         <span className="font-mono font-semibold text-ink">{sizeOrRows}</span>
       </div>
       <div className="text-[10.5px] text-ink-faint mt-0.5">{meta.note}</div>
-      <div className={`text-[10px] text-${meta.color} mt-1 font-mono`}>● updated {data.freshness}</div>
+      <div className={`text-[10px] ${meta.text} mt-1 font-mono`}>● updated {data.freshness}</div>
     </div>
   );
 }
