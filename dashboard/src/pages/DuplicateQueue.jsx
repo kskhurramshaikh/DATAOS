@@ -75,10 +75,16 @@ function DecidedRow({ entry }) {
 // chat too (and vice versa), since both write to the same underlying
 // dataset_adapter/dedup_adapter layer -- one shared data layer, two
 // genuinely independent front doors.
-function GetStartedPanel({ datasets, onDatasetsChanged, onDetected, busy, setBusy, setError }) {
+//
+// selectedDataset/onSelectedDatasetChange are lifted up to the parent
+// (2026-08-17, per Khurram's ask) -- this SAME selection now also
+// gates what the Pending section below shows, so the page doesn't load
+// every dataset's pending clusters by default. One dataset picker,
+// two things it controls (what "Find duplicates" targets, what Pending
+// displays), instead of a second, redundant selector.
+function GetStartedPanel({ datasets, onDatasetsChanged, onDetected, selectedDataset, onSelectedDatasetChange, busy, setBusy, setError }) {
   const [uploadName, setUploadName] = useState("");
   const fileInputRef = useRef(null);
-  const [selectedDataset, setSelectedDataset] = useState("");
 
   async function handleUpload() {
     const file = fileInputRef.current?.files?.[0];
@@ -93,7 +99,7 @@ function GetStartedPanel({ datasets, onDatasetsChanged, onDetected, busy, setBus
       setUploadName("");
       if (fileInputRef.current) fileInputRef.current.value = "";
       await onDatasetsChanged();
-      setSelectedDataset(result.dataset_name);
+      onSelectedDatasetChange(result.dataset_name);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -149,7 +155,7 @@ function GetStartedPanel({ datasets, onDatasetsChanged, onDetected, busy, setBus
           <div className="flex items-center gap-2">
             <select
               value={selectedDataset}
-              onChange={(e) => setSelectedDataset(e.target.value)}
+              onChange={(e) => onSelectedDatasetChange(e.target.value)}
               className="text-[12px] border border-line rounded-lg px-2.5 py-1.5 w-44"
             >
               <option value="">Select dataset…</option>
@@ -212,7 +218,7 @@ function DatasetBulkBar({ datasetName, pendingInDataset, onBulkConfirm, busyKey 
 }
 
 export default function DuplicateQueue() {
-  const [state, setState] = useState({ loading: true, pending: [], decided: [], error: null });
+  const [state, setState] = useState({ loading: false, pending: [], decided: [], error: null });
   const [datasets, setDatasets] = useState([]);
   const [decidingId, setDecidingId] = useState(null);
   const [reviewerName, setReviewerName] = useState("");
@@ -220,10 +226,27 @@ export default function DuplicateQueue() {
   const [bulkBusyKey, setBulkBusyKey] = useState(null);
   const [detectResult, setDetectResult] = useState(null);
   const [bulkResult, setBulkResult] = useState(null);
+  // Gates the Pending section below -- "" means no dataset chosen yet,
+  // deliberately not auto-loading every dataset's pending clusters by
+  // default (2026-08-17, per Khurram's ask: a growing pending list
+  // across many datasets was noisy to land on with nothing selected).
+  // Shared with GetStartedPanel's "2. Check for duplicates" picker --
+  // one selection, not a second redundant dropdown.
+  const [selectedDataset, setSelectedDataset] = useState("");
 
-  async function loadQueue() {
+  // datasetName === "" intentionally shows an empty Pending section --
+  // see the state note above. The Decided/audit-log half is unaffected
+  // either way: still scoped to the same dataset when one's picked
+  // (matching bulk-confirm's own scoping), just not fetched at all
+  // until a dataset is chosen, same as Pending.
+  async function loadQueue(datasetName) {
+    if (!datasetName) {
+      setState({ loading: false, pending: [], decided: [], error: null });
+      return;
+    }
+    setState((s) => ({ ...s, loading: true }));
     try {
-      const res = await api.getDuplicateQueue();
+      const res = await api.getDuplicateQueue(datasetName);
       setState({ loading: false, pending: res.pending, decided: res.decided, error: null });
     } catch (e) {
       setState((s) => ({ ...s, loading: false, error: e.message }));
@@ -240,16 +263,22 @@ export default function DuplicateQueue() {
   }
 
   useEffect(() => {
-    loadQueue();
     loadDatasets();
   }, []);
+
+  function handleSelectedDatasetChange(name) {
+    setSelectedDataset(name);
+    setDetectResult(null);
+    setBulkResult(null);
+    loadQueue(name);
+  }
 
   async function handleDecide(clusterId, status) {
     const name = reviewerName.trim() || "dashboard reviewer";
     setDecidingId(clusterId);
     try {
       await api.decideCluster(clusterId, status, name);
-      await loadQueue();
+      await loadQueue(selectedDataset);
     } catch (e) {
       setState((s) => ({ ...s, error: e.message }));
     } finally {
@@ -264,7 +293,7 @@ export default function DuplicateQueue() {
     try {
       const result = await api.bulkConfirm(tier, name, datasetName);
       setBulkResult(result);
-      await loadQueue();
+      await loadQueue(selectedDataset);
     } catch (e) {
       setState((s) => ({ ...s, error: e.message }));
     } finally {
@@ -274,12 +303,13 @@ export default function DuplicateQueue() {
 
   async function handleDetected(result) {
     setDetectResult(result);
-    await loadQueue();
+    await loadQueue(selectedDataset);
   }
 
-  // Pending clusters carry their own dataset_name now -- group them so
-  // bulk-confirm can be offered per dataset instead of one ambiguous
-  // "confirm everything across every dataset" action.
+  // Pending clusters carry their own dataset_name -- kept as a grouped
+  // map even though there's only ever one group now (Pending is always
+  // scoped to selectedDataset), so DatasetBulkBar's per-dataset bulk-
+  // confirm bar didn't need restructuring.
   const pendingByDataset = state.pending.reduce((acc, c) => {
     const key = c.dataset_name || "unknown dataset";
     (acc[key] ||= []).push(c);
@@ -310,6 +340,8 @@ export default function DuplicateQueue() {
         datasets={datasets}
         onDatasetsChanged={loadDatasets}
         onDetected={handleDetected}
+        selectedDataset={selectedDataset}
+        onSelectedDatasetChange={handleSelectedDatasetChange}
         busy={busy}
         setBusy={setBusy}
         setError={(msg) => setState((s) => ({ ...s, error: msg }))}
@@ -340,36 +372,48 @@ export default function DuplicateQueue() {
       )}
 
       <div className="mb-3 text-[12.5px] font-semibold text-ink-soft">
-        Pending ({state.pending.length})
+        Pending {selectedDataset ? `(${state.pending.length})` : ""}
       </div>
-      {state.loading && <div className="text-[12.5px] text-ink-faint">Loading…</div>}
-      {!state.loading && state.pending.length === 0 && (
+      {!selectedDataset && (
         <div className="text-[12.5px] text-ink-faint bg-[#FAFAFB] border border-line rounded-xl px-4 py-3 mb-6">
-          Nothing pending — upload a dataset above and check it for duplicates.
+          Select a dataset above ("2. Check for duplicates") to view its pending duplicate clusters.
         </div>
       )}
-      <div className="flex flex-col gap-6 mb-8">
-        {Object.entries(pendingByDataset).map(([datasetName, clusters]) => (
-          <div key={datasetName}>
-            <DatasetBulkBar
-              datasetName={datasetName}
-              pendingInDataset={clusters}
-              onBulkConfirm={handleBulkConfirm}
-              busyKey={bulkBusyKey}
-            />
-            <div className="flex flex-col gap-3">
-              {clusters.map((c) => (
-                <PendingCard key={c.id} cluster={c} onDecide={handleDecide} deciding={decidingId === c.id} />
-              ))}
+      {selectedDataset && state.loading && <div className="text-[12.5px] text-ink-faint">Loading…</div>}
+      {selectedDataset && !state.loading && state.pending.length === 0 && (
+        <div className="text-[12.5px] text-ink-faint bg-[#FAFAFB] border border-line rounded-xl px-4 py-3 mb-6">
+          Nothing pending for this dataset — check it for duplicates above if you haven't yet.
+        </div>
+      )}
+      {selectedDataset && (
+        <div className="flex flex-col gap-6 mb-8">
+          {Object.entries(pendingByDataset).map(([datasetName, clusters]) => (
+            <div key={datasetName}>
+              <DatasetBulkBar
+                datasetName={datasetName}
+                pendingInDataset={clusters}
+                onBulkConfirm={handleBulkConfirm}
+                busyKey={bulkBusyKey}
+              />
+              <div className="flex flex-col gap-3">
+                {clusters.map((c) => (
+                  <PendingCard key={c.id} cluster={c} onDecide={handleDecide} deciding={decidingId === c.id} />
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
 
       <div className="mb-3 text-[12.5px] font-semibold text-ink-soft">
-        Decided ({state.decided.length}) — permanent audit record
+        Decided {selectedDataset ? `(${state.decided.length})` : ""} — permanent audit record
       </div>
-      {state.decided.length > 0 && (
+      {!selectedDataset && (
+        <div className="text-[12.5px] text-ink-faint bg-[#FAFAFB] border border-line rounded-xl px-4 py-3">
+          Select a dataset above to view its decided history.
+        </div>
+      )}
+      {selectedDataset && state.decided.length > 0 && (
         <div className="bg-white border border-line rounded-card overflow-hidden">
           <table className="w-full">
             <thead>
@@ -387,6 +431,11 @@ export default function DuplicateQueue() {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+      {selectedDataset && state.decided.length === 0 && (
+        <div className="text-[12.5px] text-ink-faint bg-[#FAFAFB] border border-line rounded-xl px-4 py-3">
+          Nothing decided yet for this dataset.
         </div>
       )}
     </div>
