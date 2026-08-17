@@ -27,6 +27,9 @@
 # live data from the spike infrastructure via app/lakehouse_client.py's
 # three new /api/lakehouse/* and /api/pipeline/* endpoints below. The
 # chat interface itself is untouched -- still "/app", same as before.
+#
+# Item 3: Golden Record Registry + Duplicate Queue (MDM). New
+# /api/mdm/* endpoints below, dashboard pages under "/dashboard/mdm".
 
 import asyncio
 import json as json_lib
@@ -745,9 +748,10 @@ async def chat_stream(
 
 # ---------------------------------------------------------------------
 # Duplicate review -- the human-in-the-loop actions the Tabulator review
-# table in chat calls. Recording a decision here does not merge or
-# modify any record -- v1 tracks the decision only (see dedup_adapter.py
-# module docstring for why merge execution is deliberately deferred).
+# table in chat calls. As of Item 3, confirming a cluster here now
+# EXECUTES a real merge immediately (see dedup_adapter.py's
+# decide_cluster() / _execute_merge()) -- no longer just a tracked
+# decision with merge deferred to later.
 # ---------------------------------------------------------------------
 
 class DuplicateDecisionRequest(BaseModel):
@@ -775,6 +779,64 @@ def duplicate_audit_log(dataset_name: str | None = None, user: dict = Depends(au
     who decided what, and when -- independent of any one chat session.
     This is what a bank reviewer pulls up later, not the chat transcript."""
     return {"entries": dedup_adapter.get_audit_log(dataset_name)}
+
+
+# ---------------------------------------------------------------------
+# MDM dashboard API (Item 3) -- Golden Record Registry + Duplicate
+# Queue pages. Deliberately unauthenticated, same call as the Lakehouse
+# endpoints (Item 2): read-only data with no secrets, and the write
+# action (deciding a cluster) takes a plain "decided_by" name string
+# instead of requiring the chat app's own login -- this dashboard
+# doesn't have its own auth system yet. The underlying logic is
+# identical to the authenticated chat-side endpoints above; these just
+# expose it for the dashboard's own routed MDM pages instead of a
+# chat-session card.
+# ---------------------------------------------------------------------
+
+class MdmDecisionRequest(BaseModel):
+    cluster_id: int
+    status: str  # "confirmed_duplicate" | "not_duplicate"
+    decided_by: str
+
+
+@app.get("/api/mdm/duplicate-queue")
+def mdm_duplicate_queue(dataset_name: str | None = None):
+    """Pending clusters awaiting a decision, plus the full decided
+    history -- both halves of Section 04's "durable, sortable,
+    searchable queue; Confirm/Reject retained here permanently" in one
+    call. If no dataset_name is given, pending clusters are gathered
+    across every dataset that has any (there's no dataset-agnostic
+    "all pending" query in the adapter, since pending clusters are
+    always scoped to one dataset at a time by detection)."""
+    decided = dedup_adapter.get_audit_log(dataset_name)
+    if dataset_name:
+        pending = dedup_adapter.get_pending_clusters(dataset_name)
+    else:
+        pending = []
+        for d in dataset_adapter.list_datasets({})["datasets"]:
+            pending.extend(dedup_adapter.get_pending_clusters(d["dataset_name"]))
+    return {"pending": pending, "decided": decided}
+
+
+@app.post("/api/mdm/duplicate-queue/decide")
+def mdm_decide(req: MdmDecisionRequest):
+    try:
+        return dedup_adapter.decide_cluster(req.cluster_id, req.status, decided_by=req.decided_by)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/mdm/golden-records")
+def mdm_golden_records(dataset_name: str | None = None):
+    return {"golden_records": dedup_adapter.get_golden_records(dataset_name)}
+
+
+@app.get("/api/mdm/golden-records/{golden_record_id}")
+def mdm_golden_record_detail(golden_record_id: int):
+    try:
+        return dedup_adapter.get_golden_record_detail(golden_record_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @app.post("/intent")
