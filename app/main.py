@@ -30,6 +30,14 @@
 #
 # Item 3: Golden Record Registry + Duplicate Queue (MDM). New
 # /api/mdm/* endpoints below, dashboard pages under "/dashboard/mdm".
+# IMPORTANT: the dashboard and chat are two INDEPENDENT, fully-working
+# entry points onto the same governed pipeline (per the landing page's
+# own "Open Dashboard" / "Talk to DataOS" framing) -- the MDM endpoints
+# below therefore include the dashboard's OWN upload-dataset and
+# detect-duplicates actions, not just read/decide on data that could
+# only ever get there via chat. Same underlying dataset_adapter/
+# dedup_adapter functions either path calls -- one shared data layer,
+# two genuinely separate front doors.
 
 import asyncio
 import json as json_lib
@@ -785,18 +793,97 @@ def duplicate_audit_log(dataset_name: str | None = None, user: dict = Depends(au
 # MDM dashboard API (Item 3) -- Golden Record Registry + Duplicate
 # Queue pages. Deliberately unauthenticated, same call as the Lakehouse
 # endpoints (Item 2): read-only data with no secrets, and the write
-# action (deciding a cluster) takes a plain "decided_by" name string
-# instead of requiring the chat app's own login -- this dashboard
-# doesn't have its own auth system yet. The underlying logic is
-# identical to the authenticated chat-side endpoints above; these just
-# expose it for the dashboard's own routed MDM pages instead of a
-# chat-session card.
+# actions (uploading a dataset, deciding a cluster) take plain
+# identifying strings rather than requiring the chat app's own login --
+# this dashboard doesn't have its own auth system yet.
+#
+# Includes the dashboard's OWN upload + detect actions (mdm_upload_
+# dataset, mdm_detect_duplicates) -- these reuse the exact same
+# dataset_adapter/dedup_adapter functions /chat/upload and the chat
+# "find duplicates" chip already call, so a dataset uploaded here is
+# immediately usable from chat too, and vice versa. One shared data
+# layer underneath, two genuinely independent front doors -- neither
+# is required to bootstrap the other.
 # ---------------------------------------------------------------------
 
 class MdmDecisionRequest(BaseModel):
     cluster_id: int
     status: str  # "confirmed_duplicate" | "not_duplicate"
     decided_by: str
+
+
+class MdmDetectRequest(BaseModel):
+    dataset_name: str
+
+
+@app.get("/api/mdm/datasets")
+def mdm_datasets():
+    """Every dataset currently in the system, regardless of which front
+    door it arrived through (chat upload or dashboard upload) -- powers
+    the dashboard's own dataset picker so a user never has to leave it
+    to see what's available to run detection against."""
+    return dataset_adapter.list_datasets({})
+
+
+@app.post("/api/mdm/upload-dataset")
+async def mdm_upload_dataset(file: UploadFile = File(...), dataset_name: str = Form(...)):
+    """The dashboard's own ingest entry point -- same Bronze -> Silver ->
+    (Gold or held) pipeline /chat/upload calls, just triggered from the
+    dashboard directly instead of a chat message. uploaded_by is 0
+    (no dashboard login yet) rather than a real user id -- fine, SQLite
+    doesn't enforce the FK to users here."""
+    raw_bytes = await file.read()
+    try:
+        csv_content, sheet_used = dataset_adapter.extract_csv_content(file.filename, raw_bytes)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        bronze = dataset_adapter.land_bronze(dataset_name, csv_content)
+        silver = dataset_adapter.clean_to_silver(bronze["safe_name"], bronze["df"])
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    result = {
+        "dataset_name": bronze["safe_name"],
+        "rows": len(silver["silver_df"]),
+        "columns": list(silver["silver_df"].columns),
+        "sheet_used": sheet_used,
+    }
+
+    if silver["held"]:
+        result["stage"] = "silver_held"
+        result["hold_reason"] = silver["hold_reason"]
+        dataset_adapter._upsert_dataset_record(
+            bronze["safe_name"], bronze["display_name"], 0, "silver_held",
+            result["rows"], result["columns"], [], silver["duplicate_rows_removed"],
+            silver["null_counts"], bronze["bronze_path"], silver["silver_path"], None,
+        )
+    else:
+        gold = dataset_adapter.promote_to_gold(bronze["safe_name"], silver["silver_df"])
+        result["stage"] = "gold"
+        result["dropped_columns"] = gold["dropped_columns"]
+        dataset_adapter._upsert_dataset_record(
+            bronze["safe_name"], bronze["display_name"], 0, "gold",
+            result["rows"], result["columns"], gold["dropped_columns"],
+            silver["duplicate_rows_removed"], silver["null_counts"],
+            bronze["bronze_path"], silver["silver_path"], gold["gold_path"],
+        )
+
+    return result
+
+
+@app.post("/api/mdm/detect-duplicates")
+def mdm_detect_duplicates(req: MdmDetectRequest):
+    """The dashboard's own trigger for duplicate detection -- same
+    find_duplicate_candidates() the chat "find duplicates" chip calls,
+    reading the Silver data for a dataset already uploaded (via either
+    front door)."""
+    try:
+        silver_csv = dataset_adapter.read_silver_csv(req.dataset_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return dedup_adapter.find_duplicate_candidates({"csv_content": silver_csv, "dataset_name": req.dataset_name})
 
 
 @app.get("/api/mdm/duplicate-queue")
