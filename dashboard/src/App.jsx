@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { Routes, Route, Navigate, Link, useLocation } from "react-router-dom";
 import Sidebar from "./components/Sidebar";
 import LakehouseZones from "./pages/LakehouseZones";
 import PipelineMonitoring from "./pages/PipelineMonitoring";
@@ -15,15 +15,15 @@ function LakehouseTabs() {
     <div className="h-[52px] border-b border-line flex items-center justify-between px-6 bg-white">
       <div className="flex gap-1">
         {TABS.map((t) => (
-          <a
+          <Link
             key={t.key}
-            href={`/dashboard${t.path}`}
+            to={t.path}
             className={`text-[12.5px] font-semibold px-3 py-1.5 rounded-[7px] ${
               location.pathname === t.path ? "bg-[#F2F2F4] text-ink" : "text-ink-faint hover:text-ink-soft"
             }`}
           >
             {t.label}
-          </a>
+          </Link>
         ))}
       </div>
       <div className="text-[11.5px] text-ink-faint font-mono">DataOS 3.0</div>
