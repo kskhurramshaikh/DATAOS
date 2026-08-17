@@ -37,7 +37,10 @@
 # detect-duplicates actions, not just read/decide on data that could
 # only ever get there via chat. Same underlying dataset_adapter/
 # dedup_adapter functions either path calls -- one shared data layer,
-# two genuinely separate front doors.
+# two genuinely separate front doors. Bulk-confirm ("clear all high-
+# confidence" / "clear all pending") is likewise carried over from
+# chat's own smart-recommendation buttons, not left dashboard-only-
+# missing.
 
 import asyncio
 import json as json_lib
@@ -804,6 +807,12 @@ def duplicate_audit_log(dataset_name: str | None = None, user: dict = Depends(au
 # immediately usable from chat too, and vice versa. One shared data
 # layer underneath, two genuinely independent front doors -- neither
 # is required to bootstrap the other.
+#
+# bulk_confirm below carries over chat's own two smart-recommendation
+# actions ("Confirm all high-confidence matches" / "Confirm all
+# pending") -- same dedup_adapter.confirm_high_confidence() /
+# confirm_all_pending() functions, exposed here so the dashboard isn't
+# missing a capability chat already has.
 # ---------------------------------------------------------------------
 
 class MdmDecisionRequest(BaseModel):
@@ -814,6 +823,12 @@ class MdmDecisionRequest(BaseModel):
 
 class MdmDetectRequest(BaseModel):
     dataset_name: str
+
+
+class MdmBulkConfirmRequest(BaseModel):
+    dataset_name: str | None = None
+    tier: str = "all"  # "high_confidence" | "all"
+    decided_by: str
 
 
 @app.get("/api/mdm/datasets")
@@ -909,6 +924,22 @@ def mdm_duplicate_queue(dataset_name: str | None = None):
 def mdm_decide(req: MdmDecisionRequest):
     try:
         return dedup_adapter.decide_cluster(req.cluster_id, req.status, decided_by=req.decided_by)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/mdm/duplicate-queue/bulk-confirm")
+def mdm_bulk_confirm(req: MdmBulkConfirmRequest):
+    """Carries over chat's two smart-recommendation bulk actions:
+    tier="high_confidence" confirms every pending high-confidence
+    cluster; tier="all" confirms every pending cluster regardless of
+    tier. Each newly-confirmed cluster is merged immediately, same as
+    a single decide -- see dedup_adapter._bulk_confirm()."""
+    try:
+        payload = {"dataset_name": req.dataset_name, "decided_by": req.decided_by}
+        if req.tier == "high_confidence":
+            return dedup_adapter.confirm_high_confidence(payload)
+        return dedup_adapter.confirm_all_pending(payload)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
