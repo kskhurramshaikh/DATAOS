@@ -70,7 +70,28 @@
 # dedup_adapter.py, every relevant route in main.py) -- so a genuine
 # SQL problem is now visible in the API response body immediately,
 # instead of an opaque 500 with no way to tell what happened short of
-# server log access this environment doesn't have.
+# server log access this environment doesn't have. (That fix also
+# needed a matching one in main.py: /api/mdm/upload-dataset's DB writes
+# weren't wrapped in try/except ValueError at all, so the newly-visible
+# error still had nowhere to land until that was fixed too.)
+#
+# FIFTH BUG, found via the error text the FOURTH FIX finally surfaced:
+# "insert or update on table datasets violates foreign key constraint
+# datasets_uploaded_by_fkey -- Key (uploaded_by)=(0) is not present in
+# table users." /api/mdm/upload-dataset deliberately passes uploaded_by
+# = 0 as a placeholder (the dashboard has no login of its own yet --
+# see that endpoint's own docstring: "fine, SQLite doesn't enforce the
+# FK to users here"). That sentence was true and load-bearing under
+# SQLite, which never enforces FKs unless PRAGMA foreign_keys=ON is set
+# (never set anywhere in this codebase) -- so the constraint was always
+# decorative there. Postgres enforces FKs by default, so the exact same
+# intentional placeholder that was harmless under SQLite became a real,
+# blocking constraint violation the first time it was actually
+# exercised against Postgres. Fix: dropped FOREIGN KEY (uploaded_by)
+# REFERENCES users (id) from datasets in BOTH schemas (Postgres, and
+# SQLite too for symmetry, since it was never meaningfully enforced
+# there either) -- this restores the documented intended behavior
+# rather than working around it.
 #
 # The Postgres path is a thin sqlite3-compatible WRAPPER (_Connection/
 # _Cursor below), not a rewrite of the four files that call get_conn()
@@ -232,6 +253,11 @@ def _pg_init_db():
             )
             """
         )
+        # NOTE: no FOREIGN KEY on uploaded_by -- see FIFTH BUG in the
+        # module docstring. The dashboard's own upload path
+        # (/api/mdm/upload-dataset) intentionally passes uploaded_by=0
+        # as a placeholder (no dashboard login exists yet); enforcing
+        # this FK broke that real, documented, intentional behavior.
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS datasets (
@@ -250,8 +276,7 @@ def _pg_init_db():
                 gold_path TEXT,
                 duplicate_check_last_run_at TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (uploaded_by) REFERENCES users (id)
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
@@ -312,7 +337,12 @@ def _pg_get_conn():
 
 
 # ---------------------------------------------------------------------
-# SQLite path -- unchanged from before (CI/local dev fallback).
+# SQLite path -- unchanged from before (CI/local dev fallback), except
+# datasets.uploaded_by's FOREIGN KEY was also dropped for symmetry with
+# the Postgres schema above -- see FIFTH BUG. It was never meaningfully
+# enforced here anyway (SQLite ignores FKs unless PRAGMA foreign_keys=ON
+# is set, which nothing in this codebase does), so this changes nothing
+# about actual CI/local behavior.
 # ---------------------------------------------------------------------
 
 def _sqlite_init_db():
@@ -369,8 +399,7 @@ def _sqlite_init_db():
                 gold_path TEXT,
                 duplicate_check_last_run_at TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (uploaded_by) REFERENCES users (id)
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
