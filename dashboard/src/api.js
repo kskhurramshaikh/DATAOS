@@ -17,12 +17,25 @@ async function postJSON(path, body) {
   return data;
 }
 
+async function postForm(path, file, fields) {
+  const form = new FormData();
+  form.append("file", file);
+  Object.entries(fields).forEach(([k, v]) => form.append(k, v));
+  const res = await fetch(`${BASE}${path}`, { method: "POST", body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `${path} -> ${res.status}`);
+  return data;
+}
+
 export const api = {
   getZones: () => getJSON("/lakehouse/zones"),
   getPipelineRuns: (limit = 10) => getJSON(`/pipeline/runs?limit=${limit}`),
   getTaskLog: (runId, taskId, tryNumber = 1) =>
     getJSON(`/pipeline/logs/${encodeURIComponent(runId)}/${encodeURIComponent(taskId)}?try_number=${tryNumber}`),
 
+  getDatasets: () => getJSON("/mdm/datasets"),
+  uploadDataset: (file, datasetName) => postForm("/mdm/upload-dataset", file, { dataset_name: datasetName }),
+  detectDuplicates: (datasetName) => postJSON("/mdm/detect-duplicates", { dataset_name: datasetName }),
   getDuplicateQueue: (datasetName) =>
     getJSON(`/mdm/duplicate-queue${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
   decideCluster: (clusterId, status, decidedBy) =>
