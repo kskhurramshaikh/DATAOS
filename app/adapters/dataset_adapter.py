@@ -13,6 +13,19 @@
 # real S3-compatible bucket is a storage-layer change only; nothing
 # above this file needs to know about it when that happens.
 #
+# CONFIRMED LIVE (2026-08-17): unlike the chat auth database (now on
+# Postgres, see app/db.py), this file's local-disk tradeoff is STILL
+# ACTIVE -- a redeploy after uploading a dataset wipes its Bronze/
+# Silver/Gold files while the dataset's Postgres row (now durable)
+# survives, leaving a real record pointing at a missing file. Confirmed
+# directly: read_silver_csv() below hit a raw FileNotFoundError against
+# the live app after a canary redeploy. Now caught there and surfaced
+# as a clear ValueError instead of a raw traceback -- but the
+# underlying limitation (files not yet moved to SeaweedFS, which this
+# same app is already wired to for the Lakehouse dashboard) is still
+# open, pending a decision on whether it's worth the larger file-I/O
+# rewrite this file's own docstring already anticipated above.
+#
 # Bronze: the raw upload, untouched.
 # Silver: exact duplicate rows removed, nulls reported (not invented --
 #         no values are guessed or filled in).
@@ -413,15 +426,33 @@ def read_silver_csv(safe_name: str) -> str:
     """Reads back the already-landed Silver CSV for a dataset that was
     uploaded earlier. Lets a follow-up action (like running duplicate
     detection after the fact) reuse already-cleaned data on disk instead
-    of needing the original file re-uploaded."""
+    of needing the original file re-uploaded.
+
+    KNOWN LIMITATION (confirmed live, 2026-08-17): the dataset's
+    Postgres row is durable (see app/db.py), but the actual Bronze/
+    Silver/Gold files are still on local disk -- ephemeral, wiped on
+    redeploy, per this module's own header docstring. So a redeploy
+    after an upload can leave a real, correctly-persisted dataset
+    record pointing at a file that no longer exists. Caught here and
+    turned into a clear ValueError (surfaced as a 400, same pattern as
+    every other error in this file) instead of a raw FileNotFoundError
+    leaking to the UI."""
     with get_conn() as conn:
         row = conn.execute(
             "SELECT silver_path FROM datasets WHERE safe_name = ?", (safe_name,)
         ).fetchone()
     if row is None or not row["silver_path"]:
         raise ValueError(f"No landed Silver data found for dataset '{safe_name}'.")
-    with open(row["silver_path"], "r", encoding="utf-8") as f:
-        return f.read()
+    try:
+        with open(row["silver_path"], "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        raise ValueError(
+            f"'{safe_name}' is recorded as uploaded, but its underlying file is missing "
+            f"(dataset files still live on ephemeral local disk, separate from the "
+            f"database record which does persist -- likely wiped by a redeploy since "
+            f"upload). Re-upload '{safe_name}' to continue."
+        )
 
 
 def mark_duplicate_check_run(safe_name: str) -> None:
