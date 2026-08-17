@@ -87,11 +87,13 @@
 # decorative there. Postgres enforces FKs by default, so the exact same
 # intentional placeholder that was harmless under SQLite became a real,
 # blocking constraint violation the first time it was actually
-# exercised against Postgres. Fix: dropped FOREIGN KEY (uploaded_by)
-# REFERENCES users (id) from datasets in BOTH schemas (Postgres, and
-# SQLite too for symmetry, since it was never meaningfully enforced
-# there either) -- this restores the documented intended behavior
-# rather than working around it.
+# exercised against Postgres. Fixed the CREATE TABLE definition (both
+# schemas) AND explicitly DROPped the constraint from the already-
+# existing live table below -- CREATE TABLE IF NOT EXISTS is a no-op
+# against a table that already exists, so the schema-definition fix
+# alone would NOT have taken effect on the table the previous deploy
+# already created; confirmed and fixed together in the same pass rather
+# than discovering the gap on a second failed retest.
 #
 # The Postgres path is a thin sqlite3-compatible WRAPPER (_Connection/
 # _Cursor below), not a rewrite of the four files that call get_conn()
@@ -280,6 +282,14 @@ def _pg_init_db():
             )
             """
         )
+        # CREATE TABLE IF NOT EXISTS above is a no-op if "datasets"
+        # already existed (it did, from a prior deploy, complete with
+        # the old FK) -- so the constraint has to be explicitly dropped
+        # from the live table too, not just omitted from the definition
+        # for future fresh databases. IF EXISTS makes this safe to run
+        # on every boot regardless of whether the constraint is still
+        # there.
+        conn.execute("ALTER TABLE datasets DROP CONSTRAINT IF EXISTS datasets_uploaded_by_fkey")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS duplicate_clusters (
@@ -342,7 +352,8 @@ def _pg_get_conn():
 # the Postgres schema above -- see FIFTH BUG. It was never meaningfully
 # enforced here anyway (SQLite ignores FKs unless PRAGMA foreign_keys=ON
 # is set, which nothing in this codebase does), so this changes nothing
-# about actual CI/local behavior.
+# about actual CI/local behavior -- no ALTER TABLE DROP CONSTRAINT
+# needed here, since a fresh SQLite file is created per test/CI run.
 # ---------------------------------------------------------------------
 
 def _sqlite_init_db():
