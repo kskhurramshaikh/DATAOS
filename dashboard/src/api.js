@@ -40,6 +40,8 @@ export const api = {
     getJSON(`/mdm/duplicate-queue${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
   decideCluster: (clusterId, status, decidedBy) =>
     postJSON("/mdm/duplicate-queue/decide", { cluster_id: clusterId, status, decided_by: decidedBy }),
+  bulkConfirm: (tier, decidedBy, datasetName) =>
+    postJSON("/mdm/duplicate-queue/bulk-confirm", { tier, decided_by: decidedBy, dataset_name: datasetName ?? null }),
   getGoldenRecords: (datasetName) =>
     getJSON(`/mdm/golden-records${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
   getGoldenRecordDetail: (id) => getJSON(`/mdm/golden-records/${id}`),
