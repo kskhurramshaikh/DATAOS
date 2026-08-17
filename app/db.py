@@ -90,6 +90,27 @@ def init_db():
             )
             """
         )
+        # Golden Record Registry (Item 3, MDM): one row per EXECUTED merge
+        # of a confirmed duplicate cluster -- not an estimate. See
+        # app/adapters/dedup_adapter.py's _execute_merge() for the
+        # survivorship strategy (most-complete-record-wins, gaps filled
+        # from other members, every field's source row tracked).
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS golden_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset_safe_name TEXT NOT NULL,
+                cluster_id INTEGER NOT NULL,
+                merged_data_json TEXT NOT NULL,
+                field_sources_json TEXT NOT NULL,
+                source_row_ids_json TEXT NOT NULL,
+                base_row_id TEXT NOT NULL,
+                merged_by TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (cluster_id) REFERENCES duplicate_clusters (id)
+            )
+            """
+        )
         conn.commit()
 
         # Ephemeral disk on Render's free tier means this table is normally
