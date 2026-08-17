@@ -173,13 +173,53 @@ function GetStartedPanel({ datasets, onDatasetsChanged, onDetected, busy, setBus
   );
 }
 
+// One row per dataset that currently has pending clusters -- carries
+// the two bulk-resolve options chat's own smart recommendations already
+// offer ("Confirm all high-confidence matches" / "Confirm all pending"),
+// scoped explicitly to this dataset via the dataset_name each pending
+// cluster is now tagged with (see /api/mdm/duplicate-queue). Passing
+// dataset_name explicitly here -- rather than leaving it null and
+// relying on the backend's single-dataset auto-detect -- means bulk
+// actions work correctly even with multiple datasets' clusters mixed
+// in the same pending list, instead of erroring out asking "which one."
+function DatasetBulkBar({ datasetName, pendingInDataset, onBulkConfirm, busyKey }) {
+  const highConfidenceCount = pendingInDataset.filter((c) => c.confidence_tier === "high_confidence").length;
+  const busy = busyKey === datasetName;
+
+  return (
+    <div className="flex items-center justify-between flex-wrap gap-2 bg-[#FAFAFB] border border-line rounded-xl px-4 py-2.5 mb-3">
+      <div className="text-[12px] font-semibold text-ink-soft">
+        {datasetName} <span className="text-ink-faint font-normal">— {pendingInDataset.length} pending</span>
+      </div>
+      <div className="flex gap-2">
+        <button
+          disabled={busy || highConfidenceCount === 0}
+          onClick={() => onBulkConfirm(datasetName, "high_confidence")}
+          className="text-[11.5px] font-semibold px-2.5 py-1.5 rounded-lg bg-success-soft text-success disabled:opacity-40"
+        >
+          Confirm all high-confidence ({highConfidenceCount})
+        </button>
+        <button
+          disabled={busy}
+          onClick={() => onBulkConfirm(datasetName, "all")}
+          className="text-[11.5px] font-semibold px-2.5 py-1.5 rounded-lg border border-line text-ink-soft disabled:opacity-40"
+        >
+          Confirm all pending ({pendingInDataset.length})
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function DuplicateQueue() {
   const [state, setState] = useState({ loading: true, pending: [], decided: [], error: null });
   const [datasets, setDatasets] = useState([]);
   const [decidingId, setDecidingId] = useState(null);
   const [reviewerName, setReviewerName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [bulkBusyKey, setBulkBusyKey] = useState(null);
   const [detectResult, setDetectResult] = useState(null);
+  const [bulkResult, setBulkResult] = useState(null);
 
   async function loadQueue() {
     try {
@@ -217,10 +257,34 @@ export default function DuplicateQueue() {
     }
   }
 
+  async function handleBulkConfirm(datasetName, tier) {
+    const name = reviewerName.trim() || "dashboard reviewer";
+    setBulkBusyKey(datasetName);
+    setBulkResult(null);
+    try {
+      const result = await api.bulkConfirm(tier, name, datasetName);
+      setBulkResult(result);
+      await loadQueue();
+    } catch (e) {
+      setState((s) => ({ ...s, error: e.message }));
+    } finally {
+      setBulkBusyKey(null);
+    }
+  }
+
   async function handleDetected(result) {
     setDetectResult(result);
     await loadQueue();
   }
+
+  // Pending clusters carry their own dataset_name now -- group them so
+  // bulk-confirm can be offered per dataset instead of one ambiguous
+  // "confirm everything across every dataset" action.
+  const pendingByDataset = state.pending.reduce((acc, c) => {
+    const key = c.dataset_name || "unknown dataset";
+    (acc[key] ||= []).push(c);
+    return acc;
+  }, {});
 
   return (
     <div className="p-7 md:px-8">
@@ -259,6 +323,16 @@ export default function DuplicateQueue() {
         </div>
       )}
 
+      {bulkResult && (
+        <div className="mb-4 text-[12.5px] text-ink-soft bg-success-soft border border-success/20 rounded-xl px-4 py-3">
+          Confirmed {bulkResult.clusters_confirmed} cluster(s) in "{bulkResult.dataset_name}" ({bulkResult.tier_confirmed === "high_confidence" ? "high-confidence only" : "all tiers"}) —
+          {" "}{bulkResult.golden_records_created} golden record(s) created, {bulkResult.clusters_remaining_pending} still pending.
+          {bulkResult.merge_errors?.length > 0 && (
+            <span className="text-danger"> {bulkResult.merge_errors.length} cluster(s) failed to merge — see audit log.</span>
+          )}
+        </div>
+      )}
+
       {state.error && (
         <div className="mb-4 text-[12.5px] text-danger bg-danger-soft border border-danger/20 rounded-xl px-4 py-3">
           {state.error}
@@ -274,9 +348,21 @@ export default function DuplicateQueue() {
           Nothing pending — upload a dataset above and check it for duplicates.
         </div>
       )}
-      <div className="flex flex-col gap-3 mb-8">
-        {state.pending.map((c) => (
-          <PendingCard key={c.id} cluster={c} onDecide={handleDecide} deciding={decidingId === c.id} />
+      <div className="flex flex-col gap-6 mb-8">
+        {Object.entries(pendingByDataset).map(([datasetName, clusters]) => (
+          <div key={datasetName}>
+            <DatasetBulkBar
+              datasetName={datasetName}
+              pendingInDataset={clusters}
+              onBulkConfirm={handleBulkConfirm}
+              busyKey={bulkBusyKey}
+            />
+            <div className="flex flex-col gap-3">
+              {clusters.map((c) => (
+                <PendingCard key={c.id} cluster={c} onDecide={handleDecide} deciding={decidingId === c.id} />
+              ))}
+            </div>
+          </div>
         ))}
       </div>
 
