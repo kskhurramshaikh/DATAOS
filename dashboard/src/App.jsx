@@ -36,7 +36,7 @@ function TopTabs({ group }) {
           </Link>
         ))}
       </div>
-      <div className="text-[11.5px] text-ink-faint font-mono">DataOS 3.0</div>
+      <div className="text-[11.5px] text-ink-faint font-mono">DataOS Banking Demo</div>
     </div>
   );
 }
