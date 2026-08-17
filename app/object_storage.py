@@ -290,4 +290,203 @@ def debug_write_test() -> dict:
     except (ClientError, BotoCoreError) as e:
         result["put_object_error"] = _full_error(e)
 
+    # 2026-08-17: also run the write LADDER (see below) from the same
+    # endpoint, so no main.py change is needed to get the evidence.
+    try:
+        result["ladder"] = debug_write_ladder()
+    except Exception as e:  # never let the ladder break the base diagnostic
+        result["ladder_error"] = f"{type(e).__name__}: {e}"
+
+    return result
+
+
+# ---------------------------------------------------------------------
+# WRITE LADDER (2026-08-17): instead of guessing what Render's edge is
+# keying on for the cross-region PUT 403, send the SAME 2-byte PUT from
+# this (Oregon) process in several deliberately different shapes, one
+# variable at a time, and report exactly how the edge answered each --
+# status, server, cf-ray, cf-mitigated, and whether the body is a
+# Cloudflare challenge page ("cdn-cgi/challenge-platform") vs a WAF/IP
+# block ("Error 1020" / "Access denied"). Whichever variant is the FIRST
+# to pass tells us what to change in put_text(). Exposed at
+# /api/debug/storage-write (under the "ladder" key). Nothing here is used by the real
+# write path yet.
+# ---------------------------------------------------------------------
+
+_CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+_BROWSER_HEADERS = {
+    "User-Agent": _CHROME_UA,
+    "Accept": "*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Origin": "https://dataos-2-0-pipeline.onrender.com",
+    "Referer": "https://dataos-2-0-pipeline.onrender.com/",
+}
+
+
+def _classify_body(text: str) -> str:
+    t = (text or "")[:300000].lower()
+    if "cdn-cgi/challenge-platform" in t or "cf-chl" in t or "just a moment" in t:
+        return "cloudflare_challenge_page"
+    if "error 1020" in t or "error code 1020" in t:
+        return "cloudflare_1020_access_denied"
+    if "access denied" in t or "sorry, you have been blocked" in t:
+        return "cloudflare_block_page"
+    if "<error>" in t and "<code>" in t:
+        return "s3_xml_error"
+    if t.strip() == "":
+        return "empty"
+    return "other"
+
+
+def _describe_http(status: int, headers: dict, body_text: str) -> dict:
+    h = {k.lower(): v for k, v in (headers or {}).items()}
+    return {
+        "status": status,
+        "server": h.get("server"),
+        "cf_ray": h.get("cf-ray"),
+        "cf_mitigated": h.get("cf-mitigated"),
+        "content_type": h.get("content-type"),
+        "body_len": len(body_text or ""),
+        "body_class": _classify_body(body_text),
+        "body_head": (body_text or "")[:160].replace("\n", " "),
+    }
+
+
+def _presigned_put(s3, key: str, content_type: str | None = None) -> str:
+    params = {"Bucket": APP_BUCKET, "Key": key}
+    if content_type:
+        params["ContentType"] = content_type
+    return s3.generate_presigned_url(
+        "put_object", Params=params, ExpiresIn=300, HttpMethod="PUT"
+    )
+
+
+def _sigv4_headers(method: str, url: str, body: bytes, extra: dict) -> dict:
+    """Sign a raw request with the SAME SigV4 boto3 would use, but let
+    us send it with a different HTTP/TLS stack. Returns the full header
+    set to send (Authorization + x-amz-* + whatever was in extra)."""
+    from botocore.auth import SigV4Auth
+    from botocore.awsrequest import AWSRequest
+    from botocore.credentials import Credentials
+    import hashlib
+
+    creds = Credentials(SEAWEEDFS_ACCESS_KEY, SEAWEEDFS_SECRET_KEY)
+    headers = dict(extra)
+    headers["x-amz-content-sha256"] = hashlib.sha256(body).hexdigest()
+    req = AWSRequest(method=method, url=url, data=body, headers=headers)
+    SigV4Auth(creds, "s3", SEAWEEDFS_S3_REGION).add_auth(req)
+    return dict(req.headers)
+
+
+def debug_write_ladder() -> dict:
+    import time
+
+    result: dict = {"bucket": APP_BUCKET, "endpoint": _endpoint(), "configured": is_configured(), "variants": []}
+    if not is_configured():
+        return result
+
+    body = b"ok"
+    base = _endpoint()
+
+    def run(name: str, fn):
+        t0 = time.time()
+        entry = {"variant": name}
+        try:
+            entry.update(fn())
+        except Exception as e:  # each rung isolated
+            entry["exception"] = f"{type(e).__name__}: {str(e)[:300]}"
+        entry["ms"] = int((time.time() - t0) * 1000)
+        entry["passed"] = entry.get("status") in (200, 204)
+        result["variants"].append(entry)
+
+    # 0. control: a boto3 GET (reads are known-good cross-region)
+    def v_read():
+        s3 = _client()
+        r = s3.list_objects_v2(Bucket=APP_BUCKET, MaxKeys=1)
+        return {"status": r["ResponseMetadata"]["HTTPStatusCode"], "note": "boto3 list_objects_v2 control"}
+    run("00_boto3_list_control", v_read)
+
+    # 1. boto3 baseline PUT (exactly what put_text does today)
+    def v_boto3():
+        s3 = _client()
+        try:
+            r = s3.put_object(Bucket=APP_BUCKET, Key="_ladder/01_boto3.txt", Body=body)
+            return {"status": r["ResponseMetadata"]["HTTPStatusCode"]}
+        except ClientError as e:
+            meta = e.response.get("ResponseMetadata", {})
+            return _describe_http(meta.get("HTTPStatusCode"), meta.get("HTTPHeaders", {}), "") | {"raw": str(e)[:200]}
+    run("01_boto3_baseline", v_boto3)
+
+    # 2. boto3 with a Chrome UA + explicit text/plain content type
+    def v_boto3_ua():
+        s3 = boto3.client(
+            "s3", endpoint_url=base,
+            aws_access_key_id=SEAWEEDFS_ACCESS_KEY, aws_secret_access_key=SEAWEEDFS_SECRET_KEY,
+            region_name=SEAWEEDFS_S3_REGION,
+            config=Config(s3={"addressing_style": "path"}, user_agent=_CHROME_UA),
+        )
+        try:
+            r = s3.put_object(Bucket=APP_BUCKET, Key="_ladder/02_boto3_ua.txt", Body=body, ContentType="text/plain")
+            return {"status": r["ResponseMetadata"]["HTTPStatusCode"]}
+        except ClientError as e:
+            meta = e.response.get("ResponseMetadata", {})
+            return _describe_http(meta.get("HTTPStatusCode"), meta.get("HTTPHeaders", {}), "") | {"raw": str(e)[:200]}
+    run("02_boto3_chrome_ua", v_boto3_ua)
+
+    # 3. presigned URL (no Authorization header) + requests, default UA
+    def v_presigned_requests():
+        import requests
+        s3 = _client()
+        url = _presigned_put(s3, "_ladder/03_presigned_requests.txt", "text/plain")
+        r = requests.put(url, data=body, headers={"Content-Type": "text/plain"}, timeout=25)
+        return _describe_http(r.status_code, dict(r.headers), r.text)
+    run("03_presigned_requests_default_ua", v_presigned_requests)
+
+    # 4. presigned URL + requests + browser-like headers
+    def v_presigned_requests_browser():
+        import requests
+        s3 = _client()
+        url = _presigned_put(s3, "_ladder/04_presigned_requests_browser.txt", "text/plain")
+        r = requests.put(url, data=body, headers=_BROWSER_HEADERS | {"Content-Type": "text/plain"}, timeout=25)
+        return _describe_http(r.status_code, dict(r.headers), r.text)
+    run("04_presigned_requests_browser_headers", v_presigned_requests_browser)
+
+    # 5. presigned URL + curl_cffi impersonating Chrome (real browser TLS/HTTP2 fingerprint)
+    def v_presigned_cffi():
+        from curl_cffi import requests as cffi
+        s3 = _client()
+        url = _presigned_put(s3, "_ladder/05_presigned_cffi.txt", "text/plain")
+        r = cffi.put(url, data=body, headers={"Content-Type": "text/plain"}, impersonate="chrome", timeout=25)
+        return _describe_http(r.status_code, dict(r.headers), r.text)
+    run("05_presigned_curl_cffi_chrome", v_presigned_cffi)
+
+    # 6. SigV4 in headers (Authorization: AWS4-HMAC-SHA256) + curl_cffi Chrome
+    def v_sigv4_cffi():
+        from curl_cffi import requests as cffi
+        url = f"{base}/{APP_BUCKET}/_ladder/06_sigv4_cffi.txt"
+        headers = _sigv4_headers("PUT", url, body, {"Content-Type": "text/plain", "User-Agent": _CHROME_UA})
+        r = cffi.put(url, data=body, headers=headers, impersonate="chrome", timeout=25)
+        return _describe_http(r.status_code, dict(r.headers), r.text)
+    run("06_sigv4_header_curl_cffi_chrome", v_sigv4_cffi)
+
+    # 7. SigV4 in headers + plain requests, default UA (isolates header-vs-fingerprint against 03)
+    def v_sigv4_requests():
+        import requests
+        url = f"{base}/{APP_BUCKET}/_ladder/07_sigv4_requests.txt"
+        headers = _sigv4_headers("PUT", url, body, {"Content-Type": "text/plain"})
+        r = requests.put(url, data=body, headers=headers, timeout=25)
+        return _describe_http(r.status_code, dict(r.headers), r.text)
+    run("07_sigv4_header_requests_default_ua", v_sigv4_requests)
+
+    # 8. control: a POST (non-S3 shape) with a body to the same host root
+    def v_post_root():
+        import requests
+        r = requests.post(base + "/", data=body, headers={"Content-Type": "text/plain"}, timeout=25)
+        return _describe_http(r.status_code, dict(r.headers), r.text) | {"note": "any non-Cloudflare answer means the edge let a write-with-body through"}
+    run("08_plain_post_root_control", v_post_root)
+
+    result["first_pass"] = next((v["variant"] for v in result["variants"] if v.get("passed") and not v["variant"].startswith("00")), None)
     return result
