@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import DatasetPicker from "../components/DatasetPicker";
 
 // Turns a raw merged_record key (CUST_ID, FULL_NAME, DOB, ...) into a
 // human label (Cust ID, Full Name, DOB, ...) without a hardcoded field
@@ -156,16 +157,54 @@ function SmartSearchBox({ records, search, onSearch, activeField, onActiveFieldC
 }
 
 export default function GoldenRecordRegistry() {
-  const [state, setState] = useState({ loading: true, records: [], error: null });
+  const [datasets, setDatasets] = useState([]);
+  const [datasetsLoaded, setDatasetsLoaded] = useState(false);
+  const [selected, setSelected] = useState("");
+  const [state, setState] = useState({ loading: false, records: [], error: null });
   const [expandedId, setExpandedId] = useState(null);
   const [search, setSearch] = useState("");
   const [activeField, setActiveField] = useState(null);
 
+  // Same pattern as SamaDashboard: load the dataset list once, always
+  // show the picker, auto-select only when there's exactly one real
+  // choice. No fetch happens until a dataset is actually selected --
+  // this used to load every golden record across every dataset by
+  // default, which is both the wrong default (a bank exec should pick
+  // which dataset they're looking at, not see everything merged
+  // together) and doesn't scale as more datasets accumulate.
   useEffect(() => {
     let cancelled = false;
-    async function load() {
+    async function loadDatasets() {
       try {
-        const res = await api.getGoldenRecords();
+        const res = await api.getDatasets();
+        if (cancelled) return;
+        const list = res.datasets ?? [];
+        setDatasets(list);
+        if (list.length === 1) setSelected(list[0].dataset_name);
+        setDatasetsLoaded(true);
+      } catch (e) {
+        if (!cancelled) {
+          setDatasetsLoaded(true);
+          setState((s) => ({ ...s, error: e.message }));
+        }
+      }
+    }
+    loadDatasets();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selected) {
+      setState({ loading: false, records: [], error: null });
+      return;
+    }
+    let cancelled = false;
+    async function load() {
+      setState((s) => ({ ...s, loading: true }));
+      try {
+        const res = await api.getGoldenRecords(selected);
         if (!cancelled) setState({ loading: false, records: res.golden_records, error: null });
       } catch (e) {
         if (!cancelled) setState({ loading: false, records: [], error: e.message });
@@ -175,7 +214,7 @@ export default function GoldenRecordRegistry() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [selected]);
 
   const filtered = state.records
     .map((r) => ({ record: r, matches: matchedFieldsFor(r, search) }))
@@ -190,25 +229,41 @@ export default function GoldenRecordRegistry() {
             Real executed merges — every field traceable to the source record it came from.
           </p>
         </div>
-        <SmartSearchBox
-          records={state.records}
-          search={search}
-          onSearch={setSearch}
-          activeField={activeField}
-          onActiveFieldChange={setActiveField}
-        />
+        <div className="flex items-start gap-3 flex-wrap">
+          <DatasetPicker datasets={datasets} value={selected} onChange={setSelected} />
+          {selected && (
+            <SmartSearchBox
+              records={state.records}
+              search={search}
+              onSearch={setSearch}
+              activeField={activeField}
+              onActiveFieldChange={setActiveField}
+            />
+          )}
+        </div>
       </div>
+
+      {!selected && datasetsLoaded && datasets.length > 1 && (
+        <div className="text-[12.5px] text-ink-faint bg-[#FAFAFB] border border-line rounded-xl px-4 py-3">
+          Select a dataset above to view its golden records.
+        </div>
+      )}
+      {!selected && datasetsLoaded && datasets.length === 0 && (
+        <div className="text-[12.5px] text-ink-faint bg-[#FAFAFB] border border-line rounded-xl px-4 py-3">
+          No datasets yet — upload one and confirm a duplicate cluster in the Duplicate Queue to create a golden record.
+        </div>
+      )}
 
       {state.error && (
         <div className="mb-4 text-[12.5px] text-danger bg-danger-soft border border-danger/20 rounded-xl px-4 py-3">
           {state.error}
         </div>
       )}
-      {state.loading && <div className="text-[12.5px] text-ink-faint">Loading…</div>}
-      {!state.loading && filtered.length === 0 && (
+      {selected && state.loading && <div className="text-[12.5px] text-ink-faint">Loading…</div>}
+      {selected && !state.loading && filtered.length === 0 && (
         <div className="text-[12.5px] text-ink-faint bg-[#FAFAFB] border border-line rounded-xl px-4 py-3">
           {state.records.length === 0
-            ? "No golden records yet — confirm a duplicate cluster in the Duplicate Queue to create one."
+            ? "No golden records yet for this dataset — confirm a duplicate cluster in the Duplicate Queue to create one."
             : "No golden records match that search — it checks every merged field's value (name, phone, email, ID, city, and more), not just the ones shown collapsed."}
         </div>
       )}

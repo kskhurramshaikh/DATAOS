@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import DatasetPicker from "../components/DatasetPicker";
 
 const STATUS_META = {
   ok: { label: "OK", cls: "bg-success-soft text-success" },
@@ -37,32 +38,55 @@ function DomainCard({ domain }) {
 }
 
 export default function SamaDashboard() {
-  const [state, setState] = useState({ loading: true, data: null, error: null, needsDataset: false, datasets: [] });
+  const [datasets, setDatasets] = useState([]);
+  const [datasetsLoaded, setDatasetsLoaded] = useState(false);
   const [selected, setSelected] = useState("");
+  const [state, setState] = useState({ loading: true, data: null, error: null });
 
+  // Loads the dataset list once, up front -- the picker is always
+  // visible (not something that only appears after an error), and
+  // when there's exactly one dataset there's nothing to actually
+  // choose, so it's auto-selected rather than making the person click
+  // through a picker with one option in it.
   useEffect(() => {
     let cancelled = false;
+    async function loadDatasets() {
+      try {
+        const res = await api.getDatasets();
+        if (cancelled) return;
+        const list = res.datasets ?? [];
+        setDatasets(list);
+        if (list.length === 1) setSelected(list[0].dataset_name);
+        setDatasetsLoaded(true);
+      } catch (e) {
+        if (!cancelled) {
+          setDatasetsLoaded(true);
+          setState((s) => ({ ...s, loading: false, error: e.message }));
+        }
+      }
+    }
+    loadDatasets();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!datasetsLoaded) return;
+    // Fetch when a dataset is selected, or when there are genuinely no
+    // datasets at all (renders the honest not_measured empty state).
+    // Never fetch while several datasets exist and none is picked --
+    // that's exactly the ambiguous case that used to surface as a raw
+    // 400; the picker prevents it from ever being requested at all.
+    if (!selected && datasets.length !== 0) return;
+    let cancelled = false;
     async function load() {
+      setState((s) => ({ ...s, loading: true }));
       try {
         const res = await api.getSama(selected || undefined);
-        if (!cancelled) setState((s) => ({ ...s, loading: false, data: res, error: null, needsDataset: false }));
+        if (!cancelled) setState({ loading: false, data: res, error: null });
       } catch (e) {
-        if (cancelled) return;
-        // run_sama_compliance raises a 400 with a friendly "which
-        // dataset did you mean" message when more than one dataset
-        // exists and none was specified -- surface a picker instead
-        // of a raw error in that case.
-        const ambiguous = e.message?.includes("More than one dataset");
-        if (ambiguous) {
-          try {
-            const ds = await api.getDatasets();
-            setState({ loading: false, data: null, error: null, needsDataset: true, datasets: ds.datasets ?? [] });
-            return;
-          } catch {
-            // fall through to plain error below
-          }
-        }
-        setState((s) => ({ ...s, loading: false, error: e.message }));
+        if (!cancelled) setState({ loading: false, data: null, error: e.message });
       }
     }
     load();
@@ -71,36 +95,21 @@ export default function SamaDashboard() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [selected]);
+  }, [selected, datasets.length, datasetsLoaded]);
 
   return (
     <div className="p-7 md:px-8">
-      <div className="mb-5 flex items-start justify-between">
+      <div className="mb-5 flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-xl font-semibold text-ink tracking-tight">SAMA Compliance</h1>
           <p className="text-[13px] text-ink-faint mt-1">8-domain SAMA data-governance view, computed from real signals</p>
         </div>
-        {state.data?.dataset_name && (
-          <div className="text-[11.5px] text-ink-faint font-mono bg-[#FAFAFB] border border-line rounded-lg px-2.5 py-1.5">
-            {state.data.dataset_name}
-          </div>
-        )}
+        <DatasetPicker datasets={datasets} value={selected} onChange={setSelected} />
       </div>
 
-      {state.needsDataset && (
-        <div className="bg-white border border-line rounded-card px-6 py-5 mb-5">
-          <div className="text-[13px] text-ink-soft mb-3">More than one dataset exists — pick one to view SAMA compliance for:</div>
-          <div className="flex flex-wrap gap-2">
-            {state.datasets.map((d) => (
-              <button
-                key={d.dataset_name}
-                onClick={() => setSelected(d.dataset_name)}
-                className="text-[12px] font-semibold px-3 py-1.5 rounded-lg border border-line text-ink-soft hover:bg-[#FAFAFB]"
-              >
-                {d.display_name ?? d.dataset_name}
-              </button>
-            ))}
-          </div>
+      {!selected && datasets.length > 1 && (
+        <div className="mb-4 text-[12.5px] text-ink-soft bg-[#FAFAFB] border border-line rounded-xl px-4 py-3">
+          Select a dataset above to view its SAMA compliance domains.
         </div>
       )}
 
@@ -116,7 +125,7 @@ export default function SamaDashboard() {
         </div>
       )}
 
-      {state.data && (
+      {state.data && !state.data.no_dataset && (
         <>
           <div className="bg-white border border-line rounded-card px-6 py-4 mb-5">
             <div className="text-[12px] font-bold text-ink-faint uppercase tracking-wide mb-1">Priority alert</div>
