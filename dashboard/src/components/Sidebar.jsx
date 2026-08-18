@@ -6,6 +6,7 @@ const ICONS = {
   mdm: <path d="M12 3a4 4 0 100 8 4 4 0 000-8zM4 20a8 8 0 0116 0" />,
   ndi: <path d="M12 2v20M2 12h20M6 6l12 12M18 6L6 18" />,
   governance: <path d="M12 2 3 6v6c0 5 4 8.5 9 10 5-1.5 9-5 9-10V6l-9-4z" />,
+  catalog: <path d="M4 19.5A2.5 2.5 0 016.5 17H20M4 19.5A2.5 2.5 0 006.5 22H20V4H6.5A2.5 2.5 0 004 6.5v13z" />,
 };
 
 function Icon({ name }) {
@@ -22,6 +23,7 @@ const NAV_ITEMS = [
   { to: "/mdm", label: "MDM", icon: "mdm" },
   { to: "/ndi", label: "NDI", icon: "ndi" },
   { to: "/governance", label: "Governance", icon: "governance" },
+  { to: "/catalog", label: "Catalog", icon: "catalog" },
 ];
 
 export default function Sidebar() {
