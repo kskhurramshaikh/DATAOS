@@ -8,6 +8,8 @@ import SamaDashboard from "./pages/SamaDashboard";
 import AuditLog from "./pages/AuditLog";
 import NdiDashboard from "./pages/NdiDashboard";
 import NdiHistory from "./pages/NdiHistory";
+import DataCatalog from "./pages/DataCatalog";
+import FieldLineage from "./pages/FieldLineage";
 
 const TAB_GROUPS = {
   lakehouse: [
@@ -25,6 +27,10 @@ const TAB_GROUPS = {
   governance: [
     { key: "sama", label: "SAMA Compliance", path: "/governance" },
     { key: "audit", label: "Audit Log", path: "/governance/audit-log" },
+  ],
+  catalog: [
+    { key: "catalog", label: "Data Catalog", path: "/catalog" },
+    { key: "lineage", label: "Field Lineage", path: "/catalog/lineage" },
   ],
 };
 
@@ -108,6 +114,20 @@ function GovernanceSection() {
   );
 }
 
+function CatalogSection() {
+  return (
+    <>
+      <TopTabs group="catalog" />
+      <div className="flex-1 overflow-auto">
+        <Routes>
+          <Route path="/" element={<DataCatalog />} />
+          <Route path="/lineage" element={<FieldLineage />} />
+        </Routes>
+      </div>
+    </>
+  );
+}
+
 export default function App() {
   return (
     <div className="flex h-screen bg-canvas font-sans text-ink">
@@ -119,6 +139,7 @@ export default function App() {
           <Route path="/mdm/*" element={<MdmSection />} />
           <Route path="/ndi/*" element={<NdiSection />} />
           <Route path="/governance/*" element={<GovernanceSection />} />
+          <Route path="/catalog/*" element={<CatalogSection />} />
         </Routes>
       </div>
     </div>
