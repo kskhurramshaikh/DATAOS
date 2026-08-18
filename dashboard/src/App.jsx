@@ -4,9 +4,10 @@ import LakehouseZones from "./pages/LakehouseZones";
 import PipelineMonitoring from "./pages/PipelineMonitoring";
 import GoldenRecordRegistry from "./pages/GoldenRecordRegistry";
 import DuplicateQueue from "./pages/DuplicateQueue";
-import ComingSoon from "./pages/ComingSoon";
 import SamaDashboard from "./pages/SamaDashboard";
 import AuditLog from "./pages/AuditLog";
+import NdiDashboard from "./pages/NdiDashboard";
+import NdiHistory from "./pages/NdiHistory";
 
 const TAB_GROUPS = {
   lakehouse: [
@@ -16,6 +17,10 @@ const TAB_GROUPS = {
   mdm: [
     { key: "golden", label: "Golden Records", path: "/mdm" },
     { key: "queue", label: "Duplicate Queue", path: "/mdm/queue" },
+  ],
+  ndi: [
+    { key: "assessment", label: "Assessment", path: "/ndi" },
+    { key: "history", label: "History", path: "/ndi/history" },
   ],
   governance: [
     { key: "sama", label: "SAMA Compliance", path: "/governance" },
@@ -75,6 +80,20 @@ function MdmSection() {
   );
 }
 
+function NdiSection() {
+  return (
+    <>
+      <TopTabs group="ndi" />
+      <div className="flex-1 overflow-auto">
+        <Routes>
+          <Route path="/" element={<NdiDashboard />} />
+          <Route path="/history" element={<NdiHistory />} />
+        </Routes>
+      </div>
+    </>
+  );
+}
+
 function GovernanceSection() {
   return (
     <>
@@ -98,17 +117,7 @@ export default function App() {
           <Route path="/" element={<Navigate to="/lakehouse" replace />} />
           <Route path="/lakehouse/*" element={<LakehouseSection />} />
           <Route path="/mdm/*" element={<MdmSection />} />
-          <Route
-            path="/ndi"
-            element={
-              <>
-                <TopTabs group={null} />
-                <div className="flex-1 overflow-auto">
-                  <ComingSoon title="NDI" />
-                </div>
-              </>
-            }
-          />
+          <Route path="/ndi/*" element={<NdiSection />} />
           <Route path="/governance/*" element={<GovernanceSection />} />
         </Routes>
       </div>

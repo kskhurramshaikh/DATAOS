@@ -51,4 +51,13 @@ export const api = {
 
   getSama: (datasetName) => getJSON(`/governance/sama${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
   getAuditLog: (datasetName) => getJSON(`/governance/audit-log${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
+
+  // NDI (item 5). No dataset parameter anywhere on purpose -- the
+  // assessment runs on Dr. Saber's fixed BAJ baseline, not on an
+  // uploaded dataset, so there is nothing to scope these to.
+  getNdi: () => getJSON("/governance/ndi"),
+  getNdiHistory: () => getJSON("/governance/ndi/history"),
+  getNdiSnapshot: (id) => getJSON(`/governance/ndi/history/${id}`),
+  recordNdiSnapshot: (recordedBy, note) =>
+    postJSON("/governance/ndi/snapshot", { recorded_by: recordedBy, note: note || null }),
 };
