@@ -28,20 +28,20 @@ const SELECTED_DATASET_KEY = "dataos:lakehouse:selectedDataset";
 // left React's own selectedTask state unset, and zero network request
 // to /api/pipeline/logs/... ever fired. onNodeClick itself simply
 // never fired in this deployed build, for reasons not worth chasing
-# further blind (same lesson as Field Lineage's edge-rendering saga:
-# stop guessing at this library's internals, use the mechanism that's
-# actually confirmed to work).
-#
-# Real fix: a plain onClick directly on this node's own div, PLUS the
-# onNodeClick prop kept as a harmless redundant path. This is safe now
-# in a way it wasn't before nodesDraggable={false} existed: the
-# original drag-vs-click conflict this was trying to avoid depended on
-# React Flow's drag-gesture detection actually running on this node,
-# which nodesDraggable={false} (already present on the <ReactFlow>
-# element below) disables entirely -- so a plain onClick has nothing
-# left to race against. data.onSelect is threaded in from buildGraph()
-# below (a closure over the current onSelectTask), not a prop this
-# component receives directly from React Flow.
+// further blind (same lesson as Field Lineage's edge-rendering saga:
+// stop guessing at this library's internals, use the mechanism that's
+// actually confirmed to work).
+//
+// Real fix: a plain onClick directly on this node's own div, PLUS the
+// onNodeClick prop kept as a harmless redundant path. This is safe now
+// in a way it wasn't before nodesDraggable={false} existed: the
+// original drag-vs-click conflict this was trying to avoid depended on
+// React Flow's drag-gesture detection actually running on this node,
+// which nodesDraggable={false} (already present on the <ReactFlow>
+// element below) disables entirely -- so a plain onClick has nothing
+// left to race against. data.onSelect is threaded in from buildGraph()
+// below (a closure over the current onSelectTask), not a prop this
+// component receives directly from React Flow.
 function TaskNode({ id, data }) {
   const s = STATUS_STYLE[data.status] || STATUS_STYLE.queued;
   return (
@@ -71,7 +71,7 @@ const nodeTypes = { task: TaskNode };
 // onSelect (2026-08-18, bug fix round 2): threaded into each node's
 // data so TaskNode's own onClick above can call it directly -- see
 // that component's comment for why this replaced relying solely on
-# React Flow's onNodeClick, which was confirmed live not to fire.
+// React Flow's onNodeClick, which was confirmed live not to fire.
 function buildGraph(tasks, onSelect) {
   const order = ["verify_silver_ready", "silver_to_iceberg", "gold_compute"];
   const positioned = order
