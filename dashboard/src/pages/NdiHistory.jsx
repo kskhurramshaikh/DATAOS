@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 
@@ -211,8 +211,8 @@ export default function NdiHistory() {
               </thead>
               <tbody>
                 {snapshots.map((s) => (
-                  <>
-                    <tr key={s.id} className="border-b border-line last:border-0">
+                  <Fragment key={s.id}>
+                    <tr className="border-b border-line last:border-0">
                       <td className="py-3 px-5 text-[12px] font-mono text-ink">{formatWhen(s.recorded_at)}</td>
                       <td className="py-3 px-3 text-[12.5px] text-ink-soft">{s.recorded_by}</td>
                       <td className="py-3 px-3 text-right">
@@ -235,13 +235,13 @@ export default function NdiHistory() {
                       </td>
                     </tr>
                     {expanded === s.id && (
-                      <tr key={`${s.id}-detail`}>
+                      <tr>
                         <td colSpan={7} className="p-0">
                           <DomainDetail snapshotId={s.id} />
                         </td>
                       </tr>
                     )}
-                  </>
+                  </Fragment>
                 ))}
               </tbody>
             </table>
