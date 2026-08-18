@@ -29,8 +29,10 @@ async function postForm(path, file, fields) {
 }
 
 export const api = {
-  getZones: () => getJSON("/lakehouse/zones"),
-  getPipelineRuns: (limit = 10) => getJSON(`/pipeline/runs?limit=${limit}`),
+  getZones: (datasetName) => getJSON(`/lakehouse/zones${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
+  getPipelineRuns: (datasetName, limit = 10) =>
+    getJSON(`/pipeline/runs?limit=${limit}${datasetName ? `&dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
+  triggerPipeline: (datasetName) => postJSON("/lakehouse/trigger", { dataset_name: datasetName }),
   getTaskLog: (runId, taskId, tryNumber = 1) =>
     getJSON(`/pipeline/logs/${encodeURIComponent(runId)}/${encodeURIComponent(taskId)}?try_number=${tryNumber}`),
 

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import FlowConnector from "../components/FlowConnector";
+import DatasetPicker from "../components/DatasetPicker";
+import TriggerPipelineButton from "../components/TriggerPipelineButton";
 
 // Tailwind's build only includes classes it can find as complete literal
 // strings during its static scan -- a template literal like
@@ -76,14 +78,45 @@ function ZoneCard({ zoneKey, data }) {
 }
 
 export default function LakehouseZones() {
-  const [state, setState] = useState({ loading: true, configured: true, zones: {}, error: null });
+  const [datasets, setDatasets] = useState([]);
+  const [datasetsLoaded, setDatasetsLoaded] = useState(false);
+  const [selected, setSelected] = useState("");
+  const [state, setState] = useState({ loading: false, configured: true, zones: {}, error: null });
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  // Same DatasetPicker pattern as the rest of the dashboard (SAMA,
+  // Golden Records, Audit Log) -- DataOS is a multi-dataset platform
+  // now, so every page scoped to a dataset gets this picker, this app.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadDatasets() {
+      try {
+        const res = await api.getDatasets();
+        if (cancelled) return;
+        const list = res.datasets ?? [];
+        setDatasets(list);
+        if (list.length === 1) setSelected(list[0].dataset_name);
+        setDatasetsLoaded(true);
+      } catch {
+        if (!cancelled) setDatasetsLoaded(true);
+      }
+    }
+    loadDatasets();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
+    if (!selected) {
+      setState({ loading: false, configured: true, zones: {}, error: null });
+      return;
+    }
     let cancelled = false;
     async function load() {
       try {
-        const res = await api.getZones();
-        if (!cancelled) setState({ loading: false, configured: res.configured, zones: res.zones, error: null });
+        const res = await api.getZones(selected);
+        if (!cancelled) setState({ loading: false, configured: res.configured, zones: res.zones, error: res.error || null });
       } catch (e) {
         if (!cancelled) setState({ loading: false, configured: true, zones: {}, error: e.message });
       }
@@ -94,18 +127,38 @@ export default function LakehouseZones() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, []);
+  }, [selected, refreshTick]);
 
   return (
     <div className="p-7 md:px-8">
-      <div className="mb-5">
-        <h1 className="text-xl font-semibold text-ink tracking-tight">Lakehouse Zones</h1>
-        <p className="text-[13px] text-ink-faint mt-1">
-          Bronze → Silver → Gold, backed by real Iceberg tables in SeaweedFS
-        </p>
+      <div className="mb-5 flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-xl font-semibold text-ink tracking-tight">Lakehouse Zones</h1>
+          <p className="text-[13px] text-ink-faint mt-1">
+            Bronze → Silver → Gold, backed by real Iceberg tables in SeaweedFS
+          </p>
+        </div>
+        <div className="flex items-start gap-3 flex-wrap">
+          <DatasetPicker datasets={datasets} value={selected} onChange={setSelected} />
+          <TriggerPipelineButton
+            datasetName={selected}
+            onTriggered={() => setTimeout(() => setRefreshTick((t) => t + 1), 3000)}
+          />
+        </div>
       </div>
 
-      {!state.configured && (
+      {!selected && datasetsLoaded && datasets.length > 1 && (
+        <div className="mb-4 text-[12.5px] text-ink-soft bg-[#FAFAFB] border border-line rounded-xl px-4 py-3">
+          Select a dataset above to view its Lakehouse Zones.
+        </div>
+      )}
+      {!selected && datasetsLoaded && datasets.length === 0 && (
+        <div className="mb-4 text-[12.5px] text-ink-faint bg-[#FAFAFB] border border-line rounded-xl px-4 py-3">
+          No datasets yet — upload one from the MDM tab first.
+        </div>
+      )}
+
+      {selected && !state.configured && (
         <div className="mb-4 text-[12.5px] text-ink-soft bg-[#FFF8E8] border border-[#F0DFAE] rounded-xl px-4 py-3">
           Not connected yet — set <code className="font-mono">LAKEHOUSE_DB_URI</code> and{" "}
           <code className="font-mono">SEAWEEDFS_INTERNAL_HOST</code> on this service to see live data.
@@ -117,35 +170,39 @@ export default function LakehouseZones() {
         </div>
       )}
 
-      <div className="bg-white border border-line rounded-card px-7 py-6 shadow-[0_1px_2px_rgba(0,0,0,0.02),0_8px_24px_-12px_rgba(0,0,0,0.06)]">
-        <div className="flex items-center overflow-x-auto pb-1">
-          <div className="flex flex-col gap-1.5 min-w-[128px]">
-            <span className="text-[10px] font-bold text-[#B0B0B5] tracking-wide uppercase mb-0.5">Sources</span>
-            <div className="bg-[#FAFAFB] border border-line rounded-lg px-2.5 py-1.5 text-[11.5px] text-ink-soft font-mono">
-              Banking_Demo_Dataset.xlsx
+      {selected && (
+        <>
+          <div className="bg-white border border-line rounded-card px-7 py-6 shadow-[0_1px_2px_rgba(0,0,0,0.02),0_8px_24px_-12px_rgba(0,0,0,0.06)]">
+            <div className="flex items-center overflow-x-auto pb-1">
+              <div className="flex flex-col gap-1.5 min-w-[128px]">
+                <span className="text-[10px] font-bold text-[#B0B0B5] tracking-wide uppercase mb-0.5">Source</span>
+                <div className="bg-[#FAFAFB] border border-line rounded-lg px-2.5 py-1.5 text-[11.5px] text-ink-soft font-mono truncate max-w-[128px]">
+                  {selected}
+                </div>
+              </div>
+
+              <FlowConnector label="Bronze ingest" />
+              <ZoneCard zoneKey="bronze" data={state.zones.bronze} />
+              <FlowConnector label="Clean + validate" />
+              <ZoneCard zoneKey="silver" data={state.zones.silver} />
+              <FlowConnector label="Business logic" />
+              <ZoneCard zoneKey="gold" data={state.zones.gold} />
+              <FlowConnector label="BI / Copilot" />
+
+              <div className="flex flex-col gap-1.5 min-w-[128px]">
+                <span className="text-[10px] font-bold text-[#B0B0B5] tracking-wide uppercase mb-0.5">Consumption</span>
+                <div className="bg-[#FAFAFB] border border-line rounded-lg px-2.5 py-1.5 text-[11.5px] text-ink-soft">
+                  IFRS 9 / NDI views
+                </div>
+              </div>
             </div>
           </div>
 
-          <FlowConnector label="Bronze ingest" />
-          <ZoneCard zoneKey="bronze" data={state.zones.bronze} />
-          <FlowConnector label="Clean + validate" />
-          <ZoneCard zoneKey="silver" data={state.zones.silver} />
-          <FlowConnector label="Business logic" />
-          <ZoneCard zoneKey="gold" data={state.zones.gold} />
-          <FlowConnector label="BI / Copilot" />
-
-          <div className="flex flex-col gap-1.5 min-w-[128px]">
-            <span className="text-[10px] font-bold text-[#B0B0B5] tracking-wide uppercase mb-0.5">Consumption</span>
-            <div className="bg-[#FAFAFB] border border-line rounded-lg px-2.5 py-1.5 text-[11.5px] text-ink-soft">
-              IFRS 9 / NDI views
-            </div>
+          <div className="mt-4 text-[11.5px] text-ink-faint">
+            {state.loading ? "Loading live data…" : "Live data — refreshes every 15s. \"Run pipeline\" is manual by design — nothing here runs automatically on upload."}
           </div>
-        </div>
-      </div>
-
-      <div className="mt-4 text-[11.5px] text-ink-faint">
-        {state.loading ? "Loading live data…" : "Live data — refreshes every 15s."}
-      </div>
+        </>
+      )}
     </div>
   );
 }

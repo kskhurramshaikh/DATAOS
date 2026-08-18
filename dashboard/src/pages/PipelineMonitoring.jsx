@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import ReactFlow, { Background, Controls, MarkerType } from "reactflow";
 import "reactflow/dist/style.css";
 import { api } from "../api";
+import DatasetPicker from "../components/DatasetPicker";
+import TriggerPipelineButton from "../components/TriggerPipelineButton";
 
 const STATUS_STYLE = {
   success: { bg: "#EAF6F1", border: "#2FA37E", dot: "#2FA37E", label: "Success" },
@@ -33,8 +35,11 @@ function TaskNode({ data }) {
 
 const nodeTypes = { task: TaskNode };
 
+// Task names match the generalized DAG (2026-08-18): verify_silver_ready
+// (was bronze_ingest) -> silver_to_iceberg (was silver_transform) ->
+// gold_compute (unchanged).
 function buildGraph(tasks, onSelect) {
-  const order = ["bronze_ingest", "silver_transform", "gold_compute"];
+  const order = ["verify_silver_ready", "silver_to_iceberg", "gold_compute"];
   const positioned = order
     .map((id, i) => {
       const t = tasks.find((x) => x.task_id === id);
@@ -53,23 +58,54 @@ function buildGraph(tasks, onSelect) {
     .filter(Boolean);
 
   const edges = [
-    { id: "e1", source: "bronze_ingest", target: "silver_transform", markerEnd: { type: MarkerType.ArrowClosed, color: "#D4D4D8" }, style: { stroke: "#D4D4D8" } },
-    { id: "e2", source: "silver_transform", target: "gold_compute", markerEnd: { type: MarkerType.ArrowClosed, color: "#D4D4D8" }, style: { stroke: "#D4D4D8" } },
+    { id: "e1", source: "verify_silver_ready", target: "silver_to_iceberg", markerEnd: { type: MarkerType.ArrowClosed, color: "#D4D4D8" }, style: { stroke: "#D4D4D8" } },
+    { id: "e2", source: "silver_to_iceberg", target: "gold_compute", markerEnd: { type: MarkerType.ArrowClosed, color: "#D4D4D8" }, style: { stroke: "#D4D4D8" } },
   ];
 
   return { nodes: positioned, edges };
 }
 
 export default function PipelineMonitoring() {
-  const [state, setState] = useState({ loading: true, configured: true, runs: [], error: null });
+  const [datasets, setDatasets] = useState([]);
+  const [datasetsLoaded, setDatasetsLoaded] = useState(false);
+  const [selected, setSelected] = useState("");
+  const [state, setState] = useState({ loading: false, configured: true, runs: [], error: null });
+  const [refreshTick, setRefreshTick] = useState(0);
   const [selectedTask, setSelectedTask] = useState(null);
   const [logState, setLogState] = useState({ loading: false, log: null, error: null });
 
+  // Same DatasetPicker pattern as the rest of the dashboard -- see
+  // LakehouseZones.jsx.
   useEffect(() => {
+    let cancelled = false;
+    async function loadDatasets() {
+      try {
+        const res = await api.getDatasets();
+        if (cancelled) return;
+        const list = res.datasets ?? [];
+        setDatasets(list);
+        if (list.length === 1) setSelected(list[0].dataset_name);
+        setDatasetsLoaded(true);
+      } catch {
+        if (!cancelled) setDatasetsLoaded(true);
+      }
+    }
+    loadDatasets();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    setSelectedTask(null);
+    if (!selected) {
+      setState({ loading: false, configured: true, runs: [], error: null });
+      return;
+    }
     let cancelled = false;
     async function load() {
       try {
-        const res = await api.getPipelineRuns(5);
+        const res = await api.getPipelineRuns(selected, 5);
         if (!cancelled) setState({ loading: false, configured: res.configured, runs: res.runs, error: res.error || null });
       } catch (e) {
         if (!cancelled) setState({ loading: false, configured: true, runs: [], error: e.message });
@@ -81,7 +117,7 @@ export default function PipelineMonitoring() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, []);
+  }, [selected, refreshTick]);
 
   const latestRun = state.runs[0];
 
@@ -106,26 +142,47 @@ export default function PipelineMonitoring() {
 
   return (
     <div className="p-7 md:px-8">
-      <div className="mb-5 flex items-baseline justify-between flex-wrap gap-2">
+      <div className="mb-5 flex items-start justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-semibold text-ink tracking-tight">Pipeline Monitoring</h1>
           <p className="text-[13px] text-ink-faint mt-1">
-            {latestRun ? `banking_demo_lakehouse_spike · ${latestRun.run_id}` : "Waiting for a run…"}
+            {latestRun ? `run ${latestRun.run_id}` : selected ? "Waiting for a run…" : "Select a dataset to see its pipeline history"}
           </p>
         </div>
-        {latestRun && (
+        <div className="flex items-start gap-3 flex-wrap">
+          <DatasetPicker datasets={datasets} value={selected} onChange={setSelected} />
+          <TriggerPipelineButton
+            datasetName={selected}
+            onTriggered={() => setTimeout(() => setRefreshTick((t) => t + 1), 3000)}
+          />
+        </div>
+      </div>
+
+      {latestRun && (
+        <div className="mb-4">
           <div
-            className={`text-[11.5px] font-semibold px-3 py-1.5 rounded-full flex items-center gap-1.5 ${
+            className={`inline-flex text-[11.5px] font-semibold px-3 py-1.5 rounded-full items-center gap-1.5 ${
               allSucceeded ? "text-success bg-success-soft" : "text-running bg-running-soft"
             }`}
           >
             <span className={`w-1.5 h-1.5 rounded-full inline-block ${allSucceeded ? "bg-success" : "bg-running"}`} />
             {allSucceeded ? "All tasks succeeded" : latestRun.state}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
-      {!state.configured && (
+      {!selected && datasetsLoaded && datasets.length > 1 && (
+        <div className="mb-4 text-[12.5px] text-ink-soft bg-[#FAFAFB] border border-line rounded-xl px-4 py-3">
+          Select a dataset above to view its pipeline runs.
+        </div>
+      )}
+      {!selected && datasetsLoaded && datasets.length === 0 && (
+        <div className="mb-4 text-[12.5px] text-ink-faint bg-[#FAFAFB] border border-line rounded-xl px-4 py-3">
+          No datasets yet — upload one from the MDM tab first.
+        </div>
+      )}
+
+      {selected && !state.configured && (
         <div className="mb-4 text-[12.5px] text-ink-soft bg-[#FFF8E8] border border-[#F0DFAE] rounded-xl px-4 py-3">
           Not connected yet — set <code className="font-mono">LAKEHOUSE_DB_URI</code> on this service to see live runs.
         </div>
@@ -135,9 +192,9 @@ export default function PipelineMonitoring() {
           {state.error}
         </div>
       )}
-      {!state.loading && state.configured && !latestRun && !state.error && (
+      {selected && !state.loading && state.configured && !latestRun && !state.error && (
         <div className="mb-4 text-[12.5px] text-ink-faint bg-[#FAFAFB] border border-line rounded-xl px-4 py-3">
-          No runs yet — trigger the DAG in Airflow to see it here.
+          No runs yet for this dataset — click "Run pipeline" above to start one.
         </div>
       )}
 
@@ -161,6 +218,12 @@ export default function PipelineMonitoring() {
           {!logState.loading && !logState.error && !logState.log && (
             <div className="text-ink-faint">No log content found for this task/run.</div>
           )}
+        </div>
+      )}
+
+      {selected && state.runs.length > 0 && (
+        <div className="mt-4 text-[11.5px] text-ink-faint">
+          Live data — refreshes every 10s. "Run pipeline" is manual by design — nothing here runs automatically on upload.
         </div>
       )}
     </div>
