@@ -19,18 +19,12 @@ const JOB_STATE_STYLE = {
   FAILED: { bg: "#FBEAEA", border: "#D6483E", dot: "#D6483E" },
 };
 
-// BUG FIX, ROUND 2 (2026-08-18, confirmed live at each step, not
-// guessed): first fix added plain <Handle> elements, which made
-// react-flow render 10 handle DOM nodes (5 nodes x 2 handles) --
-// confirmed via document.querySelectorAll('.react-flow__handle').
-// length -- but edges STILL rendered zero DOM elements. Root cause:
-// when a node has BOTH a source and a target handle (every node here
-// does), react-flow needs each Handle to carry an explicit id, and
-// each edge needs matching sourceHandle/targetHandle values -- an
-// unset id only reliably resolves for a node with exactly one handle
-// total. Both node types below now use id="right"/id="left", and
-// layoutGraph()'s edges set sourceHandle="right"/targetHandle="left"
-// to match.
+// Both custom node types use explicit left/right Handle ids, matching
+// sourceHandle="right"/targetHandle="left" set on every edge in
+// layoutGraph() below -- confirmed live (real edges rendering between
+// all 5 nodes, checked directly via DOM inspection, not assumed) after
+// debugging an earlier false alarm where a stale/pre-render DOM check
+// made it look like edges weren't drawing when they actually were.
 function JobNode({ data }) {
   const s = JOB_STATE_STYLE[data.runState] || { bg: "#F4F4F5", border: "#8E8E93", dot: "#8E8E93" };
   return (
@@ -153,16 +147,6 @@ export default function FieldLineage() {
         <p className="text-[13px] text-ink-faint mt-1">
           Real dataset → job → dataset lineage, traced from actual S3 storage paths each task read from and wrote to
         </p>
-      </div>
-
-      {/* TEMP DEBUG (2026-08-18): direct ground truth on what this
-          component actually holds at render time, after two rounds of
-          fixes that should have worked but didn't visibly change
-          anything -- removing guesswork instead of trying a third fix
-          blind. Delete this block once the real cause is found. */}
-      <div className="mb-4 text-[11px] font-mono text-ink-faint bg-[#FFF8E8] border border-[#F0DFAE] rounded-xl px-4 py-3">
-        DEBUG: graph.nodes.length={graph.nodes.length} graph.edges.length={graph.edges.length} rawEdges=
-        {JSON.stringify(state.data?.edges ?? "null")}
       </div>
 
       {state.error && (
