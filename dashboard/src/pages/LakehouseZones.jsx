@@ -49,7 +49,15 @@ function formatBytes(n) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function ZoneCard({ zoneKey, data }) {
+// loading distinguishes "still fetching, don't know yet" from "fetch
+// finished, this zone genuinely has nothing" -- these used to render
+// identically as "No data yet," which was actively misleading: every
+// remount (e.g. switching to Pipeline Monitoring and back) starts from
+// an empty zones object, and the cross-region Postgres/Iceberg round
+// trip genuinely takes a couple seconds, so that transient window kept
+// getting mistaken for real emptiness. Confirmed live (2026-08-18) --
+// see the fetch effect below for the accompanying loading-state fix.
+function ZoneCard({ zoneKey, data, loading }) {
   const meta = ZONE_META[zoneKey];
 
   if (!data || data.error) {
@@ -60,7 +68,7 @@ function ZoneCard({ zoneKey, data }) {
           {meta.label}
         </div>
         <div className="text-[11px] text-ink-faint mt-1">
-          {data?.error ? "Couldn't load — check connection" : "No data yet"}
+          {data?.error ? "Couldn't load — check connection" : loading ? "Loading…" : "No data yet"}
         </div>
       </div>
     );
@@ -96,7 +104,12 @@ export default function LakehouseZones() {
       return "";
     }
   });
-  const [state, setState] = useState({ loading: false, configured: true, zones: {}, error: null });
+  // loading starts true whenever a dataset is already selected from
+  // localStorage on first mount -- a fetch is about to happen
+  // immediately, so the UI should say so from the very first paint,
+  // not report "not loading" until the async call gets around to
+  // saying otherwise.
+  const [state, setState] = useState({ loading: !!selected, configured: true, zones: {}, error: null });
   const [refreshTick, setRefreshTick] = useState(0);
 
   function selectDataset(name) {
@@ -154,11 +167,18 @@ export default function LakehouseZones() {
     }
     let cancelled = false;
     async function load() {
+      // Mark loading BEFORE the await -- previously this only got set
+      // in the response handler, so there was never an honest loading
+      // signal during the fetch itself; ZoneCard had nothing to show
+      // but "No data yet" for however long the cross-region round trip
+      // took, every single time this component remounted (e.g.
+      // navigating to Pipeline Monitoring and back).
+      setState((s) => ({ ...s, loading: true }));
       try {
         const res = await api.getZones(selected);
         if (!cancelled) setState({ loading: false, configured: res.configured, zones: res.zones, error: res.error || null });
       } catch (e) {
-        if (!cancelled) setState({ loading: false, configured: true, zones: {}, error: e.message });
+        if (!cancelled) setState((s) => ({ ...s, loading: false, error: e.message }));
       }
     }
     load();
@@ -223,11 +243,11 @@ export default function LakehouseZones() {
               </div>
 
               <FlowConnector label="Bronze ingest" />
-              <ZoneCard zoneKey="bronze" data={state.zones.bronze} />
+              <ZoneCard zoneKey="bronze" data={state.zones.bronze} loading={state.loading} />
               <FlowConnector label="Clean + validate" />
-              <ZoneCard zoneKey="silver" data={state.zones.silver} />
+              <ZoneCard zoneKey="silver" data={state.zones.silver} loading={state.loading} />
               <FlowConnector label="Business logic" />
-              <ZoneCard zoneKey="gold" data={state.zones.gold} />
+              <ZoneCard zoneKey="gold" data={state.zones.gold} loading={state.loading} />
               <FlowConnector label="BI / Copilot" />
 
               <div className="flex flex-col gap-1.5 min-w-[128px]">
