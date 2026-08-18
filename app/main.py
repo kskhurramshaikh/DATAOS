@@ -49,6 +49,17 @@
 # -- presentation-only, same as Dev Queue item 4's own framing, no new
 # computation path introduced.
 #
+# MULTI-DATASET LAKEHOUSE (2026-08-18): /api/lakehouse/zones and
+# /api/pipeline/runs now require dataset_name -- the Airflow/Iceberg
+# pipeline behind them was generalized from a single hardcoded demo
+# file to any uploaded dataset (see app/lakehouse_client.py and
+# spike/dags/banking_demo_lakehouse_spike.py's own docstrings for the
+# full reasoning). New /api/lakehouse/trigger endpoint manually starts
+# that pipeline for one dataset -- deliberately the ONLY way it ever
+# runs; never triggered automatically on upload, per Khurram's explicit
+# instruction (auto-triggering would add load/delay to every upload for
+# a stage most uploads don't need run immediately).
+#
 # ERROR-HANDLING NOTE (2026-08-17): several /api/mdm/* routes below
 # catch Exception broadly, not just ValueError -- a deliberate widening
 # added mid-debugging the Postgres migration, after upload-dataset's
@@ -257,13 +268,30 @@ def debug_storage_write():
 # ---------------------------------------------------------------------
 
 @app.get("/api/lakehouse/zones")
-def lakehouse_zones():
-    return lakehouse_client.get_zone_stats()
+def lakehouse_zones(dataset_name: str | None = None):
+    return lakehouse_client.get_zone_stats(dataset_name)
 
 
 @app.get("/api/pipeline/runs")
-def pipeline_runs(limit: int = 10):
-    return lakehouse_client.get_pipeline_runs(limit=limit)
+def pipeline_runs(dataset_name: str | None = None, limit: int = 10):
+    return lakehouse_client.get_pipeline_runs(dataset_name, limit=limit)
+
+
+class LakehouseTriggerRequest(BaseModel):
+    dataset_name: str
+
+
+@app.post("/api/lakehouse/trigger")
+def lakehouse_trigger(req: LakehouseTriggerRequest):
+    """Manually triggers the Lakehouse (Silver/Gold Iceberg promotion)
+    pipeline for one dataset -- see lakehouse_client.trigger_dag_run()'s
+    docstring for why this is the ONLY way that DAG ever runs. Never
+    called automatically on upload, per Khurram's explicit instruction
+    (2026-08-18)."""
+    try:
+        return lakehouse_client.trigger_dag_run(req.dataset_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/pipeline/logs/{run_id}/{task_id}")
