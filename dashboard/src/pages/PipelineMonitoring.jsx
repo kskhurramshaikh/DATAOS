@@ -13,6 +13,12 @@ const STATUS_STYLE = {
   up_for_retry: { bg: "#FFF8E8", border: "#C99A2E", dot: "#C99A2E", label: "Retrying" },
 };
 
+// Same key as LakehouseZones.jsx -- one selection shared across both
+// Lakehouse pages, and persisted across reloads (real browser
+// localStorage; this is a genuine deployed SPA, not an Artifact
+// preview). Picking a dataset here also sticks if you switch to Zones.
+const SELECTED_DATASET_KEY = "dataos:lakehouse:selectedDataset";
+
 function TaskNode({ data }) {
   const s = STATUS_STYLE[data.status] || STATUS_STYLE.queued;
   return (
@@ -68,14 +74,29 @@ function buildGraph(tasks, onSelect) {
 export default function PipelineMonitoring() {
   const [datasets, setDatasets] = useState([]);
   const [datasetsLoaded, setDatasetsLoaded] = useState(false);
-  const [selected, setSelected] = useState("");
+  const [selected, setSelected] = useState(() => {
+    try {
+      return localStorage.getItem(SELECTED_DATASET_KEY) || "";
+    } catch {
+      return "";
+    }
+  });
   const [state, setState] = useState({ loading: false, configured: true, runs: [], error: null });
   const [refreshTick, setRefreshTick] = useState(0);
   const [selectedTask, setSelectedTask] = useState(null);
   const [logState, setLogState] = useState({ loading: false, log: null, error: null });
 
-  // Same DatasetPicker pattern as the rest of the dashboard -- see
-  // LakehouseZones.jsx.
+  function selectDataset(name) {
+    setSelected(name);
+    try {
+      if (name) localStorage.setItem(SELECTED_DATASET_KEY, name);
+      else localStorage.removeItem(SELECTED_DATASET_KEY);
+    } catch {
+      // Non-fatal.
+    }
+  }
+
+  // Same picker + persistence pattern as LakehouseZones.jsx.
   useEffect(() => {
     let cancelled = false;
     async function loadDatasets() {
@@ -84,7 +105,18 @@ export default function PipelineMonitoring() {
         if (cancelled) return;
         const list = res.datasets ?? [];
         setDatasets(list);
-        if (list.length === 1) setSelected(list[0].dataset_name);
+        setSelected((current) => {
+          const stillValid = current && list.some((d) => d.dataset_name === current);
+          if (stillValid) return current;
+          const next = list.length === 1 ? list[0].dataset_name : "";
+          try {
+            if (next) localStorage.setItem(SELECTED_DATASET_KEY, next);
+            else localStorage.removeItem(SELECTED_DATASET_KEY);
+          } catch {
+            // Non-fatal.
+          }
+          return next;
+        });
         setDatasetsLoaded(true);
       } catch {
         if (!cancelled) setDatasetsLoaded(true);
@@ -94,6 +126,7 @@ export default function PipelineMonitoring() {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -150,11 +183,8 @@ export default function PipelineMonitoring() {
           </p>
         </div>
         <div className="flex items-start gap-3 flex-wrap">
-          <DatasetPicker datasets={datasets} value={selected} onChange={setSelected} />
-          <TriggerPipelineButton
-            datasetName={selected}
-            onTriggered={() => setTimeout(() => setRefreshTick((t) => t + 1), 3000)}
-          />
+          <DatasetPicker datasets={datasets} value={selected} onChange={selectDataset} />
+          <TriggerPipelineButton datasetName={selected} onTriggered={() => setRefreshTick((t) => t + 1)} />
         </div>
       </div>
 

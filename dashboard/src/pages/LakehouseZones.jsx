@@ -3,6 +3,7 @@ import { api } from "../api";
 import FlowConnector from "../components/FlowConnector";
 import DatasetPicker from "../components/DatasetPicker";
 import TriggerPipelineButton from "../components/TriggerPipelineButton";
+import PipelineRunStatus from "../components/PipelineRunStatus";
 
 // Tailwind's build only includes classes it can find as complete literal
 // strings during its static scan -- a template literal like
@@ -32,6 +33,14 @@ const ZONE_META = {
     text: "text-gold",
   },
 };
+
+// Real browser localStorage -- this is a genuine deployed SPA served
+// from FastAPI, not a sandboxed Artifact preview, so persisting across
+// reloads here is normal and safe. Shared with Pipeline Monitoring so
+// picking a dataset on either page carries over to the other, and a
+// page refresh doesn't reset to "no dataset selected" for a dataset
+// that's already gone through the pipeline.
+const SELECTED_DATASET_KEY = "dataos:lakehouse:selectedDataset";
 
 function formatBytes(n) {
   if (n == null) return "—";
@@ -80,13 +89,32 @@ function ZoneCard({ zoneKey, data }) {
 export default function LakehouseZones() {
   const [datasets, setDatasets] = useState([]);
   const [datasetsLoaded, setDatasetsLoaded] = useState(false);
-  const [selected, setSelected] = useState("");
+  const [selected, setSelected] = useState(() => {
+    try {
+      return localStorage.getItem(SELECTED_DATASET_KEY) || "";
+    } catch {
+      return "";
+    }
+  });
   const [state, setState] = useState({ loading: false, configured: true, zones: {}, error: null });
   const [refreshTick, setRefreshTick] = useState(0);
+
+  function selectDataset(name) {
+    setSelected(name);
+    try {
+      if (name) localStorage.setItem(SELECTED_DATASET_KEY, name);
+      else localStorage.removeItem(SELECTED_DATASET_KEY);
+    } catch {
+      // Non-fatal -- selection still works for this session even if storage is unavailable.
+    }
+  }
 
   // Same DatasetPicker pattern as the rest of the dashboard (SAMA,
   // Golden Records, Audit Log) -- DataOS is a multi-dataset platform
   // now, so every page scoped to a dataset gets this picker, this app.
+  // The remembered selection (if any) is validated against the real
+  // dataset list once it loads -- a stale name from a deleted dataset
+  // is dropped rather than left pointing at nothing.
   useEffect(() => {
     let cancelled = false;
     async function loadDatasets() {
@@ -95,7 +123,18 @@ export default function LakehouseZones() {
         if (cancelled) return;
         const list = res.datasets ?? [];
         setDatasets(list);
-        if (list.length === 1) setSelected(list[0].dataset_name);
+        setSelected((current) => {
+          const stillValid = current && list.some((d) => d.dataset_name === current);
+          if (stillValid) return current;
+          const next = list.length === 1 ? list[0].dataset_name : "";
+          try {
+            if (next) localStorage.setItem(SELECTED_DATASET_KEY, next);
+            else localStorage.removeItem(SELECTED_DATASET_KEY);
+          } catch {
+            // Non-fatal.
+          }
+          return next;
+        });
         setDatasetsLoaded(true);
       } catch {
         if (!cancelled) setDatasetsLoaded(true);
@@ -105,6 +144,7 @@ export default function LakehouseZones() {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -139,11 +179,8 @@ export default function LakehouseZones() {
           </p>
         </div>
         <div className="flex items-start gap-3 flex-wrap">
-          <DatasetPicker datasets={datasets} value={selected} onChange={setSelected} />
-          <TriggerPipelineButton
-            datasetName={selected}
-            onTriggered={() => setTimeout(() => setRefreshTick((t) => t + 1), 3000)}
-          />
+          <DatasetPicker datasets={datasets} value={selected} onChange={selectDataset} />
+          <TriggerPipelineButton datasetName={selected} onTriggered={() => setRefreshTick((t) => t + 1)} />
         </div>
       </div>
 
@@ -172,6 +209,10 @@ export default function LakehouseZones() {
 
       {selected && (
         <>
+          <div className="mb-4">
+            <PipelineRunStatus datasetName={selected} onRunSettled={() => setRefreshTick((t) => t + 1)} />
+          </div>
+
           <div className="bg-white border border-line rounded-card px-7 py-6 shadow-[0_1px_2px_rgba(0,0,0,0.02),0_8px_24px_-12px_rgba(0,0,0,0.06)]">
             <div className="flex items-center overflow-x-auto pb-1">
               <div className="flex flex-col gap-1.5 min-w-[128px]">

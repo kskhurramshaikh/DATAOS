@@ -7,17 +7,23 @@ import { api } from "../api";
 // explicit instruction, that would add load and page-load delay to
 // every single upload for a stage most uploads don't need run
 // immediately. This is always a real, deliberate click.
+//
+// Only reports whether the TRIGGER CALL itself succeeded or failed
+// (a network/auth/config problem) -- ongoing run progress is shown by
+// the separate, richer PipelineRunStatus component, not duplicated
+// here as a static caption that goes stale the moment the run
+// actually starts doing work.
 export default function TriggerPipelineButton({ datasetName, onTriggered }) {
-  const [state, setState] = useState({ busy: false, result: null, error: null });
+  const [state, setState] = useState({ busy: false, error: null });
 
   async function handleTrigger() {
-    setState({ busy: true, result: null, error: null });
+    setState({ busy: true, error: null });
     try {
       const res = await api.triggerPipeline(datasetName);
-      setState({ busy: false, result: res, error: null });
+      setState({ busy: false, error: null });
       onTriggered?.(res);
     } catch (e) {
-      setState({ busy: false, result: null, error: e.message });
+      setState({ busy: false, error: e.message });
     }
   }
 
@@ -39,10 +45,7 @@ export default function TriggerPipelineButton({ datasetName, onTriggered }) {
           </>
         )}
       </button>
-      {state.result && (
-        <div className="text-[10.5px] text-success text-right max-w-[220px]">Triggered — run {state.result.run_id}</div>
-      )}
-      {state.error && <div className="text-[10.5px] text-danger text-right max-w-[220px]">{state.error}</div>}
+      {state.error && <div className="text-[10.5px] text-danger text-right max-w-[260px]">{state.error}</div>}
     </div>
   );
 }
