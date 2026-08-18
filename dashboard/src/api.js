@@ -60,4 +60,14 @@ export const api = {
   getNdiSnapshot: (id) => getJSON(`/governance/ndi/history/${id}`),
   recordNdiSnapshot: (recordedBy, note) =>
     postJSON("/governance/ndi/snapshot", { recorded_by: recordedBy, note: note || null }),
+
+  // Data Catalog + Field Lineage (item 6). Real data from Marquez --
+  // see app/marquez_client.py's module docstring. No dataset
+  // parameter on getCatalogJobs/getFieldLineage -- both return
+  // everything Marquez knows across all datasets, since a catalog is
+  // meant to be browsed as a whole, not scoped to one dataset at a
+  // time the way the Lakehouse/SAMA pages are.
+  getCatalogJobs: () => getJSON("/catalog/jobs"),
+  getCatalogJobRuns: (jobName, limit = 10) => getJSON(`/catalog/jobs/${encodeURIComponent(jobName)}/runs?limit=${limit}`),
+  getFieldLineage: () => getJSON("/catalog/lineage"),
 };
