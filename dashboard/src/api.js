@@ -1,7 +1,7 @@
 const BASE = "/api";
 
-async function getJSON(path) {
-  const res = await fetch(`${BASE}${path}`);
+async function getJSON(path, { signal } = {}) {
+  const res = await fetch(`${BASE}${path}`, { signal });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || `${path} -> ${res.status}`);
   return data;
@@ -51,7 +51,21 @@ export const api = {
   // Field-Level Lineage (Item 3's 3rd of 4 required MDM pages,
   // reopened 2026-08-18). Dataset-scoped, unlike Item 6's catalog
   // lineage -- see app/field_lineage.py's module docstring.
-  getMdmFieldLineage: (datasetName) => getJSON(`/mdm/field-lineage?dataset_name=${encodeURIComponent(datasetName)}`),
+  //
+  // ACCEPTS { signal } (2026-08-18, real bug fix): the page-level
+  // useEffect cleanup previously only set a local `cancelled` flag,
+  // which suppressed a stale response's STATE UPDATE but never
+  // actually cancelled the underlying fetch -- so a stale in-flight
+  // request kept running server-side. Confirmed live (both by Claude
+  // and independently by Khurram, same symptom): the page got stuck
+  // on "Loading..." permanently, and the network panel showed several
+  // real duplicate requests to this exact endpoint piling up, with a
+  // mix of 503 and one eventual 200 -- consistent with redundant
+  // requests queuing against this service's single free-tier worker.
+  // getJSON's new signal option lets the page actually abort a
+  // superseded request via AbortController, instead of just ignoring
+  // its result.
+  getMdmFieldLineage: (datasetName, opts) => getJSON(`/mdm/field-lineage?dataset_name=${encodeURIComponent(datasetName)}`, opts),
 
   getSama: (datasetName) => getJSON(`/governance/sama${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
   getAuditLog: (datasetName) => getJSON(`/governance/audit-log${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
