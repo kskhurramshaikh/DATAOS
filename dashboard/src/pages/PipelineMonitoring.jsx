@@ -19,24 +19,36 @@ const STATUS_STYLE = {
 // preview). Picking a dataset here also sticks if you switch to Zones.
 const SELECTED_DATASET_KEY = "dataos:lakehouse:selectedDataset";
 
-// TaskNode is deliberately NOT given its own onClick handler (2026-08-18,
-// real bug found in live testing: clicking a task node opened no log
-// panel). React Flow nodes are draggable by default, and any tiny mouse
-// movement between mousedown/mouseup -- which happens on essentially
-// every real click, not just deliberate drags -- gets captured by React
-// Flow's own drag handling before a plain onClick on an inner element
-// ever fires, making the click silently do nothing some or all of the
-// time. The reliable way to handle a node click in React Flow is its
-// own onNodeClick prop on the <ReactFlow> element itself (below), which
-// isn't subject to that same event-capture race -- combined with
-// nodesDraggable={false}, since dragging a pipeline task node has no
-// purpose here anyway and was the actual source of the ambiguity.
-function TaskNode({ data }) {
+// BUG FIX ROUND 2 (2026-08-18, confirmed live via real testing, not
+// guessed): the earlier fix (React Flow's own onNodeClick prop,
+// instead of a plain onClick on this node's div, with the reasoning
+// that React Flow's drag-handling was swallowing plain clicks) did NOT
+// actually work -- confirmed directly: a genuine mouse click (via
+// Claude-in-Chrome's computer tool, not a synthetic dispatchEvent)
+// left React's own selectedTask state unset, and zero network request
+// to /api/pipeline/logs/... ever fired. onNodeClick itself simply
+// never fired in this deployed build, for reasons not worth chasing
+# further blind (same lesson as Field Lineage's edge-rendering saga:
+# stop guessing at this library's internals, use the mechanism that's
+# actually confirmed to work).
+#
+# Real fix: a plain onClick directly on this node's own div, PLUS the
+# onNodeClick prop kept as a harmless redundant path. This is safe now
+# in a way it wasn't before nodesDraggable={false} existed: the
+# original drag-vs-click conflict this was trying to avoid depended on
+# React Flow's drag-gesture detection actually running on this node,
+# which nodesDraggable={false} (already present on the <ReactFlow>
+# element below) disables entirely -- so a plain onClick has nothing
+# left to race against. data.onSelect is threaded in from buildGraph()
+# below (a closure over the current onSelectTask), not a prop this
+# component receives directly from React Flow.
+function TaskNode({ id, data }) {
   const s = STATUS_STYLE[data.status] || STATUS_STYLE.queued;
   return (
     <div
       className="rounded-[10px] px-3.5 py-2.5 cursor-pointer"
       style={{ background: s.bg, border: `1.5px solid ${s.border}`, minWidth: 150 }}
+      onClick={() => data.onSelect?.(id)}
     >
       <div className="flex items-center gap-2">
         <span className="w-2 h-2 rounded-full inline-block" style={{ background: s.dot }} />
@@ -55,7 +67,12 @@ const nodeTypes = { task: TaskNode };
 // Task names match the generalized DAG (2026-08-18): verify_silver_ready
 // (was bronze_ingest) -> silver_to_iceberg (was silver_transform) ->
 // gold_compute (unchanged).
-function buildGraph(tasks) {
+//
+// onSelect (2026-08-18, bug fix round 2): threaded into each node's
+// data so TaskNode's own onClick above can call it directly -- see
+// that component's comment for why this replaced relying solely on
+# React Flow's onNodeClick, which was confirmed live not to fire.
+function buildGraph(tasks, onSelect) {
   const order = ["verify_silver_ready", "silver_to_iceberg", "gold_compute"];
   const positioned = order
     .map((id, i) => {
@@ -68,6 +85,7 @@ function buildGraph(tasks) {
           label: id,
           status: t?.state || "queued",
           duration: t?.duration_s,
+          onSelect,
         },
       };
     })
@@ -179,8 +197,9 @@ export default function PipelineMonitoring() {
     [latestRun]
   );
 
-  // React Flow's own onNodeClick -- see TaskNode's comment above for
-  // why this replaced a plain onClick on the node's inner div.
+  // Kept as a harmless redundant path alongside TaskNode's own onClick
+  // -- see that component's comment for why the plain onClick is now
+  // the mechanism actually relied on.
   const handleNodeClick = useCallback(
     (_event, node) => {
       onSelectTask(node.id);
@@ -188,7 +207,7 @@ export default function PipelineMonitoring() {
     [onSelectTask]
   );
 
-  const { nodes, edges } = latestRun ? buildGraph(latestRun.tasks) : { nodes: [], edges: [] };
+  const { nodes, edges } = latestRun ? buildGraph(latestRun.tasks, onSelectTask) : { nodes: [], edges: [] };
 
   const allSucceeded = latestRun?.tasks?.length > 0 && latestRun.tasks.every((t) => t.state === "success");
 
