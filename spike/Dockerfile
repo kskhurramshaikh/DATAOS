@@ -39,6 +39,21 @@ USER airflow
 #   with the sqlalchemy conflict). Needed for S3-backed remote task
 #   logging (see ENV vars below) -- gives Airflow's S3TaskHandler and the
 #   "aws" connection type used to point it at SeaweedFS.
+#
+# Item 6 (Data Catalog + Field Lineage) additions below -- OpenLineage
+# integration, so this DAG's real runs emit real lineage events to Marquez
+# (see dataos-marquez service) with zero per-task code changes: the
+# provider auto-instruments via Airflow's own Listener plugin API the
+# moment it's installed and OPENLINEAGE_URL is set (see entrypoint.sh /
+# Render env vars -- not baked in here since the Marquez URL is
+# deployment config, not build-time). Versions below are pinned to
+# Airflow 2.10.4's own official constraints (sourced from the adjacent
+# 2.10.5 constraints file -- 2.10.4's own file returns a 404 on GitHub,
+# a known/reported Airflow infra issue; provider pins do not change
+# between adjacent patch releases of the same 2.10.x minor, so this is
+# the correct pin, not a guess) -- same discipline as the amazon
+# provider pin above, after the exact same class of sqlalchemy-conflict
+# risk already burned us once on this image.
 RUN pip install --no-cache-dir \
     "pyiceberg[pyarrow]==0.11.1" \
     "duckdb==1.1.3" \
@@ -48,7 +63,12 @@ RUN pip install --no-cache-dir \
     "scikit-learn" \
     "rapidfuzz" \
     "psycopg2-binary" \
-    "apache-airflow-providers-amazon==9.1.0"
+    "apache-airflow-providers-amazon==9.1.0" \
+    "apache-airflow-providers-common-sql==1.21.0" \
+    "apache-airflow-providers-common-compat==1.3.0" \
+    "openlineage-integration-common==1.27.0" \
+    "openlineage-python==1.27.0" \
+    "apache-airflow-providers-openlineage==2.0.0"
 
 # Deliberately NOT under /opt/airflow -- the persistent disk mounted there
 # (for Airflow's own run history / login / logs) would silently hide
