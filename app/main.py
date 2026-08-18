@@ -63,6 +63,15 @@
 # inputs change -- ndi_history reports that as a fact rather than
 # manufacturing movement. See its module docstring.
 #
+# Item 6: Data Catalog + Field Lineage, dashboard pages under
+# "/dashboard/catalog". New /api/catalog/* endpoints below, reading
+# real data from Marquez (the actual OpenLineage reference
+# implementation this stack sends every DAG run's lineage events to --
+# see app/marquez_client.py's own module docstring for the full
+# reasoning, including why field lineage is assembled from job run
+# facets directly rather than Marquez's own /datasets endpoint, which
+# was confirmed to stay empty in this setup).
+#
 # ERROR-HANDLING NOTE (2026-08-17): several /api/mdm/* routes below
 # catch Exception broadly, not just ValueError -- a deliberate widening
 # added mid-debugging the Postgres migration, after upload-dataset's
@@ -92,7 +101,7 @@ from app.compliance_agent import evaluate
 from app.router import route, NoCapabilityRegisteredError
 from app.capability_registry import CAPABILITY_REGISTRY
 from app.db import init_db, storage_status
-from app import auth, chat_store, lakehouse_client, object_storage
+from app import auth, chat_store, lakehouse_client, marquez_client, object_storage
 from app.adapters import dataset_adapter, banking_adapter, dedup_adapter, ndi_history
 from app.visualization import suggest_visualization
 from app.interpreter import interpret, interpret_stream, explain_result
@@ -1179,6 +1188,30 @@ def governance_ndi_record_snapshot(req: NdiSnapshotRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the MDM write routes above; a bare 500 on a DB write cost several rounds to diagnose during the Postgres migration.
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+# ---------------------------------------------------------------------
+# Catalog dashboard API (Item 6 -- Data Catalog + Field Lineage). Same
+# unauthenticated, read-only pattern as every dashboard endpoint above.
+# All three wrap app/marquez_client.py -- see that module's own
+# docstring for what each reads and from where, and for why field
+# lineage is assembled from job run facets directly rather than
+# Marquez's own /datasets endpoint (confirmed empty in this setup).
+# ---------------------------------------------------------------------
+
+@app.get("/api/catalog/jobs")
+def catalog_jobs():
+    return marquez_client.list_jobs()
+
+
+@app.get("/api/catalog/jobs/{job_name:path}/runs")
+def catalog_job_runs(job_name: str, limit: int = 10):
+    return marquez_client.get_job_runs(job_name, limit=limit)
+
+
+@app.get("/api/catalog/lineage")
+def catalog_lineage():
+    return marquez_client.get_field_lineage()
 
 
 @app.post("/intent")
