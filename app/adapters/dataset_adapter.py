@@ -50,6 +50,20 @@
 # functions (rather than folded into run()) specifically so the
 # streaming chat endpoint can call them one at a time and report real
 # progress between them, not synthetic delays.
+#
+# delete_dataset() (2026-08-18): the counterpart write path this module
+# never had -- every capability above adds or promotes a dataset, none
+# removed one. Added specifically to retire "Banking_Demo": a dataset
+# whose Silver file predates the 2026-08-17 storage-persistence fix and
+# never survived the redeploys before that fix landed, and whose data
+# is identical to "Bank_Demo01" (which DOES work end to end and is kept
+# as the one real, working example). Real, permanent deletion -- the
+# Postgres row, every duplicate_clusters/golden_records row tied to it,
+# and every Bronze/Silver/Gold object in SeaweedFS under its prefix --
+# not a soft/hidden flag. Deliberately does NOT touch Airflow's own
+# Postgres run history or Marquez's lineage records for this dataset --
+# those are a real, accurate record of past run attempts (including the
+# failures), not something a dataset removal should rewrite.
 
 import csv
 import io
@@ -547,6 +561,52 @@ def promote_dataset(payload: dict) -> dict:
         "dropped_columns": gold["dropped_columns"],
         "numeric_summary": gold["numeric_summary"],
         "top_categories": gold["top_categories"],
+    }
+
+
+def delete_dataset(dataset_name: str) -> dict:
+    """Permanently removes a dataset: its `datasets` row, every
+    `duplicate_clusters`/`golden_records` row tied to it (own queries
+    here, not a call into dedup_adapter, to avoid a circular import --
+    dedup_adapter already imports this module), and every Bronze/
+    Silver/Gold object under its prefix in SeaweedFS. See this
+    module's own docstring for why this exists and what it's for.
+
+    Deliberately real deletion, not a status flag -- callers that want
+    to keep a dataset but stop it being used (e.g. a "held" stage)
+    already have promote_dataset()/the existing stage column for that;
+    this is for a dataset that shouldn't exist in the system at all.
+
+    Raises ValueError if the dataset doesn't exist, same pattern as
+    every other lookup-by-name function in this module."""
+    if not dataset_name:
+        raise ValueError("dataset_name is required to delete a dataset.")
+
+    safe_name = _safe_name(dataset_name)
+    with get_conn() as conn:
+        row = conn.execute("SELECT id FROM datasets WHERE safe_name = ?", (safe_name,)).fetchone()
+        if row is None:
+            raise ValueError(f"No dataset found matching '{dataset_name}'.")
+
+        golden_deleted = conn.execute(
+            "DELETE FROM golden_records WHERE dataset_safe_name = ?", (safe_name,)
+        ).rowcount
+        clusters_deleted = conn.execute(
+            "DELETE FROM duplicate_clusters WHERE dataset_safe_name = ?", (safe_name,)
+        ).rowcount
+        conn.execute("DELETE FROM datasets WHERE safe_name = ?", (safe_name,))
+        conn.commit()
+
+    storage_result = {}
+    for zone in ("bronze", "silver", "gold"):
+        storage_result[zone] = object_storage.delete_prefix(f"{zone}/{safe_name}/")
+
+    return {
+        "dataset_name": safe_name,
+        "deleted": True,
+        "golden_records_deleted": golden_deleted,
+        "duplicate_clusters_deleted": clusters_deleted,
+        "storage": storage_result,
     }
 
 
