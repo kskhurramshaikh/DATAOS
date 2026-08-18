@@ -47,7 +47,9 @@ abstraction and shows every row in iceberg_tables directly, over THIS
 app's own LAKEHOUSE_DB_URI connection -- added after a DAG run reported
 'success' in Airflow's own UI while get_zone_stats() kept showing that
 same dataset's Silver/Gold as 'never run'. See its own docstring for
-the two failure modes it distinguishes.
+the two failure modes it distinguishes. (That specific incident turned
+out to be stale pre-rewrite run history, not a bug -- see LOGS_BUCKET
+below for the ACTUAL bug this diagnostic-driven session found.)
 
 Every function here degrades gracefully (returns an explicit
 "not configured" / empty result, or a per-field "error") rather than
@@ -84,6 +86,17 @@ AIRFLOW_API_PASSWORD = os.environ.get("AIRFLOW_API_PASSWORD", "")
 # Bronze zone stats below read from HERE now, not a spike-only bucket.
 APP_DATA_BUCKET = os.environ.get("DATAOS_APP_BUCKET", "dataos-app-datasets")
 
+# Where Airflow's own S3TaskHandler actually writes remote task logs --
+# configured in spike/entrypoint.sh's AIRFLOW_CONN_SEAWEEDFS_S3, always
+# the "dataos-spike" bucket, NEVER APP_DATA_BUCKET. These are genuinely
+# different buckets: APP_DATA_BUCKET holds dataset Bronze/Silver/Gold
+# files (2026-08-18's multi-dataset change); LOGS_BUCKET has always
+# held Airflow's task logs, unrelated to that change and unaffected by
+# it. get_task_log() below was mistakenly pointed at APP_DATA_BUCKET
+# during that rewrite -- confirmed live (a real successful task's log
+# came back NoSuchKey) -- fixed to read from LOGS_BUCKET, matching what
+# entrypoint.sh actually configures.
+LOGS_BUCKET = "dataos-spike"
 LOGS_PREFIX = "airflow-logs"
 DAG_ID = "banking_demo_lakehouse_spike"  # legacy name -- see the DAG's own module docstring
 
@@ -305,7 +318,8 @@ def get_pipeline_runs(dataset_name: str | None, limit: int = 10) -> dict:
 
 def get_task_log(run_id: str, task_id: str, try_number: int = 1) -> dict:
     """Reads actual log content from SeaweedFS, at the path Airflow's
-    S3TaskHandler writes to. Unaffected by the multi-dataset change --
+    S3TaskHandler writes to -- LOGS_BUCKET ("dataos-spike"), NOT
+    APP_DATA_BUCKET. Unaffected by the multi-dataset change otherwise --
     run_id (now dataset-prefixed) already uniquely identifies the run,
     same as before."""
     if not is_configured():
@@ -314,7 +328,7 @@ def get_task_log(run_id: str, task_id: str, try_number: int = 1) -> dict:
     key = f"{LOGS_PREFIX}/dag_id={DAG_ID}/run_id={run_id}/task_id={task_id}/attempt={try_number}.log"
     try:
         s3 = _s3_client()
-        obj = s3.get_object(Bucket=APP_DATA_BUCKET, Key=key)
+        obj = s3.get_object(Bucket=LOGS_BUCKET, Key=key)
         return {"configured": True, "log": obj["Body"].read().decode("utf-8", errors="replace")}
     except Exception as e:  # noqa: BLE001
         return {"configured": True, "log": None, "error": str(e)}
