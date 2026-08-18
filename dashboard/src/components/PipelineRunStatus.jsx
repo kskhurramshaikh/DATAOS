@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 
 const STEP_ORDER = ["verify_silver_ready", "silver_to_iceberg", "gold_compute"];
@@ -35,7 +35,25 @@ function StepDot({ taskId, task }) {
 export default function PipelineRunStatus({ datasetName, onRunSettled }) {
   const [run, setRun] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [notifiedRunId, setNotifiedRunId] = useState(null);
+
+  // A ref, NOT state -- confirmed live (2026-08-18) as the root cause
+  // of a real bug: poll() below is a self-recursive local function that
+  // calls itself directly via setTimeout, not through React's render
+  // cycle. A `useState` value read inside that closure is captured ONCE
+  // at effect setup and never reflects later `setX()` calls made from
+  // within the same closure -- so the old state-based version's
+  // "already notified this run_id" check stayed permanently stale
+  // (comparing against the very first render's value, effectively
+  // always null), meaning onRunSettled() fired on EVERY poll cycle
+  // instead of once per newly-completed run. That meant the parent's
+  // refreshTick kept bumping every ~4 seconds, tearing down and
+  // restarting Zones' own data fetch before it ever had the ~12+
+  // seconds it legitimately needs to complete -- so a fetch that WAS
+  // succeeding server-side (confirmed via direct testing) never got
+  // the chance to apply its result client-side. A ref has no such
+  // staleness problem: reading/writing `.current` always sees the
+  // latest value, even from inside a long-lived recursive closure.
+  const notifiedRunIdRef = useRef(null);
 
   useEffect(() => {
     if (!datasetName) {
@@ -44,6 +62,7 @@ export default function PipelineRunStatus({ datasetName, onRunSettled }) {
     }
     let cancelled = false;
     let timer;
+    notifiedRunIdRef.current = null; // reset for a genuinely new dataset selection
 
     async function poll() {
       try {
@@ -54,8 +73,8 @@ export default function PipelineRunStatus({ datasetName, onRunSettled }) {
         setLoading(false);
 
         const settled = latest && (latest.state === "success" || latest.state === "failed");
-        if (settled && latest.run_id !== notifiedRunId) {
-          setNotifiedRunId(latest.run_id);
+        if (settled && latest.run_id !== notifiedRunIdRef.current) {
+          notifiedRunIdRef.current = latest.run_id;
           onRunSettled?.();
         }
 
