@@ -311,6 +311,16 @@ def lakehouse_debug(namespace: str = "silver", table_name: str = "ifrs9_portfoli
     return lakehouse_client.debug_metadata_read(namespace=namespace, table_name=table_name)
 
 
+@app.get("/api/lakehouse/debug-catalog")
+def lakehouse_debug_catalog(dataset_name: str | None = None):
+    """Diagnostic (2026-08-18) -- added after a DAG run showed 'success'
+    in Airflow's own UI while the dashboard kept reporting that
+    dataset's Silver/Gold as 'never run'. See
+    lakehouse_client.debug_catalog_scan()'s own docstring for exactly
+    what this compares and why."""
+    return lakehouse_client.debug_catalog_scan(dataset_name)
+
+
 # ---------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------
