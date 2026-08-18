@@ -36,6 +36,21 @@ fabricates a trace where none exists -- a field with no golden
 records yet, or a dataset that never ran the DAG's gold_compute
 IFRS9/NDI path, correctly shows "not available for this dataset" for
 that specific source rather than an invented path.
+
+PERFORMANCE FIX (2026-08-18, found live): the first version called
+marquez_client.get_field_lineage() TWICE per request -- once inside
+_ecl_sar_lineage(), once inside _ndi_score_lineage() -- each a fresh
+call that itself makes several sequential HTTP round-trips to the
+separate Marquez service (list_jobs(), then get_job_runs() once per
+job). Confirmed live: the dashboard page got stuck on "Loading..."
+long enough to look hung, and the network panel showed a single
+request sitting "pending" well past what a normal response should
+take -- consistent with this endpoint doing roughly double the
+necessary external calls, against a Marquez service that may itself
+be a free-tier instance subject to the same cold-start slowness this
+whole stack has documented elsewhere. Fixed by fetching the graph
+ONCE in get_field_lineage_for_dataset() and passing it into both
+field functions, instead of each re-fetching it independently.
 """
 
 from app import marquez_client
@@ -138,15 +153,17 @@ def _duplicate_flag_lineage(dataset_name: str, record: dict | None) -> dict:
     }
 
 
-def _dag_dataset_lineage(dataset_name: str, keyword: str) -> dict | None:
-    """Shared helper for ECL_SAR/NDI_SCORE's DAG-based path: pulls
-    marquez_client's full lineage graph, filters to this dataset's
-    gold_compute job, and finds the one Gold output dataset node whose
-    URI contains `keyword` (e.g. "ndi" or "ifrs9" -- these are the
-    actual Iceberg table name fragments gold_compute writes, per the
-    DAG's own conditional-outlet logic). Returns None if Marquez isn't
-    configured or this dataset never produced that specific output."""
-    graph = marquez_client.get_field_lineage()
+def _dag_dataset_lineage(graph: dict, dataset_name: str, keyword: str) -> dict | None:
+    """Shared helper for ECL_SAR/NDI_SCORE's DAG-based path: takes an
+    ALREADY-FETCHED marquez_client lineage graph (see the module
+    docstring's PERFORMANCE FIX -- this used to fetch it itself, once
+    per field, doubling the external Marquez round-trips per request),
+    filters to this dataset's gold_compute job, and finds the one Gold
+    output dataset node whose URI contains `keyword` (e.g. "ndi" or
+    "ifrs9" -- the actual Iceberg table name fragments gold_compute
+    writes, per the DAG's own conditional-outlet logic). Returns None
+    if Marquez isn't configured or this dataset never produced that
+    specific output."""
     if not graph.get("configured"):
         return None
 
@@ -176,14 +193,14 @@ def _dag_dataset_lineage(dataset_name: str, keyword: str) -> dict | None:
     return {"run_state": job_node.get("run_state"), "inputs": input_uris, "output": output_uri}
 
 
-def _ecl_sar_lineage(dataset_name: str) -> dict:
+def _ecl_sar_lineage(dataset_name: str, graph: dict) -> dict:
     """ECL_SAR: two real code paths -- only the Airflow DAG one is
     Marquez-traceable. The on-demand chat "Compute IFRS 9" action
     (banking_adapter.run_ifrs9()) is NOT part of the DAG, NOT
     Marquez-tracked, and not durably stored anywhere after the chat
     response is shown -- stated plainly rather than inventing a trace
     for it."""
-    dag_trace = _dag_dataset_lineage(dataset_name, "ifrs9")
+    dag_trace = _dag_dataset_lineage(graph, dataset_name, "ifrs9")
     return {
         "field": "ECL_SAR",
         "source_system": "Airflow DAG / Marquez (when computed via the pipeline)",
@@ -212,13 +229,13 @@ def _ecl_sar_lineage(dataset_name: str) -> dict:
     }
 
 
-def _ndi_score_lineage(dataset_name: str) -> dict:
+def _ndi_score_lineage(dataset_name: str, graph: dict) -> dict:
     """NDI_SCORE: same DAG-vs-on-demand split as ECL_SAR, but the
     on-demand path IS durably recorded (ndi_history's snapshot table)
     -- just dataset-agnostic, since NDI assessment runs on a fixed
     baseline per Item 5's own design, not per-dataset uploaded data.
     Both real sources are shown, clearly labeled as separate."""
-    dag_trace = _dag_dataset_lineage(dataset_name, "ndi")
+    dag_trace = _dag_dataset_lineage(graph, dataset_name, "ndi")
     history = ndi_history.list_snapshots(limit=1)
     latest_snapshot = history["snapshots"][0] if history["snapshots"] else None
 
@@ -265,7 +282,11 @@ def get_field_lineage_for_dataset(dataset_name: str) -> dict:
     fields Dr. Saber named, each traced through every real system that
     actually produces it. Raises ValueError if the dataset doesn't
     exist, matching every other lookup-by-name function in this
-    codebase."""
+    codebase.
+
+    Fetches the Marquez lineage graph ONCE (see module docstring's
+    PERFORMANCE FIX) and passes it to both ECL_SAR and NDI_SCORE's
+    trace functions, instead of each fetching it independently."""
     if not dataset_name:
         raise ValueError("dataset_name is required.")
 
@@ -273,12 +294,14 @@ def get_field_lineage_for_dataset(dataset_name: str) -> dict:
     if record is None:
         raise ValueError(f"No dataset found matching '{dataset_name}'.")
 
+    graph = marquez_client.get_field_lineage()
+
     return {
         "dataset_name": dataset_name,
         "fields": {
             "NATIONAL_ID": _national_id_lineage(dataset_name, record),
             "DUPLICATE_FLAG": _duplicate_flag_lineage(dataset_name, record),
-            "ECL_SAR": _ecl_sar_lineage(dataset_name),
-            "NDI_SCORE": _ndi_score_lineage(dataset_name),
+            "ECL_SAR": _ecl_sar_lineage(dataset_name, graph),
+            "NDI_SCORE": _ndi_score_lineage(dataset_name, graph),
         },
     }
