@@ -72,6 +72,13 @@ original spike's history) and not pyiceberg's own SqlCatalog (needs a
 sqlalchemy version incompatible with this Airflow image). See the
 original version of this file (git history) for the full investigation
 if this ever needs revisiting.
+
+CONNECTION LEAK FIX (2026-08-18): pg_iceberg_catalog.py's own docstring
+has the full story -- it now holds ONE shared Postgres connection per
+instance instead of opening a fresh one per method call, which means
+every catalog instance created below MUST be closed when the task is
+done with it. Both tasks below now use it as a context manager
+(`with _iceberg_catalog() as catalog:`) rather than leaving it open.
 """
 from __future__ import annotations
 
@@ -131,6 +138,10 @@ def _s3_client():
 
 
 def _iceberg_catalog():
+    """Returns a PostgresIcebergCatalog instance -- callers MUST use it
+    as a context manager (`with _iceberg_catalog() as catalog:`) or call
+    `.close()` explicitly when done. See CONNECTION LEAK FIX in the
+    module docstring."""
     if not ICEBERG_CATALOG_DB_URI:
         raise RuntimeError(
             "No Iceberg catalog DB connection string found -- set "
@@ -243,8 +254,11 @@ def banking_demo_lakehouse_spike():
         raw_bytes = s3.get_object(Bucket=APP_DATA_BUCKET, Key=verify_result["silver_key"])["Body"].read()
         df = pd.read_csv(io.BytesIO(raw_bytes))
 
-        catalog = _iceberg_catalog()
-        table_id = _write_iceberg_table(catalog, "silver", dataset_name, df)
+        # Context manager -- see CONNECTION LEAK FIX in the module
+        # docstring: the catalog now holds one shared connection for
+        # its lifetime and must be explicitly closed when done.
+        with _iceberg_catalog() as catalog:
+            table_id = _write_iceberg_table(catalog, "silver", dataset_name, df)
 
         return {"dataset_name": dataset_name, "silver_table": table_id, "row_count": len(df)}
 
@@ -260,36 +274,40 @@ def banking_demo_lakehouse_spike():
         from app.adapters import banking_adapter as ba
 
         dataset_name = silver_result["dataset_name"]
-        catalog = _iceberg_catalog()
-        df = catalog.load_table(silver_result["silver_table"]).scan().to_pandas()
 
-        gold_tables = []
+        # Same context-manager usage as silver_to_iceberg -- ONE
+        # connection shared across load_table() plus one or two
+        # _write_iceberg_table() calls below, closed once at the end.
+        with _iceberg_catalog() as catalog:
+            df = catalog.load_table(silver_result["silver_table"]).scan().to_pandas()
 
-        ndi_result = ba.run_ndi_radar({})
-        ndi_table = _write_iceberg_table(
-            catalog, "gold", f"{dataset_name}_ndi",
-            pd.DataFrame([{
-                "display_score": ndi_result["display_score"],
-                "overall_compliance_pct": ndi_result["overall_compliance_pct"],
-                "maturity_level": ndi_result["maturity_level"],
-            }]),
-        )
-        gold_tables.append(ndi_table)
+            gold_tables = []
 
-        ifrs9_ready = all(c in df.columns for c in IFRS9_MODELING_COLS)
-        total_ecl = None
-        if ifrs9_ready:
-            ifrs9_result = ba.run_ifrs9({"csv_content": df.to_csv(index=False), "scenario": "base"})
-            ifrs9_table = _write_iceberg_table(
-                catalog, "gold", f"{dataset_name}_ifrs9",
+            ndi_result = ba.run_ndi_radar({})
+            ndi_table = _write_iceberg_table(
+                catalog, "gold", f"{dataset_name}_ndi",
                 pd.DataFrame([{
-                    "total_computed_ecl": ifrs9_result["total_computed_ecl"],
-                    "reporting_date": ifrs9_result["reporting_date"],
-                    "engine_mode": ifrs9_result["engine_mode"],
+                    "display_score": ndi_result["display_score"],
+                    "overall_compliance_pct": ndi_result["overall_compliance_pct"],
+                    "maturity_level": ndi_result["maturity_level"],
                 }]),
             )
-            gold_tables.append(ifrs9_table)
-            total_ecl = ifrs9_result["total_computed_ecl"]
+            gold_tables.append(ndi_table)
+
+            ifrs9_ready = all(c in df.columns for c in IFRS9_MODELING_COLS)
+            total_ecl = None
+            if ifrs9_ready:
+                ifrs9_result = ba.run_ifrs9({"csv_content": df.to_csv(index=False), "scenario": "base"})
+                ifrs9_table = _write_iceberg_table(
+                    catalog, "gold", f"{dataset_name}_ifrs9",
+                    pd.DataFrame([{
+                        "total_computed_ecl": ifrs9_result["total_computed_ecl"],
+                        "reporting_date": ifrs9_result["reporting_date"],
+                        "engine_mode": ifrs9_result["engine_mode"],
+                    }]),
+                )
+                gold_tables.append(ifrs9_table)
+                total_ecl = ifrs9_result["total_computed_ecl"]
 
         return {
             "dataset_name": dataset_name,
