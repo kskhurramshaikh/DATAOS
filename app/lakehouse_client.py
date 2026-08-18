@@ -1,60 +1,51 @@
 """
-Read-only data access for the Lakehouse dashboard (Item 2 of the DataOS
-3.0 Development Queue) -- reads REAL data from the spike infrastructure:
+Read-only(-ish) data access for the Lakehouse dashboard (Item 2 of the
+DataOS 3.0 Development Queue) -- reads REAL data from the spike
+infrastructure:
 
   - Bronze zone stats: direct S3 listing against SeaweedFS via boto3.
   - Silver/Gold zone stats: real Iceberg table row counts via
     PostgresIcebergCatalog (same module the spike DAG uses).
   - Pipeline run history/status: Airflow's own Postgres metadata tables
-    (dag_run, task_instance), queried directly with plain SQL -- Airflow
-    doesn't expose a lighter-weight read path for this than its own DB,
-    and this app already needs a Postgres connection for the Iceberg
-    catalog above, so it's the same connection, no new dependency.
+    (dag_run, task_instance), queried directly with plain SQL.
   - Task log content: read from SeaweedFS, at the path Airflow's own
-    S3TaskHandler writes to (see spike/entrypoint.sh's remote-logging
-    setup) -- s3://dataos-spike/airflow-logs/dag_id=X/run_id=Y/
-    task_id=Z/attempt=N.log
+    S3TaskHandler writes to.
+  - trigger_dag_run(): the ONE write this module does -- a manual,
+    per-dataset trigger via Airflow's REST API. See its own docstring
+    for why this is the only way the pipeline DAG ever runs.
 
 CROSS-REGION NOTE (2026-08-17): this app (dataos-2-0-pipeline) runs in
 Oregon; the spike services (dataos-spike-orchestrator/-storage, and
-their Postgres) run in Singapore. Render's private networking -- the
-internal hostnames like SEAWEEDFS_INTERNAL_HOST and Postgres's
-dpg-...-a short host -- only resolves WITHIN a region (confirmed
-directly: cross-region requests to those hostnames fail with "Name or
-service not known", not a permissions/timeout error). So this module
-talks to both services over their PUBLIC endpoints instead:
-  - LAKEHOUSE_DB_URI must be Postgres's *External* Database URL (from
-    the Render Postgres dashboard), not the internal one used by
-    Airflow/the spike orchestrator.
-  - SEAWEEDFS_PUBLIC_URL is the storage service's public HTTPS URL
-    (https://dataos-spike-storage.onrender.com). Render only exposes
-    ONE port publicly per service, chosen by that service's own PORT
-    env var -- dataos-spike-storage's PORT was changed from 8888
-    (SeaweedFS's Filer UI) to 8333 (the S3 API) specifically so this
-    app can reach it.
+their Postgres) run in Singapore. Render's private networking only
+resolves WITHIN a region, so this module talks to both services over
+their PUBLIC endpoints:
+  - LAKEHOUSE_DB_URI must be Postgres's *External* Database URL.
+  - SEAWEEDFS_PUBLIC_URL is the storage service's public HTTPS URL.
   - Falls back to the internal-hostname construction if
     SEAWEEDFS_PUBLIC_URL isn't set, so this still works unmodified if
     this module is ever reused by something running in the same region
     as the spike services.
 
-Every function here degrades gracefully (returns an explicit
-"not configured" / empty result) rather than raising when the required
-env vars aren't set yet, so the rest of the app keeps working before
-this cross-service wiring is completed. Per-table read errors inside
-get_zone_stats() are surfaced in the response (not silently swallowed)
--- catalog metadata reads succeeding while actual data-file reads fail
-is a real, distinct failure mode.
+MULTI-DATASET (2026-08-18): originally this module (and the DAG it
+reads) only ever knew about one hardcoded pipeline run for one file.
+Every read function below now takes a required dataset_name and scopes
+its query to that dataset specifically:
+  - Bronze: lists s3://{APP_DATA_BUCKET}/bronze/{dataset_name}/ instead
+    of a global "bronze/" prefix.
+  - Silver/Gold: looks up the specific Iceberg tables
+    silver.{dataset_name}, gold.{dataset_name}_ndi, and (only if it
+    exists) gold.{dataset_name}_ifrs9 -- not a scan of every table in
+    the namespace.
+  - Pipeline runs/task history: filtered by run_id LIKE
+    '{dataset_name}__%' -- see trigger_dag_run()'s docstring for why
+    run_id (a plain queryable column) is used for this instead of
+    Airflow's internal `conf` column, whose on-disk JSON storage format
+    isn't a stable external contract.
 
-FIXED (2026-08-17): pyiceberg's default file reader (pyarrow's
-S3FileSystem) returned a genuinely empty body reading Iceberg files over
-this app's cross-region SeaweedFS connection -- confirmed directly via
-debug_metadata_read() (still below, kept for future diagnosis if this
-ever regresses) by fetching the identical file two ways: plain boto3
-GetObject returned the real content correctly; pyarrow returned 0 bytes,
-no exception. _iceberg_catalog() below now sets pyiceberg's "py-io-impl"
-property to app.boto3_file_io.Boto3FileIO -- a small boto3-backed FileIO
-implementation -- instead of relying on pyarrow's (broken, on this
-specific path) S3 client.
+Every function here degrades gracefully (returns an explicit
+"not configured" / empty result, or a per-field "error") rather than
+raising when something isn't set up yet or a query fails, so the rest
+of the dashboard keeps working even when one zone/table has a problem.
 """
 from __future__ import annotations
 
@@ -64,6 +55,7 @@ from datetime import datetime, timezone
 import boto3
 import psycopg2
 import psycopg2.extras
+import requests
 
 LAKEHOUSE_DB_URI = os.environ.get("LAKEHOUSE_DB_URI", "")
 SEAWEEDFS_PUBLIC_URL = os.environ.get("SEAWEEDFS_PUBLIC_URL", "")
@@ -73,17 +65,25 @@ SEAWEEDFS_ACCESS_KEY = os.environ.get("SEAWEEDFS_ACCESS_KEY", "any")
 SEAWEEDFS_SECRET_KEY = os.environ.get("SEAWEEDFS_SECRET_KEY", "any")
 SEAWEEDFS_S3_REGION = os.environ.get("SEAWEEDFS_S3_REGION", "us-east-1")
 
-BRONZE_BUCKET = "dataos-spike"
-ICEBERG_BUCKET = "dataos-spike-iceberg"
-LOGS_PREFIX = "airflow-logs"
-DAG_ID = "banking_demo_lakehouse_spike"
+# Airflow's own REST API -- ONLY used by trigger_dag_run() below. Not
+# required for anything else in this module (every read function above
+# talks to Postgres/SeaweedFS directly, not Airflow's API).
+AIRFLOW_API_BASE_URL = os.environ.get("AIRFLOW_API_BASE_URL", "")
+AIRFLOW_API_USERNAME = os.environ.get("AIRFLOW_API_USERNAME", "")
+AIRFLOW_API_PASSWORD = os.environ.get("AIRFLOW_API_PASSWORD", "")
 
-ZONE_NAMESPACES = {"bronze": None, "silver": "silver", "gold": "gold"}
+# The app's real dataset storage (see app/object_storage.py) -- where
+# dataset_adapter.py's land_bronze/clean_to_silver actually write.
+# Bronze zone stats below read from HERE now, not a spike-only bucket.
+APP_DATA_BUCKET = os.environ.get("DATAOS_APP_BUCKET", "dataos-app-datasets")
+
+LOGS_PREFIX = "airflow-logs"
+DAG_ID = "banking_demo_lakehouse_spike"  # legacy name -- see the DAG's own module docstring
+
+IFRS9_MODELING_COLS = ["RATING", "FACILITY_TYPE", "DPD", "ORIGINATION", "MATURITY", "EAD"]
 
 
 def _s3_endpoint() -> str:
-    """Public HTTPS endpoint if set (the cross-region path this app
-    actually needs), else falls back to the internal host:port form."""
     if SEAWEEDFS_PUBLIC_URL:
         return SEAWEEDFS_PUBLIC_URL.rstrip("/")
     return f"http://{SEAWEEDFS_INTERNAL_HOST}:{SEAWEEDFS_S3_PORT}"
@@ -91,6 +91,10 @@ def _s3_endpoint() -> str:
 
 def is_configured() -> bool:
     return bool(LAKEHOUSE_DB_URI and (SEAWEEDFS_PUBLIC_URL or SEAWEEDFS_INTERNAL_HOST))
+
+
+def is_trigger_configured() -> bool:
+    return bool(AIRFLOW_API_BASE_URL and AIRFLOW_API_USERNAME and AIRFLOW_API_PASSWORD)
 
 
 def _pg_conn():
@@ -113,32 +117,30 @@ def _iceberg_catalog():
         "dataos_spike",
         **{
             "uri": LAKEHOUSE_DB_URI,
-            "warehouse": f"s3://{ICEBERG_BUCKET}/",
+            "warehouse": "s3://dataos-spike-iceberg/",
             "s3.endpoint": _s3_endpoint(),
             "s3.access-key-id": SEAWEEDFS_ACCESS_KEY,
             "s3.secret-access-key": SEAWEEDFS_SECRET_KEY,
             "s3.region": SEAWEEDFS_S3_REGION,
             "s3.path-style-access": "true",
-            # See module docstring: pyarrow's S3FileSystem (pyiceberg's
-            # default) returns empty file bodies over this app's
-            # cross-region connection -- swap in the boto3-backed reader,
-            # which is confirmed working, via pyiceberg's own documented
-            # plug-in property.
             "py-io-impl": "app.boto3_file_io.Boto3FileIO",
         },
     )
 
 
-def _last_task_run(cur, task_id: str) -> dict | None:
+def _last_task_run(cur, task_id: str, dataset_name: str) -> dict | None:
+    """Last completed run of one task, scoped to this dataset via a
+    run_id prefix match -- see MULTI-DATASET in the module docstring
+    for why run_id, not Airflow's `conf` column."""
     cur.execute(
         """
         SELECT end_date, state
         FROM task_instance
-        WHERE dag_id = %s AND task_id = %s AND end_date IS NOT NULL
+        WHERE dag_id = %s AND task_id = %s AND end_date IS NOT NULL AND run_id LIKE %s
         ORDER BY end_date DESC
         LIMIT 1
         """,
-        (DAG_ID, task_id),
+        (DAG_ID, task_id, f"{dataset_name}__%"),
     )
     row = cur.fetchone()
     if not row:
@@ -164,19 +166,22 @@ def _freshness_label(iso_timestamp: str | None) -> str:
     return f"{int(seconds // 86400)}d ago"
 
 
-def get_zone_stats() -> dict:
-    """Live Bronze/Silver/Gold stats. Bronze comes from a plain S3 listing
-    (it's raw files, not Iceberg tables); Silver/Gold come from real
-    Iceberg table scans via the Postgres catalog."""
+def get_zone_stats(dataset_name: str | None) -> dict:
+    """Live Bronze/Silver/Gold stats for ONE dataset. Bronze comes from
+    a plain S3 listing scoped to that dataset's prefix; Silver/Gold
+    come from real Iceberg table lookups for that dataset's specific
+    tables (not a scan of every table in the namespace)."""
     if not is_configured():
         return {"configured": False, "zones": {}}
+    if not dataset_name:
+        return {"configured": True, "zones": {}, "error": "dataset_name is required"}
 
     zones: dict = {}
 
-    # -- Bronze: plain S3 object listing --
+    # -- Bronze: S3 listing scoped to this dataset's prefix --
     try:
         s3 = _s3_client()
-        resp = s3.list_objects_v2(Bucket=BRONZE_BUCKET, Prefix="bronze/")
+        resp = s3.list_objects_v2(Bucket=APP_DATA_BUCKET, Prefix=f"bronze/{dataset_name}/")
         objects = resp.get("Contents", [])
         total_bytes = sum(o["Size"] for o in objects)
         latest = max((o["LastModified"] for o in objects), default=None)
@@ -189,49 +194,41 @@ def get_zone_stats() -> dict:
     except Exception as e:  # noqa: BLE001 -- surface as a degraded zone, not a 500 for the whole page
         zones["bronze"] = {"error": str(e)}
 
-    # -- Silver / Gold: real Iceberg table row counts --
+    # -- Silver / Gold: this dataset's specific Iceberg tables --
     try:
         catalog = _iceberg_catalog()
         conn = _pg_conn()
         try:
             with conn.cursor() as cur:
-                for zone_key, namespace, task_id in [
-                    ("silver", "silver", "silver_transform"),
-                    ("gold", "gold", "gold_compute"),
-                ]:
-                    try:
-                        table_ids = catalog.list_tables(namespace)
-                    except Exception as e:  # noqa: BLE001
-                        table_ids = []
-                        zones[zone_key] = {"error": f"list_tables failed: {e}"}
-                        continue
-
-                    total_rows = 0
-                    table_errors = []
-                    for tid in table_ids:
-                        try:
-                            table = catalog.load_table(tid)
-                            total_rows += len(table.scan().to_pandas())
-                        except Exception as e:  # noqa: BLE001
-                            # Surfaced, not swallowed -- catalog metadata
-                            # reads and actual data-file reads are a
-                            # genuinely different failure mode, seen
-                            # directly (2026-08-17): tables/last-run-status
-                            # came back correctly while row counts came
-                            # back silently 0 under the old swallow-all
-                            # version of this code.
-                            table_errors.append(f"{'.'.join(tid)}: {e}")
-
-                    run_info = _last_task_run(cur, task_id) or {}
-                    zones[zone_key] = {
-                        "tables": len(table_ids),
-                        "rows": total_rows,
+                silver_table_id = f"silver.{dataset_name}"
+                if catalog.table_exists(silver_table_id):
+                    rows = len(catalog.load_table(silver_table_id).scan().to_pandas())
+                    run_info = _last_task_run(cur, "silver_to_iceberg", dataset_name) or {}
+                    zones["silver"] = {
+                        "tables": 1,
+                        "rows": rows,
                         "last_run_at": run_info.get("last_run_at"),
                         "last_state": run_info.get("last_state"),
                         "freshness": _freshness_label(run_info.get("last_run_at")),
                     }
-                    if table_errors:
-                        zones[zone_key]["table_read_errors"] = table_errors
+                else:
+                    zones["silver"] = {"tables": 0, "rows": 0, "last_run_at": None, "freshness": "never run"}
+
+                gold_rows_total = 0
+                gold_table_count = 0
+                for suffix in ("_ndi", "_ifrs9"):
+                    tid = f"gold.{dataset_name}{suffix}"
+                    if catalog.table_exists(tid):
+                        gold_table_count += 1
+                        gold_rows_total += len(catalog.load_table(tid).scan().to_pandas())
+                run_info = _last_task_run(cur, "gold_compute", dataset_name) or {}
+                zones["gold"] = {
+                    "tables": gold_table_count,
+                    "rows": gold_rows_total,
+                    "last_run_at": run_info.get("last_run_at"),
+                    "last_state": run_info.get("last_state"),
+                    "freshness": _freshness_label(run_info.get("last_run_at")),
+                }
         finally:
             conn.close()
     except Exception as e:  # noqa: BLE001
@@ -241,11 +238,14 @@ def get_zone_stats() -> dict:
     return {"configured": True, "zones": zones}
 
 
-def get_pipeline_runs(limit: int = 10) -> dict:
-    """Real DAG run history + per-task status, straight from Airflow's own
-    Postgres metadata tables."""
+def get_pipeline_runs(dataset_name: str | None, limit: int = 10) -> dict:
+    """Real DAG run history + per-task status for ONE dataset, straight
+    from Airflow's own Postgres metadata tables -- filtered by run_id
+    prefix, see MULTI-DATASET in the module docstring."""
     if not is_configured():
         return {"configured": False, "runs": []}
+    if not dataset_name:
+        return {"configured": True, "runs": [], "error": "dataset_name is required"}
 
     try:
         conn = _pg_conn()
@@ -255,11 +255,11 @@ def get_pipeline_runs(limit: int = 10) -> dict:
                     """
                     SELECT run_id, state, execution_date, start_date, end_date
                     FROM dag_run
-                    WHERE dag_id = %s
+                    WHERE dag_id = %s AND run_id LIKE %s
                     ORDER BY execution_date DESC
                     LIMIT %s
                     """,
-                    (DAG_ID, limit),
+                    (DAG_ID, f"{dataset_name}__%", limit),
                 )
                 runs = [dict(r) for r in cur.fetchall()]
 
@@ -298,17 +298,62 @@ def get_pipeline_runs(limit: int = 10) -> dict:
 
 def get_task_log(run_id: str, task_id: str, try_number: int = 1) -> dict:
     """Reads actual log content from SeaweedFS, at the path Airflow's
-    S3TaskHandler writes to (see spike/entrypoint.sh)."""
+    S3TaskHandler writes to. Unaffected by the multi-dataset change --
+    run_id (now dataset-prefixed) already uniquely identifies the run,
+    same as before."""
     if not is_configured():
         return {"configured": False, "log": None}
 
     key = f"{LOGS_PREFIX}/dag_id={DAG_ID}/run_id={run_id}/task_id={task_id}/attempt={try_number}.log"
     try:
         s3 = _s3_client()
-        obj = s3.get_object(Bucket=BRONZE_BUCKET, Key=key)
+        obj = s3.get_object(Bucket=APP_DATA_BUCKET, Key=key)
         return {"configured": True, "log": obj["Body"].read().decode("utf-8", errors="replace")}
     except Exception as e:  # noqa: BLE001
         return {"configured": True, "log": None, "error": str(e)}
+
+
+def trigger_dag_run(dataset_name: str) -> dict:
+    """Manually triggers the Lakehouse pipeline DAG for one dataset via
+    Airflow's REST API -- deliberately the ONLY way this DAG ever runs.
+    Per Khurram's explicit instruction (2026-08-18): auto-triggering on
+    every dataset upload would add load and page-load delay for a
+    pipeline stage most uploads don't need run immediately -- this is a
+    real user action (a button on the dashboard), never a side effect
+    of an unrelated request.
+
+    dag_run_id is generated here as "{dataset_name}__{timestamp}" --
+    every read function in this module (get_zone_stats,
+    get_pipeline_runs) filters by this run_id PREFIX via plain SQL
+    LIKE, deliberately not by querying Airflow's internal `conf`
+    column's JSON contents directly (its on-disk storage format isn't
+    a stable external contract, and varies across Airflow versions).
+    conf is still passed for the DAG's OWN internal use -- read
+    correctly via Airflow's own context/ORM inside the running task,
+    where that concern doesn't apply."""
+    if not is_trigger_configured():
+        raise ValueError(
+            "Airflow trigger isn't configured on this service -- set "
+            "AIRFLOW_API_BASE_URL, AIRFLOW_API_USERNAME, and AIRFLOW_API_PASSWORD."
+        )
+    if not dataset_name:
+        raise ValueError("dataset_name is required to trigger the pipeline.")
+
+    run_id = f"{dataset_name}__{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')}Z"
+    url = f"{AIRFLOW_API_BASE_URL.rstrip('/')}/api/v1/dags/{DAG_ID}/dagRuns"
+    try:
+        resp = requests.post(
+            url,
+            json={"dag_run_id": run_id, "conf": {"dataset_name": dataset_name}},
+            auth=(AIRFLOW_API_USERNAME, AIRFLOW_API_PASSWORD),
+            timeout=15,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        detail = getattr(e.response, "text", "") if getattr(e, "response", None) is not None else ""
+        raise ValueError(f"Failed to trigger the Lakehouse pipeline: {e} {detail}".strip())
+
+    return {"dataset_name": dataset_name, "run_id": run_id, "triggered": True}
 
 
 def debug_metadata_read(namespace: str = "silver", table_name: str = "ifrs9_portfolio") -> dict:
@@ -318,9 +363,7 @@ def debug_metadata_read(namespace: str = "silver", table_name: str = "ifrs9_port
       1. plain boto3 GetObject (known-working)
       2. pyarrow's raw S3FileSystem read (pyiceberg's old default --
          confirmed broken on this connection, 2026-08-17)
-      3. the catalog's CONFIGURED file reader (now Boto3FileIO, per the
-         "py-io-impl" property in _iceberg_catalog()) -- what
-         get_zone_stats() actually uses today."""
+      3. the catalog's CONFIGURED file reader (Boto3FileIO)."""
     result: dict = {"namespace": namespace, "table_name": table_name}
 
     try:
@@ -347,7 +390,6 @@ def debug_metadata_read(namespace: str = "silver", table_name: str = "ifrs9_port
     without_scheme = metadata_location.removeprefix("s3://")
     bucket, _, key = without_scheme.partition("/")
 
-    # 1. plain boto3
     try:
         s3 = _s3_client()
         obj = s3.get_object(Bucket=bucket, Key=key)
@@ -361,9 +403,6 @@ def debug_metadata_read(namespace: str = "silver", table_name: str = "ifrs9_port
     except Exception as e:  # noqa: BLE001
         result["boto3_read"] = {"error": str(e)}
 
-    # 2. pyarrow's raw S3FileSystem, forced explicitly (bypasses whatever
-    # py-io-impl is currently configured, to keep this comparison valid
-    # even after the fix below is in place).
     try:
         from pyiceberg.io.pyarrow import PyArrowFileIO
 
@@ -384,7 +423,6 @@ def debug_metadata_read(namespace: str = "silver", table_name: str = "ifrs9_port
     except Exception as e:  # noqa: BLE001
         result["pyarrow_read"] = {"error": f"{type(e).__name__}: {e}"}
 
-    # 3. the catalog's actual configured reader (Boto3FileIO today).
     try:
         from pyiceberg.io import load_file_io
 
