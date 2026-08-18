@@ -48,6 +48,10 @@ export const api = {
   getGoldenRecords: (datasetName) =>
     getJSON(`/mdm/golden-records${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
   getGoldenRecordDetail: (id) => getJSON(`/mdm/golden-records/${id}`),
+  // Field-Level Lineage (Item 3's 3rd of 4 required MDM pages,
+  // reopened 2026-08-18). Dataset-scoped, unlike Item 6's catalog
+  // lineage -- see app/field_lineage.py's module docstring.
+  getMdmFieldLineage: (datasetName) => getJSON(`/mdm/field-lineage?dataset_name=${encodeURIComponent(datasetName)}`),
 
   getSama: (datasetName) => getJSON(`/governance/sama${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
   getAuditLog: (datasetName) => getJSON(`/governance/audit-log${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
