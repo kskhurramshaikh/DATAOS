@@ -155,6 +155,16 @@ export default function FieldLineage() {
         </p>
       </div>
 
+      {/* TEMP DEBUG (2026-08-18): direct ground truth on what this
+          component actually holds at render time, after two rounds of
+          fixes that should have worked but didn't visibly change
+          anything -- removing guesswork instead of trying a third fix
+          blind. Delete this block once the real cause is found. */}
+      <div className="mb-4 text-[11px] font-mono text-ink-faint bg-[#FFF8E8] border border-[#F0DFAE] rounded-xl px-4 py-3">
+        DEBUG: graph.nodes.length={graph.nodes.length} graph.edges.length={graph.edges.length} rawEdges=
+        {JSON.stringify(state.data?.edges ?? "null")}
+      </div>
+
       {state.error && (
         <div className="mb-4 text-[12.5px] text-danger bg-danger-soft border border-danger/20 rounded-xl px-4 py-3">
           Couldn't reach the catalog: {state.error}
