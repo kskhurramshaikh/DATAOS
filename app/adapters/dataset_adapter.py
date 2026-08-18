@@ -578,7 +578,18 @@ def delete_dataset(dataset_name: str) -> dict:
     this is for a dataset that shouldn't exist in the system at all.
 
     Raises ValueError if the dataset doesn't exist, same pattern as
-    every other lookup-by-name function in this module."""
+    every other lookup-by-name function in this module.
+
+    COUNTS VIA SELECT, NOT cursor.rowcount (2026-08-18, found live):
+    app/db.py's Postgres wrapper (_PgCursor) doesn't implement
+    .rowcount at all -- confirmed directly from a real 500 in
+    production ("AttributeError: '_PgCursor' object has no attribute
+    'rowcount'"), never caught by CI/local testing since that runs on
+    the plain sqlite3 fallback, where .rowcount genuinely exists. Counts
+    are taken via a plain SELECT COUNT(*) before each DELETE instead --
+    portable across both backends, and this module's existing pattern
+    everywhere else (every other row-counting need here already goes
+    through a query, not a driver-specific cursor attribute)."""
     if not dataset_name:
         raise ValueError("dataset_name is required to delete a dataset.")
 
@@ -589,11 +600,14 @@ def delete_dataset(dataset_name: str) -> dict:
             raise ValueError(f"No dataset found matching '{dataset_name}'.")
 
         golden_deleted = conn.execute(
-            "DELETE FROM golden_records WHERE dataset_safe_name = ?", (safe_name,)
-        ).rowcount
+            "SELECT COUNT(*) AS c FROM golden_records WHERE dataset_safe_name = ?", (safe_name,)
+        ).fetchone()["c"]
         clusters_deleted = conn.execute(
-            "DELETE FROM duplicate_clusters WHERE dataset_safe_name = ?", (safe_name,)
-        ).rowcount
+            "SELECT COUNT(*) AS c FROM duplicate_clusters WHERE dataset_safe_name = ?", (safe_name,)
+        ).fetchone()["c"]
+
+        conn.execute("DELETE FROM golden_records WHERE dataset_safe_name = ?", (safe_name,))
+        conn.execute("DELETE FROM duplicate_clusters WHERE dataset_safe_name = ?", (safe_name,))
         conn.execute("DELETE FROM datasets WHERE safe_name = ?", (safe_name,))
         conn.commit()
 
