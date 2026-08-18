@@ -18,8 +18,32 @@ import DatasetPicker from "../components/DatasetPicker";
 // chat/dashboard actions. Each field below shows exactly which real
 // system produced its trace, and states plainly when a source isn't
 // available for this dataset rather than inventing one.
+//
+// REAL BUG FIX (2026-08-18): the page got stuck on "Loading..."
+// permanently -- confirmed live independently by both Claude and
+// Khurram, same symptom on separate sessions. The network panel
+// showed several duplicate requests to this endpoint piling up (a mix
+// of 503s and one eventual 200), consistent with stale requests never
+// being cancelled and queuing against this service's single free-tier
+// worker. Root cause: the fetch useEffect's cleanup only set a local
+// `cancelled` flag, which suppressed a stale response's state update
+// but never actually aborted the underlying fetch -- old requests
+// kept running server-side every time the effect re-ran, for any
+// reason. Fixed with a real AbortController (actually cancels the
+// prior request on cleanup) plus a short retry-with-backoff
+// specifically on a 503 -- confirmed live via direct testing that a
+// 503 from this endpoint is a real, transient, already-known
+// condition on this Render free-tier instance (cold starts / limited
+// concurrency), not a permanent failure -- so it's worth one quiet
+// retry before surfacing an error to the user.
 
 const FIELD_ORDER = ["NATIONAL_ID", "DUPLICATE_FLAG", "ECL_SAR", "NDI_SCORE"];
+const MAX_RETRIES = 2;
+const RETRY_DELAY_MS = 1500;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function FieldCard({ data }) {
   return (
@@ -107,18 +131,34 @@ export default function FieldLevelLineage() {
       setState({ loading: false, data: null, error: null });
       return;
     }
-    let cancelled = false;
+
+    const controller = new AbortController();
+
     (async () => {
       setState({ loading: true, data: null, error: null });
-      try {
-        const res = await api.getMdmFieldLineage(selected);
-        if (!cancelled) setState({ loading: false, data: res, error: null });
-      } catch (e) {
-        if (!cancelled) setState({ loading: false, data: null, error: e.message });
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          const res = await api.getMdmFieldLineage(selected, { signal: controller.signal });
+          setState({ loading: false, data: res, error: null });
+          return;
+        } catch (e) {
+          if (controller.signal.aborted) return; // superseded by a newer selection -- nothing to report
+          const is503 = /503/.test(e.message);
+          if (is503 && attempt < MAX_RETRIES) {
+            await sleep(RETRY_DELAY_MS * (attempt + 1));
+            continue;
+          }
+          setState({ loading: false, data: null, error: e.message });
+          return;
+        }
       }
     })();
+
+    // Real cancellation, not just a flag -- aborts the actual in-flight
+    // fetch so a superseded request stops consuming server capacity
+    // instead of quietly running to completion in the background.
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [selected]);
 
