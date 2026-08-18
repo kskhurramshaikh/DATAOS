@@ -42,6 +42,13 @@ its query to that dataset specifically:
     Airflow's internal `conf` column, whose on-disk JSON storage format
     isn't a stable external contract.
 
+DIAGNOSTIC (2026-08-18): debug_catalog_scan() bypasses the catalog
+abstraction and shows every row in iceberg_tables directly, over THIS
+app's own LAKEHOUSE_DB_URI connection -- added after a DAG run reported
+'success' in Airflow's own UI while get_zone_stats() kept showing that
+same dataset's Silver/Gold as 'never run'. See its own docstring for
+the two failure modes it distinguishes.
+
 Every function here degrades gracefully (returns an explicit
 "not configured" / empty result, or a per-field "error") rather than
 raising when something isn't set up yet or a query fails, so the rest
@@ -354,6 +361,86 @@ def trigger_dag_run(dataset_name: str) -> dict:
         raise ValueError(f"Failed to trigger the Lakehouse pipeline: {e} {detail}".strip())
 
     return {"dataset_name": dataset_name, "run_id": run_id, "triggered": True}
+
+
+def debug_catalog_scan(dataset_name: str | None = None) -> dict:
+    """Diagnostic (2026-08-18) -- added after a real DAG run showed
+    'success' in Airflow's own UI, but get_zone_stats() kept reporting
+    Silver/Gold as 'never run' for that same dataset. Bypasses the
+    PostgresIcebergCatalog abstraction entirely and queries
+    iceberg_tables directly with raw SQL, over THIS app's own
+    LAKEHOUSE_DB_URI connection -- the exact same underlying data
+    table_exists()/load_table() read, but with every row visible, not
+    just a yes/no for one name. Isolates two genuinely different
+    failure modes:
+      1. This app's LAKEHOUSE_DB_URI points at a DIFFERENT Postgres
+         instance/database than the one the DAG's ICEBERG_CATALOG_DB_URI
+         writes to -- in which case NO rows show up here at all, for
+         ANY dataset, not just this one.
+      2. Both point at the same database, but the row exists under a
+         different table_namespace/table_name than expected (a real
+         naming-convention mismatch) -- in which case rows DO show up,
+         just not under the exact name get_zone_stats() is looking for.
+    Deliberately unauthenticated, same pattern as every other
+    /api/debug/* endpoint. The Postgres host/db name are shown (not
+    the full credentialed URI) -- enough to compare against the other
+    service's connection string without exposing the password."""
+    result: dict = {"configured": is_configured()}
+    if not LAKEHOUSE_DB_URI:
+        result["error"] = "LAKEHOUSE_DB_URI is not set on this service."
+        return result
+
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(LAKEHOUSE_DB_URI)
+        result["connected_to_host"] = parsed.hostname
+        result["connected_to_db"] = (parsed.path or "").lstrip("/")
+    except Exception:  # noqa: BLE001 -- masking is best-effort, never block the real diagnostic on it
+        pass
+
+    try:
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT catalog_name, table_namespace, table_name, "
+                    "(metadata_location IS NOT NULL) AS has_metadata "
+                    "FROM iceberg_tables ORDER BY table_namespace, table_name"
+                )
+                all_rows = cur.fetchall()
+                result["all_iceberg_tables_visible_to_this_app"] = [
+                    {"catalog_name": r[0], "namespace": r[1], "table_name": r[2], "has_metadata": r[3]}
+                    for r in all_rows
+                ]
+                result["total_rows"] = len(all_rows)
+
+                if dataset_name:
+                    cur.execute(
+                        "SELECT catalog_name, table_namespace, table_name, metadata_location "
+                        "FROM iceberg_tables WHERE table_namespace IN ('silver', 'gold') "
+                        "AND table_name LIKE %s",
+                        (f"%{dataset_name}%",),
+                    )
+                    matches = cur.fetchall()
+                    result["rows_matching_dataset_name"] = [
+                        {"catalog_name": r[0], "namespace": r[1], "table_name": r[2], "metadata_location": r[3]}
+                        for r in matches
+                    ]
+
+                cur.execute(
+                    "SELECT run_id, dag_id, state FROM dag_run "
+                    "WHERE run_id LIKE %s ORDER BY execution_date DESC LIMIT 5",
+                    (f"%{dataset_name}%" if dataset_name else "%",),
+                )
+                result["matching_dag_runs_visible_to_this_app"] = [
+                    {"run_id": r[0], "dag_id": r[1], "state": r[2]} for r in cur.fetchall()
+                ]
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001
+        result["query_error"] = f"{type(e).__name__}: {e}"
+
+    return result
 
 
 def debug_metadata_read(namespace: str = "silver", table_name: str = "ifrs9_portfolio") -> dict:
