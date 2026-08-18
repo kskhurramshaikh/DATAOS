@@ -132,17 +132,19 @@ export default function SamaDashboard() {
             <div className="text-[13px] text-ink">{state.data.priority_alert}</div>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
             {state.data.domain_scores.map((d) => (
               <DomainCard key={d.code} domain={d} />
             ))}
           </div>
 
           <div className="bg-white border border-line rounded-card px-6 py-4">
-            <div className="text-[12px] font-bold text-ink-faint uppercase tracking-wide mb-1">Checks</div>
-            {state.data.checks.map((c, i) => (
-              <CheckRow key={i} check={c} />
-            ))}
+            <div className="text-[12px] font-bold text-ink-faint uppercase tracking-wide mb-2">Checks</div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 lg:gap-x-10">
+              {state.data.checks.map((c, i) => (
+                <CheckRow key={i} check={c} />
+              ))}
+            </div>
           </div>
 
           <div className="mt-4 text-[11px] text-ink-faint leading-relaxed max-w-2xl">{state.data.methodology_note}</div>
