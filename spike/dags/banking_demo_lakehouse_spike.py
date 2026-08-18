@@ -101,7 +101,13 @@ trace straight back to the actual object in SeaweedFS. verify_silver_
 ready deliberately has no inlets/outlets of its own -- it's a
 readiness check, not a data-producing/consuming step; the Silver CSV
 enters the lineage graph as silver_to_iceberg's inlet instead, which is
-the first task that actually treats it as pipeline input.
+the first task that actually treats it as pipeline input. The Silver
+CSV's bucket is hardcoded to APP_DATA_BUCKET's known real value
+("dataos-app-datasets") in the inlet URI below rather than templated
+from an env var, since Dataset URIs are Jinja-rendered in a minimal
+context that doesn't have access to this module's Python globals --
+keeping this simple and directly verifiable beats a cleverer template
+expression that might not actually resolve.
 """
 from __future__ import annotations
 
@@ -268,7 +274,7 @@ def banking_demo_lakehouse_spike():
         return {"dataset_name": dataset_name, "silver_key": key, "size_bytes": len(raw_bytes)}
 
     @task(
-        inlets=[Dataset("s3://{{ params.get('_bucket', 'dataos-app-datasets') }}/silver/{{ dag_run.conf['dataset_name'] }}/cleaned.csv")],
+        inlets=[Dataset("s3://dataos-app-datasets/silver/{{ dag_run.conf['dataset_name'] }}/cleaned.csv")],
         outlets=[Dataset("s3://dataos-spike-iceberg/silver/{{ dag_run.conf['dataset_name'] }}/")],
     )
     def silver_to_iceberg(verify_result: dict) -> dict:
