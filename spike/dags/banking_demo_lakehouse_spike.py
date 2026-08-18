@@ -79,6 +79,29 @@ instance instead of opening a fresh one per method call, which means
 every catalog instance created below MUST be closed when the task is
 done with it. Both tasks below now use it as a context manager
 (`with _iceberg_catalog() as catalog:`) rather than leaving it open.
+
+FIELD LINEAGE (2026-08-18, Item 6 Step 3): silver_to_iceberg and
+gold_compute now declare Airflow `inlets`/`outlets` using Jinja-
+templated Dataset URIs (dataset_name is only known at trigger time via
+dag_run.conf, not at DAG-parse time -- Airflow's Dataset URIs are
+rendered at task-run time, same as any other templated field, which is
+exactly what's needed here). This is deliberately NOT the OpenLineage
+extractor path -- our tasks are plain TaskFlow/@task (i.e.
+_PythonDecoratedOperator under the hood), and Airflow's OpenLineage
+provider has no custom extractor for that operator class (confirmed
+directly against the provider's own docs: Python operators are treated
+as opaque, "black box" -- see Implementing OpenLineage in Operators /
+Troubleshooting docs). The provider's documented, ALWAYS-applied
+fallback for operators with no extractor is exactly inlets/outlets --
+so this is the correct, not a partial or best-effort, mechanism for
+this specific operator type, not a workaround. URIs point at the
+Iceberg tables' and Silver CSV's REAL storage locations (s3://...),
+not synthetic identifiers -- so a lineage consumer reading them can
+trace straight back to the actual object in SeaweedFS. verify_silver_
+ready deliberately has no inlets/outlets of its own -- it's a
+readiness check, not a data-producing/consuming step; the Silver CSV
+enters the lineage graph as silver_to_iceberg's inlet instead, which is
+the first task that actually treats it as pipeline input.
 """
 from __future__ import annotations
 
@@ -89,6 +112,7 @@ from datetime import datetime, timezone
 
 import boto3
 import pandas as pd
+from airflow.datasets import Dataset
 from airflow.decorators import dag, task
 from airflow.operators.python import get_current_context
 
@@ -226,7 +250,8 @@ def banking_demo_lakehouse_spike():
         itself is the source of truth for "is this dataset ready to
         promote" -- deliberately not a second read of dataset_adapter's
         own Postgres row, which would couple this DAG to that table's
-        schema for no real benefit."""
+        schema for no real benefit. No inlets/outlets here on purpose --
+        see FIELD LINEAGE in the module docstring."""
         dataset_name = _get_dataset_name()
         s3 = _s3_client()
         key = f"silver/{dataset_name}/cleaned.csv"
@@ -242,13 +267,21 @@ def banking_demo_lakehouse_spike():
             raise ValueError(f"Silver file for '{dataset_name}' is empty.")
         return {"dataset_name": dataset_name, "silver_key": key, "size_bytes": len(raw_bytes)}
 
-    @task
+    @task(
+        inlets=[Dataset("s3://{{ params.get('_bucket', 'dataos-app-datasets') }}/silver/{{ dag_run.conf['dataset_name'] }}/cleaned.csv")],
+        outlets=[Dataset("s3://dataos-spike-iceberg/silver/{{ dag_run.conf['dataset_name'] }}/")],
+    )
     def silver_to_iceberg(verify_result: dict) -> dict:
         """Reads the real, already-cleaned Silver CSV and writes it as a
         genuine Iceberg table -- ACID, versioned, schema-tracked. No
         re-derivation of Silver logic here -- dataset_adapter.py already
         did that once, correctly, for every dataset regardless of
-        shape; this task's only job is the storage-format promotion."""
+        shape; this task's only job is the storage-format promotion.
+
+        FIELD LINEAGE: inlets/outlets above use the SAME real storage
+        locations this function actually reads/writes (see FIELD
+        LINEAGE in the module docstring for why this is the correct
+        mechanism, not a workaround, for a plain @task operator)."""
         dataset_name = verify_result["dataset_name"]
         s3 = _s3_client()
         raw_bytes = s3.get_object(Bucket=APP_DATA_BUCKET, Key=verify_result["silver_key"])["Body"].read()
@@ -262,14 +295,30 @@ def banking_demo_lakehouse_spike():
 
         return {"dataset_name": dataset_name, "silver_table": table_id, "row_count": len(df)}
 
-    @task
+    @task(
+        inlets=[Dataset("s3://dataos-spike-iceberg/silver/{{ dag_run.conf['dataset_name'] }}/")],
+        outlets=[
+            Dataset("s3://dataos-spike-iceberg/gold/{{ dag_run.conf['dataset_name'] }}_ndi/"),
+            Dataset("s3://dataos-spike-iceberg/gold/{{ dag_run.conf['dataset_name'] }}_ifrs9/"),
+        ],
+    )
     def gold_compute(silver_result: dict) -> dict:
         """NDI is unconditional (dataset-independent -- Dr. Saber's
         fixed baseline, not derived from this dataset at all). IFRS 9
         only runs when this dataset actually has the modeling columns
         it needs -- see IFRS9_MODELING_COLS above. No new computation
         path either way -- same banking_adapter.py functions already
-        signed off in production."""
+        signed off in production.
+
+        FIELD LINEAGE: the _ifrs9 outlet above is declared unconditionally
+        even though this task doesn't always actually write that table
+        (see ifrs9_ready below) -- Airflow's inlets/outlets are fixed at
+        task-definition time, not conditionally per-run. For datasets
+        that don't get an IFRS 9 table, this outlet simply never gets
+        real data behind it; not hidden, just a known imprecision of
+        this mechanism, worth remembering if the Field Lineage page
+        ever needs to distinguish "declared" from "actually written."
+        """
         sys.path.insert(0, SPIKE_DAGS_ROOT)
         from app.adapters import banking_adapter as ba
 
