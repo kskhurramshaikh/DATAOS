@@ -49,7 +49,16 @@ app's own LAKEHOUSE_DB_URI connection -- added after a DAG run reported
 same dataset's Silver/Gold as 'never run'. See its own docstring for
 the two failure modes it distinguishes. (That specific incident turned
 out to be stale pre-rewrite run history, not a bug -- see LOGS_BUCKET
-below for the ACTUAL bug this diagnostic-driven session found.)
+below for a real bug this diagnostic-driven session DID find.)
+
+CONNECTION LEAK FIX (2026-08-18, two parts): app/pg_iceberg_catalog.py's
+own docstring has the full story. Part 1 fixed each of that catalog's
+methods leaking a connection. Part 2 changed the catalog to open ONE
+connection per instance instead of one per method call -- which means
+every caller of `_iceberg_catalog()` in THIS module now uses it as a
+context manager (`with _iceberg_catalog() as catalog:`) so that shared
+connection gets closed once, when the whole block is done, instead of
+being left open for the rest of this app process's life.
 
 Every function here degrades gracefully (returns an explicit
 "not configured" / empty result, or a per-field "error") rather than
@@ -131,6 +140,14 @@ def _s3_client():
 
 
 def _iceberg_catalog():
+    """Returns a PostgresIcebergCatalog instance -- callers MUST use it
+    as a context manager (`with _iceberg_catalog() as catalog:`) or call
+    `.close()` explicitly when done. See CONNECTION LEAK FIX in this
+    module's docstring and app/pg_iceberg_catalog.py's own docstring for
+    why: this instance now holds ONE shared Postgres connection for its
+    whole lifetime, reused across every method call made on it, rather
+    than opening a fresh one per call -- but that means it's no longer
+    self-closing after each call the way it used to be."""
     from app.pg_iceberg_catalog import PostgresIcebergCatalog
 
     return PostgresIcebergCatalog(
@@ -190,7 +207,10 @@ def get_zone_stats(dataset_name: str | None) -> dict:
     """Live Bronze/Silver/Gold stats for ONE dataset. Bronze comes from
     a plain S3 listing scoped to that dataset's prefix; Silver/Gold
     come from real Iceberg table lookups for that dataset's specific
-    tables (not a scan of every table in the namespace)."""
+    tables (not a scan of every table in the namespace). The catalog is
+    opened ONCE per call and reused for every table_exists()/load_table()
+    lookup below (up to 3 tables) via the `with` block -- see
+    CONNECTION LEAK FIX in the module docstring."""
     if not is_configured():
         return {"configured": False, "zones": {}}
     if not dataset_name:
@@ -216,41 +236,41 @@ def get_zone_stats(dataset_name: str | None) -> dict:
 
     # -- Silver / Gold: this dataset's specific Iceberg tables --
     try:
-        catalog = _iceberg_catalog()
-        conn = _pg_conn()
-        try:
-            with conn.cursor() as cur:
-                silver_table_id = f"silver.{dataset_name}"
-                if catalog.table_exists(silver_table_id):
-                    rows = len(catalog.load_table(silver_table_id).scan().to_pandas())
-                    run_info = _last_task_run(cur, "silver_to_iceberg", dataset_name) or {}
-                    zones["silver"] = {
-                        "tables": 1,
-                        "rows": rows,
+        with _iceberg_catalog() as catalog:
+            conn = _pg_conn()
+            try:
+                with conn.cursor() as cur:
+                    silver_table_id = f"silver.{dataset_name}"
+                    if catalog.table_exists(silver_table_id):
+                        rows = len(catalog.load_table(silver_table_id).scan().to_pandas())
+                        run_info = _last_task_run(cur, "silver_to_iceberg", dataset_name) or {}
+                        zones["silver"] = {
+                            "tables": 1,
+                            "rows": rows,
+                            "last_run_at": run_info.get("last_run_at"),
+                            "last_state": run_info.get("last_state"),
+                            "freshness": _freshness_label(run_info.get("last_run_at")),
+                        }
+                    else:
+                        zones["silver"] = {"tables": 0, "rows": 0, "last_run_at": None, "freshness": "never run"}
+
+                    gold_rows_total = 0
+                    gold_table_count = 0
+                    for suffix in ("_ndi", "_ifrs9"):
+                        tid = f"gold.{dataset_name}{suffix}"
+                        if catalog.table_exists(tid):
+                            gold_table_count += 1
+                            gold_rows_total += len(catalog.load_table(tid).scan().to_pandas())
+                    run_info = _last_task_run(cur, "gold_compute", dataset_name) or {}
+                    zones["gold"] = {
+                        "tables": gold_table_count,
+                        "rows": gold_rows_total,
                         "last_run_at": run_info.get("last_run_at"),
                         "last_state": run_info.get("last_state"),
                         "freshness": _freshness_label(run_info.get("last_run_at")),
                     }
-                else:
-                    zones["silver"] = {"tables": 0, "rows": 0, "last_run_at": None, "freshness": "never run"}
-
-                gold_rows_total = 0
-                gold_table_count = 0
-                for suffix in ("_ndi", "_ifrs9"):
-                    tid = f"gold.{dataset_name}{suffix}"
-                    if catalog.table_exists(tid):
-                        gold_table_count += 1
-                        gold_rows_total += len(catalog.load_table(tid).scan().to_pandas())
-                run_info = _last_task_run(cur, "gold_compute", dataset_name) or {}
-                zones["gold"] = {
-                    "tables": gold_table_count,
-                    "rows": gold_rows_total,
-                    "last_run_at": run_info.get("last_run_at"),
-                    "last_state": run_info.get("last_state"),
-                    "freshness": _freshness_label(run_info.get("last_run_at")),
-                }
-        finally:
-            conn.close()
+            finally:
+                conn.close()
     except Exception as e:  # noqa: BLE001
         zones.setdefault("silver", {"error": str(e)})
         zones.setdefault("gold", {"error": str(e)})
@@ -527,11 +547,11 @@ def debug_metadata_read(namespace: str = "silver", table_name: str = "ifrs9_port
     try:
         from pyiceberg.io import load_file_io
 
-        catalog = _iceberg_catalog()
-        io = load_file_io(properties=catalog.properties, location=metadata_location)
-        input_file = io.new_input(metadata_location)
-        with input_file.open() as f:
-            content = f.read()
+        with _iceberg_catalog() as catalog:
+            io = load_file_io(properties=catalog.properties, location=metadata_location)
+            input_file = io.new_input(metadata_location)
+            with input_file.open() as f:
+                content = f.read()
         result["configured_reader_read"] = {
             "reader_class": type(io).__name__,
             "content_length_bytes": len(content),
