@@ -19,33 +19,30 @@ const STATUS_STYLE = {
 // preview). Picking a dataset here also sticks if you switch to Zones.
 const SELECTED_DATASET_KEY = "dataos:lakehouse:selectedDataset";
 
-// BUG FIX ROUND 3 (2026-08-18, root cause finally confirmed via direct
-// DOM inspection, not guessed): rounds 1 (onNodeClick prop) and 2
-// (plain onClick on this node's div) BOTH failed to fix real clicks --
-// confirmed each time via Claude-in-Chrome (real mouse clicks, not
-// synthetic events; checked React's own selectedTask state directly,
-// and confirmed zero network request to /api/pipeline/logs/... ever
-// fired). The actual cause, found by comparing document.elementFromPoint()
-// at this node's own getBoundingClientRect() center against the node's
-// own computed style: React Flow's ".react-flow__pane" background layer
-// has a HIGHER z-index (1) than this node (0) in this specific setup --
-// confirmed directly, both read in the same call, no timing ambiguity.
-// The pane sits visually behind the node but wins ALL pointer-event
-// hit-testing at that coordinate, so no click -- real, synthetic, or
-// via onNodeClick -- was ever reaching the node's own DOM element in
-// the first place. Neither of the first two "fixes" could have worked;
-// they were solving the wrong layer.
+// BUG FIX ROUND 4 (2026-08-18, confirmed via direct DOM inspection
+// after round 3's fix was deployed and re-checked -- not guessed):
+// round 3 correctly diagnosed the cause (the pane's z-index beating
+// the node's) but set the zIndex on the WRONG element. React Flow
+// wraps every custom node component in its own outer
+// ".react-flow__node" div, which is the element that actually
+// participates in the stacking-order comparison against the pane --
+// a zIndex set on a CHILD div inside it (what round 3 did) has no
+// effect on that comparison at all. Confirmed directly: re-read
+// getComputedStyle on ".react-flow__node" itself after round 3
+// deployed, and it was still zIndex "0" -- round 3's fix genuinely
+// never reached the element that mattered.
 //
-// REAL FIX: an explicit zIndex on this node's own div, high enough to
-// win the stacking order against the pane. This is the mechanism that
-// actually determines which element receives a click at a given
-// screen coordinate -- not which handler was attached.
+// REAL FIX: React Flow reads a per-node `style` property (set on the
+// node OBJECT passed to the `nodes` array, in buildGraph() below) and
+// applies it directly to its own ".react-flow__node" wrapper -- that's
+// the supported, correct way to influence this specific element,
+// not a style prop on the custom component's own rendered div.
 function TaskNode({ id, data }) {
   const s = STATUS_STYLE[data.status] || STATUS_STYLE.queued;
   return (
     <div
       className="rounded-[10px] px-3.5 py-2.5 cursor-pointer"
-      style={{ background: s.bg, border: `1.5px solid ${s.border}`, minWidth: 150, position: "relative", zIndex: 10 }}
+      style={{ background: s.bg, border: `1.5px solid ${s.border}`, minWidth: 150 }}
       onClick={() => data.onSelect?.(id)}
     >
       <div className="flex items-center gap-2">
@@ -67,9 +64,9 @@ const nodeTypes = { task: TaskNode };
 // gold_compute (unchanged).
 //
 // onSelect: threaded into each node's data so TaskNode's own onClick
-// above can call it directly -- see that component's comment for the
-// full history of what was actually wrong and why this (plus the
-// zIndex fix) is what's actually relied on now.
+// above can call it directly. style: { zIndex: 10 } on each node
+// object (round 4's real fix -- see TaskNode's own comment) is what
+// actually wins the stacking order against React Flow's pane.
 function buildGraph(tasks, onSelect) {
   const order = ["verify_silver_ready", "silver_to_iceberg", "gold_compute"];
   const positioned = order
@@ -79,6 +76,7 @@ function buildGraph(tasks, onSelect) {
         id,
         type: "task",
         position: { x: i * 260, y: 60 },
+        style: { zIndex: 10 },
         data: {
           label: id,
           status: t?.state || "queued",
