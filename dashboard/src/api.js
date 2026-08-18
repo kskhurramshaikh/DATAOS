@@ -2,8 +2,9 @@ const BASE = "/api";
 
 async function getJSON(path) {
   const res = await fetch(`${BASE}${path}`);
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
-  return res.json();
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `${path} -> ${res.status}`);
+  return data;
 }
 
 async function postJSON(path, body) {
