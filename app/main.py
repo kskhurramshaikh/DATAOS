@@ -598,7 +598,7 @@ def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: by
         # No computation yet -- just let the user pick which macro
         # scenario to model. Nothing runs, no LLM call needed, until
         # they actually choose one of the three.
-        scenario_labels = {"optimistic": "📈 Optimistic scenario", "base": "📊 Base scenario", "adverse": "📉 Adverse scenario"}
+        scenario_labels = {"optimistic": "\U0001F4C8 Optimistic scenario", "base": "\U0001F4CA Base scenario", "adverse": "\U0001F4C9 Adverse scenario"}
         options = [
             {
                 "action": "compute_ifrs9",
@@ -763,7 +763,7 @@ def _run_recommended_action_events(action: str, dataset_name: str, raw_bytes: by
         recommendations = []
         if action == "compute_ifrs9":
             other_scenarios = [s for s in banking_adapter.MACRO_SCENARIOS if s != scenario]
-            scenario_labels = {"optimistic": "📈 Optimistic scenario", "base": "📊 Base scenario", "adverse": "📉 Adverse scenario"}
+            scenario_labels = {"optimistic": "\U0001F4C8 Optimistic scenario", "base": "\U0001F4CA Base scenario", "adverse": "\U0001F4C9 Adverse scenario"}
             recommendations.extend([
                 {
                     "action": "compute_ifrs9",
@@ -912,6 +912,14 @@ def duplicate_audit_log(dataset_name: str | None = None, user: dict = Depends(au
 # pending") -- same dedup_adapter.confirm_high_confidence() /
 # confirm_all_pending() functions, exposed here so the dashboard isn't
 # missing a capability chat already has.
+#
+# mdm_delete_dataset (2026-08-18) -- the counterpart write path this
+# group never had: every other route above ADDS or reads data, none
+# removed a dataset. Added specifically to retire "Banking_Demo" (see
+# dataset_adapter.delete_dataset()'s own docstring for the full
+# reasoning) but kept as a real, reusable admin capability, not a
+# one-off script -- same unauthenticated pattern as the rest of this
+# group, since this dashboard has no auth system of its own yet.
 # ---------------------------------------------------------------------
 
 class MdmDecisionRequest(BaseModel):
@@ -937,6 +945,21 @@ def mdm_datasets():
     the dashboard's own dataset picker so a user never has to leave it
     to see what's available to run detection against."""
     return dataset_adapter.list_datasets({})
+
+
+@app.delete("/api/mdm/datasets/{dataset_name}")
+def mdm_delete_dataset(dataset_name: str):
+    """Permanently removes a dataset -- see
+    dataset_adapter.delete_dataset()'s own docstring for exactly what
+    this deletes (the dataset row, every duplicate_clusters/
+    golden_records row tied to it, every Bronze/Silver/Gold object in
+    SeaweedFS) and what it deliberately leaves alone (Airflow's own
+    run history, Marquez's lineage records -- a real record of past
+    attempts, not something removal should rewrite)."""
+    try:
+        return dataset_adapter.delete_dataset(dataset_name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @app.post("/api/mdm/upload-dataset")
