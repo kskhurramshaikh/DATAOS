@@ -26,3 +26,27 @@ body {
 .flow-pulse {
   animation: flowpulse 2.4s linear infinite;
 }
+
+/* PipelineMonitoring task-node click fix, ROUND 5 (2026-08-18) --
+   see PipelineMonitoring.jsx's TaskNode comment for the full history.
+   Rounds 3/4 confirmed (via direct DOM inspection, live, after each
+   deploy) that per-node zIndex genuinely reaches ".react-flow__node"
+   (round 4 verified: getComputedStyle read "10" as expected) but
+   document.elementFromPoint() at that node's own center STILL
+   returned ".react-flow__pane" -- meaning the per-node z-index value
+   never even entered the comparison against the pane in the first
+   place: pane and the nodes layer are siblings under a shared parent,
+   so a z-index set on one individual node only ranks it against OTHER
+   nodes in the same layer, not against the pane sibling itself. The
+   pane's own z-index (1, confirmed via getComputedStyle) is what
+   needs to be beaten, directly, not worked around indirectly via a
+   child three levels down.
+   This is a small, targeted, scoped override -- the pane's role here
+   (pan/select-box background) genuinely doesn't need to sit above the
+   nodes on this page, which only ever shows 3 static, non-draggable
+   task nodes. Lower specificity than "!important" would risk losing
+   to react-flow's own inline/generated styles, so !important is used
+   deliberately, scoped to this one selector only. */
+.react-flow__pane {
+  z-index: 0 !important;
+}
