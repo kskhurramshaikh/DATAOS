@@ -49,16 +49,19 @@
 # -- presentation-only, same as Dev Queue item 4's own framing, no new
 # computation path introduced.
 #
-# MULTI-DATASET LAKEHOUSE (2026-08-18): /api/lakehouse/zones and
-# /api/pipeline/runs now require dataset_name -- the Airflow/Iceberg
-# pipeline behind them was generalized from a single hardcoded demo
-# file to any uploaded dataset (see app/lakehouse_client.py and
-# spike/dags/banking_demo_lakehouse_spike.py's own docstrings for the
-# full reasoning). New /api/lakehouse/trigger endpoint manually starts
-# that pipeline for one dataset -- deliberately the ONLY way it ever
-# runs; never triggered automatically on upload, per Khurram's explicit
-# instruction (auto-triggering would add load/delay to every upload for
-# a stage most uploads don't need run immediately).
+# Item 5: NDI Assessment Dashboard + History, dashboard pages under
+# "/dashboard/ndi". The assessment endpoint is presentation-only in the
+# same sense as item 4 -- it wraps banking_adapter.compute_ndi_
+# assessment(), the exact function the chat "assess_ndi" chip already
+# renders as its ndi_assessment component. The History half is the one
+# genuinely new piece: app/adapters/ndi_history.py stores each recorded
+# assessment as a dated, attributed audit record. Per Dr. Saber's
+# 2026-08-11 scoping answer this stays domain-level (14 domains,
+# weights, maturity scale); the full 191-spec drill-down is deferred.
+# NOTE, deliberately not hidden: NDI's per-domain inputs are his fixed
+# BAJ demo baseline, so recorded snapshots read identically until those
+# inputs change -- ndi_history reports that as a fact rather than
+# manufacturing movement. See its module docstring.
 #
 # ERROR-HANDLING NOTE (2026-08-17): several /api/mdm/* routes below
 # catch Exception broadly, not just ValueError -- a deliberate widening
@@ -90,7 +93,7 @@ from app.router import route, NoCapabilityRegisteredError
 from app.capability_registry import CAPABILITY_REGISTRY
 from app.db import init_db, storage_status
 from app import auth, chat_store, lakehouse_client, object_storage
-from app.adapters import dataset_adapter, banking_adapter, dedup_adapter
+from app.adapters import dataset_adapter, banking_adapter, dedup_adapter, ndi_history
 from app.visualization import suggest_visualization
 from app.interpreter import interpret, interpret_stream, explain_result
 
@@ -1107,6 +1110,75 @@ def governance_sama(dataset_name: str | None = None):
 @app.get("/api/governance/audit-log")
 def governance_audit_log(dataset_name: str | None = None):
     return {"entries": dedup_adapter.get_audit_log(dataset_name, limit=500)}
+
+
+# ---------------------------------------------------------------------
+# NDI dashboard API (Item 5 -- NDI Assessment Dashboard + History).
+# Same unauthenticated, read-only pattern as everything above, with one
+# write (record_snapshot).
+#
+# NO DATASET PICKER HERE, deliberately, and this is the one page where
+# that's correct rather than an oversight: compute_ndi_assessment()
+# takes no dataset at all -- it applies Dr. Saber's real SDAIA NDI v1.1
+# methodology (14 domains, official weights, 6-level maturity scale) to
+# his fixed BAJ demo baseline, per his explicit instruction for this
+# component. A picker here would switch between options that produce
+# byte-identical output. The 2026-08-18 standing rule is "wherever the
+# page's data is scoped to a dataset"; this one's genuinely isn't.
+#
+# Scope: domain-level only, per Dr. Saber's 2026-08-11 answer (14-domain
+# view + compliance %); the full 191-spec drill-down is deferred, not
+# forgotten.
+# ---------------------------------------------------------------------
+
+class NdiSnapshotRequest(BaseModel):
+    recorded_by: str
+    note: str | None = None
+
+
+@app.get("/api/governance/ndi")
+def governance_ndi():
+    """The current NDI assessment. Presentation-only in the same sense
+    as the SAMA endpoint above: this wraps
+    banking_adapter.compute_ndi_assessment(), the exact function the
+    chat "assess_ndi" chip already renders as its ndi_assessment
+    component, and the typed-chat "show_ndi_radar" intent already
+    routes to. One implementation, three entrances, no drift."""
+    return banking_adapter.compute_ndi_assessment()
+
+
+@app.get("/api/governance/ndi/history")
+def governance_ndi_history(limit: int = 100):
+    """Every recorded assessment, newest first, with movement against
+    the previous record. See app/adapters/ndi_history.py's module
+    docstring for why the response also reports all_identical plainly
+    instead of drawing a trend that isn't there yet."""
+    return ndi_history.list_snapshots(limit=limit)
+
+
+@app.get("/api/governance/ndi/history/{snapshot_id}")
+def governance_ndi_snapshot(snapshot_id: int):
+    """One recorded assessment in full, including the 14-domain
+    breakdown exactly as stored at record time -- not recomputed on
+    read, so an old record keeps showing what was actually assessed
+    then even if the baseline or methodology later changes."""
+    try:
+        return ndi_history.get_snapshot(snapshot_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/governance/ndi/snapshot")
+def governance_ndi_record_snapshot(req: NdiSnapshotRequest):
+    """Records the current assessment as a dated, attributed audit
+    record. recorded_by is required and never defaulted -- see
+    ndi_history.record_snapshot()."""
+    try:
+        return ndi_history.record_snapshot(req.recorded_by, req.note)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the MDM write routes above; a bare 500 on a DB write cost several rounds to diagnose during the Postgres migration.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @app.post("/intent")
