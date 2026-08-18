@@ -39,6 +39,19 @@ scenario that failed reproducibly against SeaweedFS's built-in catalog
 (8/8 workers appending to one shared table, all released simultaneously
 via a threading.Barrier) -- 4/4 clean runs, 8 rows / 8 snapshots every
 time, zero lost commits.
+
+CONNECTION LEAK FIX (2026-08-18): every method here used to do
+`with self._connect() as conn: ...` and stop there. psycopg2 connections
+implement `__enter__`/`__exit__` for the TRANSACTION only (commit on
+clean exit, rollback on exception) -- exiting that `with` block never
+closes the actual socket. Ported this fix here from app/pg_iceberg_
+catalog.py (the exact same bug, confirmed live there: this file's own
+docstring says to keep the two copies in sync). This copy's exposure is
+lower -- Airflow tasks are short-lived processes -- but the leak is
+identical and would compound the same way under enough triggered runs.
+Every method now explicitly closes its connection in a `finally` block;
+commit/rollback behavior is unchanged (still via the same `with conn:`
+nested inside).
 """
 from __future__ import annotations
 
@@ -94,28 +107,31 @@ class PostgresIcebergCatalog(MetastoreCatalog):
         return psycopg2.connect(self._dsn)
 
     def _init_tables(self) -> None:
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS iceberg_tables (
-                        catalog_name TEXT NOT NULL,
-                        table_namespace TEXT NOT NULL,
-                        table_name TEXT NOT NULL,
-                        metadata_location TEXT,
-                        previous_metadata_location TEXT,
-                        PRIMARY KEY (catalog_name, table_namespace, table_name)
-                    )
-                """)
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS iceberg_namespace_properties (
-                        catalog_name TEXT NOT NULL,
-                        namespace TEXT NOT NULL,
-                        property_key TEXT NOT NULL,
-                        property_value TEXT NOT NULL,
-                        PRIMARY KEY (catalog_name, namespace, property_key)
-                    )
-                """)
-            conn.commit()
+        conn = self._connect()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS iceberg_tables (
+                            catalog_name TEXT NOT NULL,
+                            table_namespace TEXT NOT NULL,
+                            table_name TEXT NOT NULL,
+                            metadata_location TEXT,
+                            previous_metadata_location TEXT,
+                            PRIMARY KEY (catalog_name, table_namespace, table_name)
+                        )
+                    """)
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS iceberg_namespace_properties (
+                            catalog_name TEXT NOT NULL,
+                            namespace TEXT NOT NULL,
+                            property_key TEXT NOT NULL,
+                            property_value TEXT NOT NULL,
+                            PRIMARY KEY (catalog_name, namespace, property_key)
+                        )
+                    """)
+        finally:
+            conn.close()
 
     # -- helpers ------------------------------------------------------
 
@@ -161,19 +177,22 @@ class PostgresIcebergCatalog(MetastoreCatalog):
         io = load_file_io(properties=self.properties, location=metadata_location)
         self._write_metadata(metadata, io, metadata_location)
 
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                try:
-                    cur.execute(
-                        "INSERT INTO iceberg_tables "
-                        "(catalog_name, table_namespace, table_name, metadata_location, previous_metadata_location) "
-                        "VALUES (%s, %s, %s, %s, NULL)",
-                        (self.name, namespace, table_name, metadata_location),
-                    )
-                except psycopg2.errors.UniqueViolation:
-                    conn.rollback()
-                    raise TableAlreadyExistsError(f"Table {namespace}.{table_name} already exists")
-            conn.commit()
+        conn = self._connect()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    try:
+                        cur.execute(
+                            "INSERT INTO iceberg_tables "
+                            "(catalog_name, table_namespace, table_name, metadata_location, previous_metadata_location) "
+                            "VALUES (%s, %s, %s, %s, NULL)",
+                            (self.name, namespace, table_name, metadata_location),
+                        )
+                    except psycopg2.errors.UniqueViolation:
+                        conn.rollback()
+                        raise TableAlreadyExistsError(f"Table {namespace}.{table_name} already exists")
+        finally:
+            conn.close()
 
         return self.load_table(identifier=identifier)
 
@@ -184,14 +203,18 @@ class PostgresIcebergCatalog(MetastoreCatalog):
         namespace_tuple = Catalog.namespace_from(identifier)
         namespace = Catalog.namespace_to_string(namespace_tuple)
         table_name = Catalog.table_name_from(identifier)
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT metadata_location FROM iceberg_tables "
-                    "WHERE catalog_name = %s AND table_namespace = %s AND table_name = %s",
-                    (self.name, namespace, table_name),
-                )
-                row = cur.fetchone()
+        conn = self._connect()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT metadata_location FROM iceberg_tables "
+                        "WHERE catalog_name = %s AND table_namespace = %s AND table_name = %s",
+                        (self.name, namespace, table_name),
+                    )
+                    row = cur.fetchone()
+        finally:
+            conn.close()
         if row and row[0]:
             return self._convert_row_to_iceberg(namespace, table_name, row[0])
         raise NoSuchTableError(f"Table does not exist: {namespace}.{table_name}")
@@ -200,15 +223,18 @@ class PostgresIcebergCatalog(MetastoreCatalog):
         namespace_tuple = Catalog.namespace_from(identifier)
         namespace = Catalog.namespace_to_string(namespace_tuple)
         table_name = Catalog.table_name_from(identifier)
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "DELETE FROM iceberg_tables "
-                    "WHERE catalog_name = %s AND table_namespace = %s AND table_name = %s",
-                    (self.name, namespace, table_name),
-                )
-                deleted = cur.rowcount
-            conn.commit()
+        conn = self._connect()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM iceberg_tables "
+                        "WHERE catalog_name = %s AND table_namespace = %s AND table_name = %s",
+                        (self.name, namespace, table_name),
+                    )
+                    deleted = cur.rowcount
+        finally:
+            conn.close()
         if deleted < 1:
             raise NoSuchTableError(f"Table does not exist: {namespace}.{table_name}")
 
@@ -238,39 +264,42 @@ class PostgresIcebergCatalog(MetastoreCatalog):
             metadata_path=updated_staged_table.metadata_location,
         )
 
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                if current_table:
-                    # THE atomic compare-and-swap: only succeeds if metadata_location
-                    # still matches what this commit was staged against. This is what
-                    # SeaweedFS's built-in catalog got wrong under concurrency.
-                    cur.execute(
-                        "UPDATE iceberg_tables "
-                        "SET metadata_location = %s, previous_metadata_location = %s "
-                        "WHERE catalog_name = %s AND table_namespace = %s AND table_name = %s "
-                        "AND metadata_location = %s",
-                        (
-                            updated_staged_table.metadata_location,
-                            current_table.metadata_location,
-                            self.name, namespace, table_name,
-                            current_table.metadata_location,
-                        ),
-                    )
-                    if cur.rowcount < 1:
-                        conn.rollback()
-                        raise CommitFailedException(f"Table has been updated by another process: {namespace}.{table_name}")
-                else:
-                    try:
+        conn = self._connect()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    if current_table:
+                        # THE atomic compare-and-swap: only succeeds if metadata_location
+                        # still matches what this commit was staged against. This is what
+                        # SeaweedFS's built-in catalog got wrong under concurrency.
                         cur.execute(
-                            "INSERT INTO iceberg_tables "
-                            "(catalog_name, table_namespace, table_name, metadata_location, previous_metadata_location) "
-                            "VALUES (%s, %s, %s, %s, NULL)",
-                            (self.name, namespace, table_name, updated_staged_table.metadata_location),
+                            "UPDATE iceberg_tables "
+                            "SET metadata_location = %s, previous_metadata_location = %s "
+                            "WHERE catalog_name = %s AND table_namespace = %s AND table_name = %s "
+                            "AND metadata_location = %s",
+                            (
+                                updated_staged_table.metadata_location,
+                                current_table.metadata_location,
+                                self.name, namespace, table_name,
+                                current_table.metadata_location,
+                            ),
                         )
-                    except psycopg2.errors.UniqueViolation:
-                        conn.rollback()
-                        raise TableAlreadyExistsError(f"Table {namespace}.{table_name} already exists")
-            conn.commit()
+                        if cur.rowcount < 1:
+                            conn.rollback()
+                            raise CommitFailedException(f"Table has been updated by another process: {namespace}.{table_name}")
+                    else:
+                        try:
+                            cur.execute(
+                                "INSERT INTO iceberg_tables "
+                                "(catalog_name, table_namespace, table_name, metadata_location, previous_metadata_location) "
+                                "VALUES (%s, %s, %s, %s, NULL)",
+                                (self.name, namespace, table_name, updated_staged_table.metadata_location),
+                            )
+                        except psycopg2.errors.UniqueViolation:
+                            conn.rollback()
+                            raise TableAlreadyExistsError(f"Table {namespace}.{table_name} already exists")
+        finally:
+            conn.close()
 
         return CommitTableResponse(
             metadata=updated_staged_table.metadata, metadata_location=updated_staged_table.metadata_location
@@ -281,15 +310,18 @@ class PostgresIcebergCatalog(MetastoreCatalog):
         if self.namespace_exists(namespace):
             raise NamespaceAlreadyExistsError(f"Namespace {namespace} already exists")
         create_properties = dict(properties) if properties else {"exists": "true"}
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                for key, value in create_properties.items():
-                    cur.execute(
-                        "INSERT INTO iceberg_namespace_properties "
-                        "(catalog_name, namespace, property_key, property_value) VALUES (%s, %s, %s, %s)",
-                        (self.name, namespace_str, key, value),
-                    )
-            conn.commit()
+        conn = self._connect()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    for key, value in create_properties.items():
+                        cur.execute(
+                            "INSERT INTO iceberg_namespace_properties "
+                            "(catalog_name, namespace, property_key, property_value) VALUES (%s, %s, %s, %s)",
+                            (self.name, namespace_str, key, value),
+                        )
+        finally:
+            conn.close()
 
     def drop_namespace(self, namespace: str | Identifier) -> None:
         if not self.namespace_exists(namespace):
@@ -297,37 +329,48 @@ class PostgresIcebergCatalog(MetastoreCatalog):
         namespace_str = Catalog.namespace_to_string(namespace)
         if tables := self.list_tables(namespace):
             raise NamespaceNotEmptyError(f"Namespace {namespace_str} is not empty. {len(tables)} tables exist.")
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "DELETE FROM iceberg_namespace_properties WHERE catalog_name = %s AND namespace = %s",
-                    (self.name, namespace_str),
-                )
-            conn.commit()
+        conn = self._connect()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM iceberg_namespace_properties WHERE catalog_name = %s AND namespace = %s",
+                        (self.name, namespace_str),
+                    )
+        finally:
+            conn.close()
 
     def list_tables(self, namespace: str | Identifier) -> list[Identifier]:
         if namespace and not self.namespace_exists(namespace):
             raise NoSuchNamespaceError(f"Namespace does not exist: {namespace}")
         namespace_str = Catalog.namespace_to_string(namespace)
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT table_namespace, table_name FROM iceberg_tables "
-                    "WHERE catalog_name = %s AND table_namespace = %s",
-                    (self.name, namespace_str),
-                )
-                rows = cur.fetchall()
+        conn = self._connect()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT table_namespace, table_name FROM iceberg_tables "
+                        "WHERE catalog_name = %s AND table_namespace = %s",
+                        (self.name, namespace_str),
+                    )
+                    rows = cur.fetchall()
+        finally:
+            conn.close()
         return [(Catalog.identifier_to_tuple(ns) + (tbl,)) for ns, tbl in rows]
 
     def list_namespaces(self, namespace: str | Identifier = ()) -> list[Identifier]:
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT DISTINCT namespace FROM iceberg_namespace_properties WHERE catalog_name = %s "
-                    "UNION SELECT DISTINCT table_namespace FROM iceberg_tables WHERE catalog_name = %s",
-                    (self.name, self.name),
-                )
-                rows = cur.fetchall()
+        conn = self._connect()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT DISTINCT namespace FROM iceberg_namespace_properties WHERE catalog_name = %s "
+                        "UNION SELECT DISTINCT table_namespace FROM iceberg_tables WHERE catalog_name = %s",
+                        (self.name, self.name),
+                    )
+                    rows = cur.fetchall()
+        finally:
+            conn.close()
         prefix = Catalog.identifier_to_tuple(namespace)
         results = set()
         for (ns,) in rows:
@@ -338,14 +381,18 @@ class PostgresIcebergCatalog(MetastoreCatalog):
 
     def load_namespace_properties(self, namespace: str | Identifier) -> Properties:
         namespace_str = Catalog.namespace_to_string(namespace)
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT property_key, property_value FROM iceberg_namespace_properties "
-                    "WHERE catalog_name = %s AND namespace = %s",
-                    (self.name, namespace_str),
-                )
-                rows = cur.fetchall()
+        conn = self._connect()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT property_key, property_value FROM iceberg_namespace_properties "
+                        "WHERE catalog_name = %s AND namespace = %s",
+                        (self.name, namespace_str),
+                    )
+                    rows = cur.fetchall()
+        finally:
+            conn.close()
         if not rows:
             raise NoSuchNamespaceError(f"Namespace {namespace_str} does not exist")
         return dict(rows)
@@ -358,19 +405,22 @@ class PostgresIcebergCatalog(MetastoreCatalog):
         summary, updated_properties = self._get_updated_props_and_update_summary(
             current_properties=current_properties, removals=removals, updates=updates
         )
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "DELETE FROM iceberg_namespace_properties WHERE catalog_name = %s AND namespace = %s",
-                    (self.name, namespace_str),
-                )
-                for key, value in updated_properties.items():
+        conn = self._connect()
+        try:
+            with conn:
+                with conn.cursor() as cur:
                     cur.execute(
-                        "INSERT INTO iceberg_namespace_properties "
-                        "(catalog_name, namespace, property_key, property_value) VALUES (%s, %s, %s, %s)",
-                        (self.name, namespace_str, key, value),
+                        "DELETE FROM iceberg_namespace_properties WHERE catalog_name = %s AND namespace = %s",
+                        (self.name, namespace_str),
                     )
-            conn.commit()
+                    for key, value in updated_properties.items():
+                        cur.execute(
+                            "INSERT INTO iceberg_namespace_properties "
+                            "(catalog_name, namespace, property_key, property_value) VALUES (%s, %s, %s, %s)",
+                            (self.name, namespace_str, key, value),
+                        )
+        finally:
+            conn.close()
         return summary
 
     # -- Views: not needed by this spike, matching SqlCatalog's own stance --
