@@ -19,35 +19,33 @@ const STATUS_STYLE = {
 // preview). Picking a dataset here also sticks if you switch to Zones.
 const SELECTED_DATASET_KEY = "dataos:lakehouse:selectedDataset";
 
-// BUG FIX ROUND 2 (2026-08-18, confirmed live via real testing, not
-// guessed): the earlier fix (React Flow's own onNodeClick prop,
-// instead of a plain onClick on this node's div, with the reasoning
-// that React Flow's drag-handling was swallowing plain clicks) did NOT
-// actually work -- confirmed directly: a genuine mouse click (via
-// Claude-in-Chrome's computer tool, not a synthetic dispatchEvent)
-// left React's own selectedTask state unset, and zero network request
-// to /api/pipeline/logs/... ever fired. onNodeClick itself simply
-// never fired in this deployed build, for reasons not worth chasing
-// further blind (same lesson as Field Lineage's edge-rendering saga:
-// stop guessing at this library's internals, use the mechanism that's
-// actually confirmed to work).
+// BUG FIX ROUND 3 (2026-08-18, root cause finally confirmed via direct
+// DOM inspection, not guessed): rounds 1 (onNodeClick prop) and 2
+// (plain onClick on this node's div) BOTH failed to fix real clicks --
+// confirmed each time via Claude-in-Chrome (real mouse clicks, not
+// synthetic events; checked React's own selectedTask state directly,
+// and confirmed zero network request to /api/pipeline/logs/... ever
+// fired). The actual cause, found by comparing document.elementFromPoint()
+// at this node's own getBoundingClientRect() center against the node's
+// own computed style: React Flow's ".react-flow__pane" background layer
+// has a HIGHER z-index (1) than this node (0) in this specific setup --
+// confirmed directly, both read in the same call, no timing ambiguity.
+// The pane sits visually behind the node but wins ALL pointer-event
+// hit-testing at that coordinate, so no click -- real, synthetic, or
+// via onNodeClick -- was ever reaching the node's own DOM element in
+// the first place. Neither of the first two "fixes" could have worked;
+// they were solving the wrong layer.
 //
-// Real fix: a plain onClick directly on this node's own div, PLUS the
-// onNodeClick prop kept as a harmless redundant path. This is safe now
-// in a way it wasn't before nodesDraggable={false} existed: the
-// original drag-vs-click conflict this was trying to avoid depended on
-// React Flow's drag-gesture detection actually running on this node,
-// which nodesDraggable={false} (already present on the <ReactFlow>
-// element below) disables entirely -- so a plain onClick has nothing
-// left to race against. data.onSelect is threaded in from buildGraph()
-// below (a closure over the current onSelectTask), not a prop this
-// component receives directly from React Flow.
+// REAL FIX: an explicit zIndex on this node's own div, high enough to
+// win the stacking order against the pane. This is the mechanism that
+// actually determines which element receives a click at a given
+// screen coordinate -- not which handler was attached.
 function TaskNode({ id, data }) {
   const s = STATUS_STYLE[data.status] || STATUS_STYLE.queued;
   return (
     <div
       className="rounded-[10px] px-3.5 py-2.5 cursor-pointer"
-      style={{ background: s.bg, border: `1.5px solid ${s.border}`, minWidth: 150 }}
+      style={{ background: s.bg, border: `1.5px solid ${s.border}`, minWidth: 150, position: "relative", zIndex: 10 }}
       onClick={() => data.onSelect?.(id)}
     >
       <div className="flex items-center gap-2">
@@ -68,10 +66,10 @@ const nodeTypes = { task: TaskNode };
 // (was bronze_ingest) -> silver_to_iceberg (was silver_transform) ->
 // gold_compute (unchanged).
 //
-// onSelect (2026-08-18, bug fix round 2): threaded into each node's
-// data so TaskNode's own onClick above can call it directly -- see
-// that component's comment for why this replaced relying solely on
-// React Flow's onNodeClick, which was confirmed live not to fire.
+// onSelect: threaded into each node's data so TaskNode's own onClick
+// above can call it directly -- see that component's comment for the
+// full history of what was actually wrong and why this (plus the
+// zIndex fix) is what's actually relied on now.
 function buildGraph(tasks, onSelect) {
   const order = ["verify_silver_ready", "silver_to_iceberg", "gold_compute"];
   const positioned = order
@@ -198,8 +196,7 @@ export default function PipelineMonitoring() {
   );
 
   // Kept as a harmless redundant path alongside TaskNode's own onClick
-  // -- see that component's comment for why the plain onClick is now
-  // the mechanism actually relied on.
+  // -- see that component's comment for the full history.
   const handleNodeClick = useCallback(
     (_event, node) => {
       onSelectTask(node.id);
