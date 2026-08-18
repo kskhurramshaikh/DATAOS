@@ -14,7 +14,7 @@ function Pill({ tier }) {
   );
 }
 
-function PendingCard({ cluster, onDecide, deciding }) {
+function PendingCard({ cluster, onDecide, deciding, actionsDisabled }) {
   return (
     <div className="bg-white border border-line rounded-xl px-4 py-3.5">
       <div className="flex items-center justify-between mb-2">
@@ -34,14 +34,14 @@ function PendingCard({ cluster, onDecide, deciding }) {
       </div>
       <div className="flex gap-2">
         <button
-          disabled={deciding}
+          disabled={deciding || actionsDisabled}
           onClick={() => onDecide(cluster.id, "confirmed_duplicate")}
           className="text-[12px] font-semibold px-3 py-1.5 rounded-lg bg-teal text-white disabled:opacity-50"
         >
           Confirm — same person
         </button>
         <button
-          disabled={deciding}
+          disabled={deciding || actionsDisabled}
           onClick={() => onDecide(cluster.id, "not_duplicate")}
           className="text-[12px] font-semibold px-3 py-1.5 rounded-lg border border-line text-ink-soft disabled:opacity-50"
         >
@@ -188,7 +188,20 @@ function GetStartedPanel({ datasets, onDatasetsChanged, onDetected, selectedData
 // relying on the backend's single-dataset auto-detect -- means bulk
 // actions work correctly even with multiple datasets' clusters mixed
 // in the same pending list, instead of erroring out asking "which one."
-function DatasetBulkBar({ datasetName, pendingInDataset, onBulkConfirm, busyKey }) {
+//
+// actionsDisabled (2026-08-18, real bug found in live testing): pending
+// clusters here come from Postgres (detected and persisted earlier) --
+// completely independent of whether the underlying Silver file the
+// clusters were originally detected against still exists right now.
+// Confirmed live: a dataset whose Silver file had gone missing still
+// showed a fully clickable "Confirm all pending" bar with real merge
+// actions available, alongside an unrelated error banner from a failed
+// re-detection attempt -- the error and the pending list were never
+// connected. Every action button below is now disabled whenever the
+// currently selected dataset has an active error, so acting on
+// clusters tied to a source the system itself just flagged as broken
+// is never one click away.
+function DatasetBulkBar({ datasetName, pendingInDataset, onBulkConfirm, busyKey, actionsDisabled }) {
   const highConfidenceCount = pendingInDataset.filter((c) => c.confidence_tier === "high_confidence").length;
   const busy = busyKey === datasetName;
 
@@ -199,14 +212,14 @@ function DatasetBulkBar({ datasetName, pendingInDataset, onBulkConfirm, busyKey 
       </div>
       <div className="flex gap-2">
         <button
-          disabled={busy || highConfidenceCount === 0}
+          disabled={busy || highConfidenceCount === 0 || actionsDisabled}
           onClick={() => onBulkConfirm(datasetName, "high_confidence")}
           className="text-[11.5px] font-semibold px-2.5 py-1.5 rounded-lg bg-success-soft text-success disabled:opacity-40"
         >
           Confirm all high-confidence ({highConfidenceCount})
         </button>
         <button
-          disabled={busy}
+          disabled={busy || actionsDisabled}
           onClick={() => onBulkConfirm(datasetName, "all")}
           className="text-[11.5px] font-semibold px-2.5 py-1.5 rounded-lg border border-line text-ink-soft disabled:opacity-40"
         >
@@ -233,6 +246,16 @@ export default function DuplicateQueue() {
   // Shared with GetStartedPanel's "2. Check for duplicates" picker --
   // one selection, not a second redundant dropdown.
   const [selectedDataset, setSelectedDataset] = useState("");
+
+  // Real bug found in live testing (2026-08-18) -- see DatasetBulkBar's
+  // own comment for the full story. Any error tied to the currently
+  // selected dataset (a failed re-detection, a failed queue load) now
+  // disables every confirm/reject/bulk action on this page, not just
+  // the action that produced the error -- a pending cluster's own
+  // source data can't be independently re-verified from here, so the
+  // safe default is "don't allow acting on it while ANYTHING about
+  // this dataset is erroring."
+  const actionsDisabled = !!state.error;
 
   // datasetName === "" intentionally shows an empty Pending section --
   // see the state note above. The Decided/audit-log half is unaffected
@@ -306,6 +329,14 @@ export default function DuplicateQueue() {
     await loadQueue(selectedDataset);
   }
 
+  // Setting an error via GetStartedPanel's "Find duplicates" failure
+  // path (setError prop below) also needs to disable actions, not just
+  // errors surfaced from loadQueue/decide/bulk-confirm -- so it goes
+  // through the same state.error field rather than a separate one.
+  function setPageError(msg) {
+    setState((s) => ({ ...s, error: msg }));
+  }
+
   // Pending clusters carry their own dataset_name -- kept as a grouped
   // map even though there's only ever one group now (Pending is always
   // scoped to selectedDataset), so DatasetBulkBar's per-dataset bulk-
@@ -344,7 +375,7 @@ export default function DuplicateQueue() {
         onSelectedDatasetChange={handleSelectedDatasetChange}
         busy={busy}
         setBusy={setBusy}
-        setError={(msg) => setState((s) => ({ ...s, error: msg }))}
+        setError={setPageError}
       />
 
       {detectResult && (
@@ -367,7 +398,13 @@ export default function DuplicateQueue() {
 
       {state.error && (
         <div className="mb-4 text-[12.5px] text-danger bg-danger-soft border border-danger/20 rounded-xl px-4 py-3">
-          {state.error}
+          <div>{state.error}</div>
+          {state.pending.length > 0 && (
+            <div className="mt-1.5 font-semibold">
+              Confirm/Reject and bulk actions below are paused until this clears — the pending clusters shown may have
+              been detected against a version of this dataset's data that's no longer available.
+            </div>
+          )}
         </div>
       )}
 
@@ -394,10 +431,17 @@ export default function DuplicateQueue() {
                 pendingInDataset={clusters}
                 onBulkConfirm={handleBulkConfirm}
                 busyKey={bulkBusyKey}
+                actionsDisabled={actionsDisabled}
               />
               <div className="flex flex-col gap-3">
                 {clusters.map((c) => (
-                  <PendingCard key={c.id} cluster={c} onDecide={handleDecide} deciding={decidingId === c.id} />
+                  <PendingCard
+                    key={c.id}
+                    cluster={c}
+                    onDecide={handleDecide}
+                    deciding={decidingId === c.id}
+                    actionsDisabled={actionsDisabled}
+                  />
                 ))}
               </div>
             </div>
