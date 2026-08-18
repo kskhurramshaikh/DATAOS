@@ -101,7 +101,7 @@ from app.compliance_agent import evaluate
 from app.router import route, NoCapabilityRegisteredError
 from app.capability_registry import CAPABILITY_REGISTRY
 from app.db import init_db, storage_status
-from app import auth, chat_store, lakehouse_client, marquez_client, object_storage
+from app import auth, chat_store, field_lineage, lakehouse_client, marquez_client, object_storage
 from app.adapters import dataset_adapter, banking_adapter, dedup_adapter, ndi_history
 from app.visualization import suggest_visualization
 from app.interpreter import interpret, interpret_stream, explain_result
@@ -920,6 +920,10 @@ def duplicate_audit_log(dataset_name: str | None = None, user: dict = Depends(au
 # reasoning) but kept as a real, reusable admin capability, not a
 # one-off script -- same unauthenticated pattern as the rest of this
 # group, since this dashboard has no auth system of its own yet.
+#
+# mdm_field_lineage (2026-08-18) -- see app/field_lineage.py's own
+# docstring for the full reasoning. Item 3's 3rd of 4 required pages,
+# reopened after being marked done prematurely.
 # ---------------------------------------------------------------------
 
 class MdmDecisionRequest(BaseModel):
@@ -1102,6 +1106,21 @@ def mdm_golden_records(dataset_name: str | None = None):
 def mdm_golden_record_detail(golden_record_id: int):
     try:
         return dedup_adapter.get_golden_record_detail(golden_record_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/api/mdm/field-lineage")
+def mdm_field_lineage(dataset_name: str):
+    """Field-Level Lineage (Item 3's 3rd of 4 required MDM pages,
+    reopened 2026-08-18 -- see app/field_lineage.py's own docstring for
+    the full reasoning). Traces ECL_SAR, NATIONAL_ID, DUPLICATE_FLAG,
+    NDI_SCORE through whichever real system actually produces each one
+    for the given dataset -- deliberately dataset-scoped (unlike Item
+    6's catalog/lineage, which is browsed across everything), since
+    these are per-record fields on one specific dataset's data."""
+    try:
+        return field_lineage.get_field_lineage_for_dataset(dataset_name)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
