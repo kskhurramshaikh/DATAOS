@@ -19,14 +19,18 @@ const JOB_STATE_STYLE = {
   FAILED: { bg: "#FBEAEA", border: "#D6483E", dot: "#D6483E" },
 };
 
-// BUG FIX (2026-08-18, confirmed live): ReactFlow custom node types
-// need explicit <Handle> elements for it to know WHERE an edge should
-// attach -- without them, edges silently render zero DOM elements
-// (confirmed directly: document.querySelectorAll('.react-flow__edge-
-// path').length was 0 on the live deployed page, not a color/z-index
-// issue). Both custom node types below now render a left target handle
-// and a right source handle, matching this graph's strictly left-to-
-// right dataset -> job -> dataset flow.
+// BUG FIX, ROUND 2 (2026-08-18, confirmed live at each step, not
+// guessed): first fix added plain <Handle> elements, which made
+// react-flow render 10 handle DOM nodes (5 nodes x 2 handles) --
+// confirmed via document.querySelectorAll('.react-flow__handle').
+// length -- but edges STILL rendered zero DOM elements. Root cause:
+// when a node has BOTH a source and a target handle (every node here
+# does), react-flow needs each Handle to carry an explicit `id`, and
+# each edge needs matching `sourceHandle`/`targetHandle` values -- an
+# unset id only reliably resolves for a node with exactly one handle
+# total. Both node types below now use id="right"/id="left", and
+# layoutGraph()'s edges set sourceHandle="right"/targetHandle="left"
+# to match.
 function JobNode({ data }) {
   const s = JOB_STATE_STYLE[data.runState] || { bg: "#F4F4F5", border: "#8E8E93", dot: "#8E8E93" };
   return (
@@ -34,7 +38,7 @@ function JobNode({ data }) {
       className="rounded-[10px] px-3.5 py-2.5"
       style={{ background: s.bg, border: `1.5px solid ${s.border}`, minWidth: 170 }}
     >
-      <Handle type="target" position={Position.Left} style={{ background: s.border }} />
+      <Handle id="left" type="target" position={Position.Left} style={{ background: s.border }} />
       <div className="flex items-center gap-2">
         <span className="w-2 h-2 rounded-full inline-block" style={{ background: s.dot }} />
         <span className="text-[11.5px] font-semibold text-ink font-mono">{data.label}</span>
@@ -42,7 +46,7 @@ function JobNode({ data }) {
       {data.datasetName && (
         <div className="text-[10px] text-ink-faint mt-1 font-mono">dataset: {data.datasetName}</div>
       )}
-      <Handle type="source" position={Position.Right} style={{ background: s.border }} />
+      <Handle id="right" type="source" position={Position.Right} style={{ background: s.border }} />
     </div>
   );
 }
@@ -50,10 +54,10 @@ function JobNode({ data }) {
 function DatasetNode({ data }) {
   return (
     <div className="rounded-[10px] px-3.5 py-2.5 bg-white border-[1.5px] border-line" style={{ minWidth: 170 }}>
-      <Handle type="target" position={Position.Left} style={{ background: "#D4D4D8" }} />
+      <Handle id="left" type="target" position={Position.Left} style={{ background: "#D4D4D8" }} />
       <div className="text-[10px] font-bold text-ink-faint uppercase tracking-wide mb-0.5">Dataset</div>
       <div className="text-[11.5px] font-semibold text-ink font-mono break-all">{data.label}</div>
-      <Handle type="source" position={Position.Right} style={{ background: "#D4D4D8" }} />
+      <Handle id="right" type="source" position={Position.Right} style={{ background: "#D4D4D8" }} />
     </div>
   );
 }
@@ -108,6 +112,8 @@ function layoutGraph(rawNodes, rawEdges) {
     id: `e${i}`,
     source: e.from,
     target: e.to,
+    sourceHandle: "right",
+    targetHandle: "left",
     markerEnd: { type: MarkerType.ArrowClosed, color: "#B7B7BC" },
     style: { stroke: "#B7B7BC", strokeWidth: 1.5 },
   }));
