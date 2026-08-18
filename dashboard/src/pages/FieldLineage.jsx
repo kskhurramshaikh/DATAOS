@@ -25,12 +25,12 @@ const JOB_STATE_STYLE = {
 // confirmed via document.querySelectorAll('.react-flow__handle').
 // length -- but edges STILL rendered zero DOM elements. Root cause:
 // when a node has BOTH a source and a target handle (every node here
-# does), react-flow needs each Handle to carry an explicit `id`, and
-# each edge needs matching `sourceHandle`/`targetHandle` values -- an
-# unset id only reliably resolves for a node with exactly one handle
-# total. Both node types below now use id="right"/id="left", and
-# layoutGraph()'s edges set sourceHandle="right"/targetHandle="left"
-# to match.
+// does), react-flow needs each Handle to carry an explicit id, and
+// each edge needs matching sourceHandle/targetHandle values -- an
+// unset id only reliably resolves for a node with exactly one handle
+// total. Both node types below now use id="right"/id="left", and
+// layoutGraph()'s edges set sourceHandle="right"/targetHandle="left"
+// to match.
 function JobNode({ data }) {
   const s = JOB_STATE_STYLE[data.runState] || { bg: "#F4F4F5", border: "#8E8E93", dot: "#8E8E93" };
   return (
