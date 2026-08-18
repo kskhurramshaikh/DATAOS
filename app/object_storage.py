@@ -33,7 +33,7 @@ already established for the Postgres migration; SEAWEEDFS_PUBLIC_URL/
 SEAWEEDFS_INTERNAL_HOST are also never set in GitHub Actions, same as
 LAKEHOUSE_DB_URI). put_text()/get_text() below fall back to plain local
 disk under a caller-supplied local_root when SeaweedFS isn't
-configured -- production (where it IS configured) always uses S3;
+configured (production (where it IS configured) always uses S3;
 CI/local dev transparently keeps working against local disk with the
 exact same path shape the old direct-local-disk implementation used,
 so no test file needed to change.
@@ -95,6 +95,16 @@ put()` call carrying no boto3-added headers at all. This was variant
 Python User-Agent, default TLS -- passed clean (200), no impersonation
 or special headers needed. get_text() is UNCHANGED (still direct boto3
 GET) since reads were never blocked.
+
+DELETE support (2026-08-18, added for dataset removal -- see
+dataset_adapter.delete_dataset()): DeleteObject is a write-shaped
+boto3 call, the same request class already proven to 403 cross-region
+for PutObject. delete_prefix() below tries direct boto3 delete_object()
+first (cheap, and DELETE has no request body the way PUT does, so it's
+not guaranteed to hit the same block); if that specific call fails,
+it falls back to a presigned DELETE URL + plain `requests`, the exact
+same fix already proven for PUT above -- same reasoning, not a new
+approach.
 
 DIAGNOSTIC (2026-08-17): debug_write_test() (list_buckets/head_bucket/
 create_bucket/put_object via boto3, on purpose -- kept as-is so it
@@ -254,6 +264,57 @@ def get_text(uri_or_path: str) -> str:
 
     with open(uri_or_path, "r", encoding="utf-8") as f:
         return f.read()
+
+
+def delete_prefix(prefix: str) -> dict:
+    """Permanently deletes every object under `prefix` (e.g.
+    "bronze/Banking_Demo/") in APP_BUCKET. Real deletion, not soft --
+    used when a dataset record itself is being removed (see
+    dataset_adapter.delete_dataset()). Lists first via boto3 (reads
+    are known-good cross-region -- see CROSS-REGION PUT 403 above),
+    then deletes each key. See DELETE support in the module docstring
+    for why each delete tries direct boto3 first, then falls back to
+    a presigned DELETE URL + plain `requests` if that specific call
+    fails -- same fix already proven for PUT, applied here for the
+    same reason."""
+    if not is_configured():
+        return {"prefix": prefix, "configured": False, "deleted": []}
+
+    s3 = _client()
+    keys: list[str] = []
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=APP_BUCKET, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                keys.append(obj["Key"])
+    except (ClientError, BotoCoreError) as e:
+        return {"prefix": prefix, "found": 0, "deleted": [], "list_error": str(e)}
+
+    deleted: list[str] = []
+    errors: list[dict] = []
+    for key in keys:
+        try:
+            s3.delete_object(Bucket=APP_BUCKET, Key=key)
+            deleted.append(key)
+            continue
+        except (ClientError, BotoCoreError):
+            pass  # fall through to presigned-URL retry below
+        try:
+            import requests
+
+            url = s3.generate_presigned_url(
+                "delete_object", Params={"Bucket": APP_BUCKET, "Key": key}, ExpiresIn=300, HttpMethod="DELETE"
+            )
+            r = requests.delete(url, timeout=30)
+            r.raise_for_status()
+            deleted.append(key)
+        except Exception as e2:  # noqa: BLE001 -- last-resort, surfaced per-key not swallowed
+            errors.append({"key": key, "error": str(e2)})
+
+    result = {"prefix": prefix, "found": len(keys), "deleted": deleted}
+    if errors:
+        result["errors"] = errors
+    return result
 
 
 def _full_error(e: Exception) -> dict:
