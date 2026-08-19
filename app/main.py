@@ -409,6 +409,70 @@ def debug_keycloak_create_trace(email: str, password: str, name: str = "Trace Te
     return steps
 
 
+@app.get("/api/debug/keycloak-required-actions")
+def debug_keycloak_required_actions():
+    """TEMPORARY diagnostic (2026-08-19) -- the create-trace endpoint
+    (commit 3ddfb6f) proved the user's OWN state is clean (requiredActions
+    empty, reset-password succeeded with 204) yet the grant still fails
+    with the identical "invalid_grant: Account is not fully set up".
+    That points to a REALM-LEVEL default required action being applied
+    dynamically at authentication time -- not something persisted on the
+    user object at all, which is why clearing/resetting the user never
+    helped. This reads the realm's actual Authentication > Required
+    Actions config to check for any with defaultAction=true. Deliberately
+    unauthenticated, same pattern as every other /api/debug/* route --
+    remove once this is root-caused."""
+    from app import auth as _auth
+    import requests as _requests
+
+    admin_token = _auth._get_admin_token()
+    r = _requests.get(
+        f"{_auth._ADMIN_BASE}/authentication/required-actions",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        timeout=10,
+    )
+    return {"status": r.status_code, "required_actions": r.json() if r.status_code == 200 else r.text}
+
+
+@app.post("/api/debug/keycloak-clear-default-required-actions")
+def debug_keycloak_clear_default_required_actions():
+    """TEMPORARY fix-and-diagnose endpoint (2026-08-19), companion to
+    the GET above -- disables defaultAction on every realm required
+    action that currently has it set, then returns the before/after
+    state for each so the fix is visible, not just assumed. Deliberately
+    unauthenticated, same pattern as every other /api/debug/* route --
+    remove once this is root-caused (or converted into a real one-time
+    setup step if it IS the fix)."""
+    from app import auth as _auth
+    import requests as _requests
+
+    admin_token = _auth._get_admin_token()
+    r = _requests.get(
+        f"{_auth._ADMIN_BASE}/authentication/required-actions",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        timeout=10,
+    )
+    if r.status_code != 200:
+        return {"status": r.status_code, "error": r.text}
+
+    results = []
+    for action in r.json():
+        was_default = action.get("defaultAction", False)
+        if was_default:
+            action["defaultAction"] = False
+            put_r = _requests.put(
+                f"{_auth._ADMIN_BASE}/authentication/required-actions/{action['alias']}",
+                json=action,
+                headers={"Authorization": f"Bearer {admin_token}"},
+                timeout=10,
+            )
+            results.append({"alias": action["alias"], "was_default": True, "put_status": put_r.status_code})
+        else:
+            results.append({"alias": action["alias"], "was_default": False, "skipped": True})
+
+    return {"results": results}
+
+
 @app.get("/api/debug/storage-write")
 def debug_storage_write():
     """Diagnostic for the SeaweedFS write path specifically (2026-08-17)
