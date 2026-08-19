@@ -330,6 +330,85 @@ def debug_keycloak_client():
     return {"status": r.status_code, "clients": r.json() if r.status_code == 200 else r.text}
 
 
+@app.get("/api/debug/keycloak-create-trace")
+def debug_keycloak_create_trace(email: str, password: str, name: str = "Trace Test"):
+    """TEMPORARY diagnostic (2026-08-19) -- the reset-password fix
+    (commit f67307c) did NOT resolve the bug: a fresh signup after that
+    deploy still failed, and the created user still showed
+    disableableCredentialTypes: []. Rather than guess a third theory,
+    this runs each step of user creation manually and reports every
+    intermediate status code/body, so the actual failing step is
+    visible directly instead of inferred. Deliberately unauthenticated,
+    same pattern as every other /api/debug/* route -- remove once this
+    is root-caused."""
+    from app import auth as _auth
+    import requests as _requests
+
+    email = email.strip().lower()
+    admin_token = _auth._get_admin_token()
+    steps = {}
+
+    create_r = _requests.post(
+        f"{_auth._ADMIN_BASE}/users",
+        json={
+            "email": email,
+            "username": email,
+            "firstName": name,
+            "enabled": True,
+            "emailVerified": True,
+            "requiredActions": [],
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+        timeout=10,
+    )
+    steps["create"] = {"status": create_r.status_code, "body": create_r.text[:500], "location": create_r.headers.get("Location")}
+
+    kc_user_id = None
+    location = create_r.headers.get("Location", "")
+    if location:
+        kc_user_id = location.rstrip("/").split("/")[-1]
+    elif create_r.status_code == 409:
+        lookup_r = _requests.get(
+            f"{_auth._ADMIN_BASE}/users", params={"email": email},
+            headers={"Authorization": f"Bearer {admin_token}"}, timeout=10,
+        )
+        steps["lookup_after_409"] = {"status": lookup_r.status_code}
+        if lookup_r.status_code == 200 and lookup_r.json():
+            kc_user_id = lookup_r.json()[0]["id"]
+
+    steps["kc_user_id"] = kc_user_id
+
+    if kc_user_id:
+        pw_r = _requests.put(
+            f"{_auth._ADMIN_BASE}/users/{kc_user_id}/reset-password",
+            json={"type": "password", "value": password, "temporary": False},
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=10,
+        )
+        steps["reset_password"] = {"status": pw_r.status_code, "body": pw_r.text[:500]}
+
+        recheck_r = _requests.get(
+            f"{_auth._ADMIN_BASE}/users/{kc_user_id}",
+            headers={"Authorization": f"Bearer {admin_token}"}, timeout=10,
+        )
+        steps["recheck_user"] = {"status": recheck_r.status_code, "body": recheck_r.json() if recheck_r.status_code == 200 else recheck_r.text[:500]}
+
+        grant_r = _requests.post(
+            _auth._TOKEN_URL,
+            data={
+                "client_id": _auth.KEYCLOAK_CLIENT_ID,
+                "client_secret": _auth.KEYCLOAK_CLIENT_SECRET,
+                "username": email,
+                "password": password,
+                "grant_type": "password",
+            },
+            timeout=10,
+        )
+        steps["grant_test"] = {"status": grant_r.status_code, "body": grant_r.text[:500]}
+
+    return steps
+
+
 @app.get("/api/debug/storage-write")
 def debug_storage_write():
     """Diagnostic for the SeaweedFS write path specifically (2026-08-17)
