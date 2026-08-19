@@ -102,7 +102,7 @@ from app.router import route, NoCapabilityRegisteredError
 from app.capability_registry import CAPABILITY_REGISTRY
 from app.db import init_db, storage_status
 from app import auth, chat_store, field_lineage, lakehouse_client, marquez_client, object_storage
-from app.adapters import dataset_adapter, banking_adapter, dedup_adapter, ndi_history, stewardship_adapter
+from app.adapters import dataset_adapter, banking_adapter, dedup_adapter, ndi_history, stewardship_adapter, classification_adapter, quality_adapter
 from app.visualization import suggest_visualization
 from app.interpreter import interpret, interpret_stream, explain_result
 
@@ -1178,6 +1178,53 @@ def mdm_stewardship_unassign(req: StewardshipUnassignRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other MDM write routes above.
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+# ---------------------------------------------------------------------
+# Governance dashboard API (Item 7 -- Classification & PDPL + Data
+# Quality Rules, Section 04's 6th page group). Same unauthenticated,
+# read-only pattern as every dashboard endpoint above.
+#
+# Classification & PDPL wraps app/adapters/classification_adapter.py --
+# see that module's own docstring for the full OPA-deferral reasoning
+# (real column classification now, policy enforcement deferred until
+# Item 9/RBAC exists).
+#
+# Data Quality Rules wraps app/adapters/quality_adapter.py -- a real
+# Great Expectations suite run against a dataset's actual Silver data,
+# using the exact same null-rate thresholds dataset_adapter.py's own
+# promotion gate uses (imported, not restated).
+# ---------------------------------------------------------------------
+
+@app.get("/api/governance/classification")
+def governance_classification(dataset_name: str):
+    """Per-column sensitivity classification (PUBLIC/INTERNAL/
+    CONFIDENTIAL/RESTRICTED) + PDPL completeness detail for one
+    dataset. See classification_adapter.py's module docstring for what
+    this does and does not cover (classification is real; OPA policy
+    enforcement is deferred and disclosed, not built)."""
+    try:
+        return classification_adapter.classify_dataset(dataset_name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/api/governance/classification/coverage")
+def governance_classification_coverage():
+    """Across every dataset, how many RESTRICTED/CONFIDENTIAL columns
+    exist -- a small at-a-glance summary."""
+    return classification_adapter.get_coverage_summary()
+
+
+@app.get("/api/governance/quality-rules")
+def governance_quality_rules(dataset_name: str):
+    """Runs a real Great Expectations suite against one dataset's
+    Silver data and returns pass/fail per rule. See
+    quality_adapter.py's module docstring."""
+    try:
+        return quality_adapter.run_quality_rules(dataset_name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 # ---------------------------------------------------------------------
