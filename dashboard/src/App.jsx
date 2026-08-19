@@ -8,6 +8,8 @@ import FieldLevelLineage from "./pages/FieldLevelLineage";
 import DataStewardship from "./pages/DataStewardship";
 import SamaDashboard from "./pages/SamaDashboard";
 import AuditLog from "./pages/AuditLog";
+import Classification from "./pages/Classification";
+import DataQualityRules from "./pages/DataQualityRules";
 import NdiDashboard from "./pages/NdiDashboard";
 import NdiHistory from "./pages/NdiHistory";
 import DataCatalog from "./pages/DataCatalog";
@@ -31,6 +33,8 @@ const TAB_GROUPS = {
   governance: [
     { key: "sama", label: "SAMA Compliance", path: "/governance" },
     { key: "audit", label: "Audit Log", path: "/governance/audit-log" },
+    { key: "classification", label: "Classification & PDPL", path: "/governance/classification" },
+    { key: "quality", label: "Data Quality Rules", path: "/governance/quality-rules" },
   ],
   catalog: [
     { key: "catalog", label: "Data Catalog", path: "/catalog" },
@@ -114,6 +118,8 @@ function GovernanceSection() {
         <Routes>
           <Route path="/" element={<SamaDashboard />} />
           <Route path="/audit-log" element={<AuditLog />} />
+          <Route path="/classification" element={<Classification />} />
+          <Route path="/quality-rules" element={<DataQualityRules />} />
         </Routes>
       </div>
     </>
