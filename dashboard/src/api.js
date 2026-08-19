@@ -83,13 +83,17 @@ export const api = {
   // Data Stewardship (Item 3's 4th and last required MDM page).
   getStewardship: (datasetName) => getJSON(`/mdm/stewardship?dataset_name=${encodeURIComponent(datasetName)}`),
   getStewardshipCoverage: () => getJSON("/mdm/stewardship/coverage"),
-  assignStewardship: (datasetName, role, assigneeName, assigneeEmail, assignedBy, note) =>
+  // assigned_by is no longer a caller-supplied argument, wired
+  // 2026-08-19 -- the server takes it from the real logged-in user's
+  // verified token (see main.py's mdm_stewardship_assign), not
+  // whatever a client claims. Requires authHeaders() to actually carry
+  // a token, same as the classification RBAC/OPA gate.
+  assignStewardship: (datasetName, role, assigneeName, assigneeEmail, note) =>
     postJSON("/mdm/stewardship/assign", {
       dataset_name: datasetName,
       role,
       assignee_name: assigneeName,
       assignee_email: assigneeEmail,
-      assigned_by: assignedBy,
       note,
     }),
   unassignStewardship: (datasetName, role) => postJSON("/mdm/stewardship/unassign", { dataset_name: datasetName, role }),
