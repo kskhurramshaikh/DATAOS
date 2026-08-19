@@ -255,6 +255,32 @@ def debug_storage():
     return storage_status()
 
 
+@app.get("/api/debug/keycloak-user")
+def debug_keycloak_user(email: str):
+    """TEMPORARY diagnostic (2026-08-19) -- added to chase a real live
+    bug: signup creates the Keycloak user (201) but the immediate
+    login inside create_user() fails with Keycloak's own "invalid_grant:
+    Account is not fully set up", even after explicitly setting
+    requiredActions=[] on creation. Browser-side calls to Keycloak's
+    Admin API are CORS-blocked from the master realm's admin-cli client
+    (no Web Origins configured there, unlike dataos-app), so this reads
+    the user's actual stored state server-side, where CORS doesn't
+    apply, instead of guessing further. Deliberately unauthenticated,
+    same pattern as every other /api/debug/* route -- remove once this
+    is root-caused."""
+    from app import auth as _auth
+    import requests as _requests
+
+    admin_token = _auth._get_admin_token()
+    r = _requests.get(
+        f"{_auth._ADMIN_BASE}/users",
+        params={"email": email},
+        headers={"Authorization": f"Bearer {admin_token}"},
+        timeout=10,
+    )
+    return {"status": r.status_code, "users": r.json() if r.status_code == 200 else r.text}
+
+
 @app.get("/api/debug/storage-write")
 def debug_storage_write():
     """Diagnostic for the SeaweedFS write path specifically (2026-08-17)
