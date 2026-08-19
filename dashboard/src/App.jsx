@@ -5,6 +5,7 @@ import PipelineMonitoring from "./pages/PipelineMonitoring";
 import GoldenRecordRegistry from "./pages/GoldenRecordRegistry";
 import DuplicateQueue from "./pages/DuplicateQueue";
 import FieldLevelLineage from "./pages/FieldLevelLineage";
+import DataStewardship from "./pages/DataStewardship";
 import SamaDashboard from "./pages/SamaDashboard";
 import AuditLog from "./pages/AuditLog";
 import NdiDashboard from "./pages/NdiDashboard";
@@ -21,6 +22,7 @@ const TAB_GROUPS = {
     { key: "golden", label: "Golden Records", path: "/mdm" },
     { key: "queue", label: "Duplicate Queue", path: "/mdm/queue" },
     { key: "lineage", label: "Field Lineage", path: "/mdm/lineage" },
+    { key: "stewardship", label: "Data Stewardship", path: "/mdm/stewardship" },
   ],
   ndi: [
     { key: "assessment", label: "Assessment", path: "/ndi" },
@@ -83,6 +85,7 @@ function MdmSection() {
           <Route path="/" element={<GoldenRecordRegistry />} />
           <Route path="/queue" element={<DuplicateQueue />} />
           <Route path="/lineage" element={<FieldLevelLineage />} />
+          <Route path="/stewardship" element={<DataStewardship />} />
         </Routes>
       </div>
     </>
