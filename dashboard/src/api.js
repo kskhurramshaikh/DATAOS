@@ -41,6 +41,13 @@ async function postForm(path, file, fields) {
   return data;
 }
 
+async function deleteJSON(path) {
+  const res = await fetch(`${BASE}${path}`, { method: "DELETE", headers: authHeaders() });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `${path} -> ${res.status}`);
+  return data;
+}
+
 export const api = {
   getZones: (datasetName) => getJSON(`/lakehouse/zones${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
   getPipelineRuns: (datasetName, limit = 10) =>
@@ -124,4 +131,14 @@ export const api = {
   getCatalogJobs: () => getJSON("/catalog/jobs"),
   getCatalogJobRuns: (jobName, limit = 10) => getJSON(`/catalog/jobs/${encodeURIComponent(jobName)}/runs?limit=${limit}`),
   getFieldLineage: () => getJSON("/catalog/lineage"),
+
+  // User & role administration, wired 2026-08-19 -- real Keycloak
+  // Admin REST API calls, admin-only (see app/adapters/
+  // user_admin_adapter.py's module docstring). Closes the
+  // "no admin-promotion UI" gap the RBAC/OPA build left -- promoting
+  // a user used to require Keycloak's own admin console directly.
+  getAdminUsers: () => getJSON("/admin/users"),
+  getAdminRoles: () => getJSON("/admin/roles"),
+  assignUserRole: (userId, role) => postJSON(`/admin/users/${encodeURIComponent(userId)}/roles`, { role }),
+  removeUserRole: (userId, role) => deleteJSON(`/admin/users/${encodeURIComponent(userId)}/roles/${encodeURIComponent(role)}`),
 };
