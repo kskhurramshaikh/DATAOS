@@ -1,20 +1,20 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { useAuth } from "../auth";
 import DatasetPicker from "../components/DatasetPicker";
+import { Link } from "react-router-dom";
 
-function RoleCard({ role, onAssign, onUnassign, busy }) {
+function RoleCard({ role, onAssign, onUnassign, busy, canAssign }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(role.assignee_name || "");
   const [email, setEmail] = useState(role.assignee_email || "");
   const [note, setNote] = useState(role.note || "");
-  const [assignedBy, setAssignedBy] = useState("");
   const [error, setError] = useState(null);
 
   function startEdit() {
     setName(role.assignee_name || "");
     setEmail(role.assignee_email || "");
     setNote(role.note || "");
-    setAssignedBy("");
     setError(null);
     setEditing(true);
   }
@@ -24,13 +24,9 @@ function RoleCard({ role, onAssign, onUnassign, busy }) {
       setError("Assignee name is required.");
       return;
     }
-    if (!assignedBy.trim()) {
-      setError("Your name (assigned by) is required.");
-      return;
-    }
     setError(null);
     try {
-      await onAssign(role.role, name.trim(), email.trim() || null, assignedBy.trim(), note.trim() || null);
+      await onAssign(role.role, name.trim(), email.trim() || null, note.trim() || null);
       setEditing(false);
     } catch (e) {
       setError(e.message);
@@ -47,7 +43,7 @@ function RoleCard({ role, onAssign, onUnassign, busy }) {
           </div>
           <p className="text-[11.5px] text-ink-faint mt-1">{role.description}</p>
         </div>
-        {!editing && (
+        {!editing && canAssign && (
           <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={startEdit}
@@ -105,12 +101,6 @@ function RoleCard({ role, onAssign, onUnassign, busy }) {
             placeholder="Note (optional)"
             className="text-[12.5px] border border-line rounded-lg px-3 py-1.5"
           />
-          <input
-            value={assignedBy}
-            onChange={(e) => setAssignedBy(e.target.value)}
-            placeholder="Your name (assigned by) *"
-            className="text-[12.5px] border border-line rounded-lg px-3 py-1.5"
-          />
           {error && <div className="text-[11px] text-danger">{error}</div>}
           <div className="flex items-center gap-2 mt-0.5">
             <button
@@ -134,6 +124,7 @@ function RoleCard({ role, onAssign, onUnassign, busy }) {
 }
 
 export default function DataStewardship() {
+  const { isAuthenticated } = useAuth();
   const [datasets, setDatasets] = useState([]);
   const [datasetsLoaded, setDatasetsLoaded] = useState(false);
   const [selected, setSelected] = useState("");
@@ -183,10 +174,14 @@ export default function DataStewardship() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 
-  async function handleAssign(role, assigneeName, assigneeEmail, assignedBy, note) {
+  async function handleAssign(role, assigneeName, assigneeEmail, note) {
     setBusy(true);
     try {
-      const res = await api.assignStewardship(selected, role, assigneeName, assigneeEmail, assignedBy, note);
+      // assigned_by is no longer passed from here -- see api.js's
+      // assignStewardship() docstring. The server takes it from the
+      // caller's own verified login, wired 2026-08-19 alongside the
+      // RBAC/OPA gate on this same endpoint.
+      const res = await api.assignStewardship(selected, role, assigneeName, assigneeEmail, note);
       setState({ loading: false, data: res, error: null });
     } finally {
       setBusy(false);
@@ -217,6 +212,16 @@ export default function DataStewardship() {
         <DatasetPicker datasets={datasets} value={selected} onChange={setSelected} />
       </div>
 
+      {!isAuthenticated && (
+        <div className="mb-4 text-[12.5px] text-ink-soft bg-[#FAFAFB] border border-line rounded-xl px-4 py-3">
+          Viewing only.{" "}
+          <Link to="/account" className="text-teal font-semibold hover:opacity-80">
+            Sign in
+          </Link>{" "}
+          with a Data Owner or Admin role to assign or reassign these roles.
+        </div>
+      )}
+
       {!selected && datasetsLoaded && datasets.length > 1 && (
         <div className="text-[12.5px] text-ink-faint bg-[#FAFAFB] border border-line rounded-xl px-4 py-3">
           Select a dataset above to view or assign its stewardship roles.
@@ -245,9 +250,10 @@ export default function DataStewardship() {
               <RoleCard
                 key={role.role}
                 role={role}
-                onAssign={(r, n, e, ab, note) => handleAssign(r, n, e, ab, note)}
+                onAssign={handleAssign}
                 onUnassign={handleUnassign}
                 busy={busy}
+                canAssign={isAuthenticated}
               />
             ))}
           </div>
