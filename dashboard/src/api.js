@@ -67,6 +67,20 @@ export const api = {
   // its result.
   getMdmFieldLineage: (datasetName, opts) => getJSON(`/mdm/field-lineage?dataset_name=${encodeURIComponent(datasetName)}`, opts),
 
+  // Data Stewardship (Item 3's 4th and last required MDM page).
+  getStewardship: (datasetName) => getJSON(`/mdm/stewardship?dataset_name=${encodeURIComponent(datasetName)}`),
+  getStewardshipCoverage: () => getJSON("/mdm/stewardship/coverage"),
+  assignStewardship: (datasetName, role, assigneeName, assigneeEmail, assignedBy, note) =>
+    postJSON("/mdm/stewardship/assign", {
+      dataset_name: datasetName,
+      role,
+      assignee_name: assigneeName,
+      assignee_email: assigneeEmail,
+      assigned_by: assignedBy,
+      note,
+    }),
+  unassignStewardship: (datasetName, role) => postJSON("/mdm/stewardship/unassign", { dataset_name: datasetName, role }),
+
   getSama: (datasetName) => getJSON(`/governance/sama${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
   getAuditLog: (datasetName) => getJSON(`/governance/audit-log${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
 
