@@ -1,7 +1,20 @@
+import { getStoredToken } from "./auth";
+
 const BASE = "/api";
 
+// Real Bearer auth, wired 2026-08-19 -- see auth.jsx's module
+// docstring. Attached to every request unconditionally: harmless for
+// every endpoint that doesn't need it (the backend simply ignores an
+// Authorization header it has no Depends() for), and required for the
+// two real RBAC/OPA policy points (classification detail, stewardship
+// assign/unassign) -- see app/opa_client.py.
+function authHeaders() {
+  const token = getStoredToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function getJSON(path, { signal } = {}) {
-  const res = await fetch(`${BASE}${path}`, { signal });
+  const res = await fetch(`${BASE}${path}`, { signal, headers: authHeaders() });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || `${path} -> ${res.status}`);
   return data;
@@ -10,7 +23,7 @@ async function getJSON(path, { signal } = {}) {
 async function postJSON(path, body) {
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
@@ -22,7 +35,7 @@ async function postForm(path, file, fields) {
   const form = new FormData();
   form.append("file", file);
   Object.entries(fields).forEach(([k, v]) => form.append(k, v));
-  const res = await fetch(`${BASE}${path}`, { method: "POST", body: form });
+  const res = await fetch(`${BASE}${path}`, { method: "POST", body: form, headers: authHeaders() });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || `${path} -> ${res.status}`);
   return data;
