@@ -361,6 +361,26 @@ def _pg_init_db():
             )
             """
         )
+        # Data Stewardship (Item 3, MDM, 4th of the page group's required
+        # pages) -- see app/adapters/stewardship_adapter.py's module
+        # docstring for the full reasoning. One row per (dataset, role)
+        # -- a role can only have one current assignee, upserted on
+        # reassignment, not append-only history.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS stewardship_assignments (
+                id SERIAL PRIMARY KEY,
+                dataset_safe_name TEXT NOT NULL,
+                role TEXT NOT NULL,
+                assignee_name TEXT NOT NULL,
+                assignee_email TEXT,
+                assigned_by TEXT NOT NULL,
+                assigned_at TEXT NOT NULL,
+                note TEXT,
+                UNIQUE (dataset_safe_name, role)
+            )
+            """
+        )
         conn.commit()
 
 
@@ -588,6 +608,21 @@ def _sqlite_init_db():
                 merged_by TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (cluster_id) REFERENCES duplicate_clusters (id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS stewardship_assignments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset_safe_name TEXT NOT NULL,
+                role TEXT NOT NULL,
+                assignee_name TEXT NOT NULL,
+                assignee_email TEXT,
+                assigned_by TEXT NOT NULL,
+                assigned_at TEXT NOT NULL,
+                note TEXT,
+                UNIQUE (dataset_safe_name, role)
             )
             """
         )
