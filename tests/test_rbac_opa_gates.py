@@ -80,7 +80,6 @@ def test_stewardship_assign_requires_auth():
             "dataset_name": "doesnotmatter",
             "role": "data_owner",
             "assignee_name": "Someone",
-            "assigned_by": "tester",
         },
     )
     assert r.status_code == 401
@@ -96,7 +95,6 @@ def test_stewardship_assign_denies_data_consumer(test_token_factory):
             "dataset_name": ds,
             "role": "data_owner",
             "assignee_name": "Someone",
-            "assigned_by": "consumer2@example.com",
         },
     )
     assert r.status_code == 403
@@ -112,11 +110,33 @@ def test_stewardship_assign_allows_data_owner(test_token_factory):
             "dataset_name": ds,
             "role": "data_steward",
             "assignee_name": "Real Steward",
-            "assigned_by": "owner@example.com",
         },
     )
     assert r.status_code == 200
     assert r.json()["roles_assigned"] == 1
+
+
+def test_stewardship_assign_auto_attributes_to_real_logged_in_user(test_token_factory):
+    # Real security property, wired 2026-08-19 alongside auto-attribution:
+    # assigned_by is no longer a client-supplied field at all -- even if
+    # a request body still includes one (e.g. an old client), the server
+    # ignores it entirely and uses the verified token's own email. This
+    # proves a caller can't claim to be someone else.
+    ds = _upload_dataset("steward-attribution")
+    token = test_token_factory("owner2@example.com", ["data_owner"])
+    r = client.post(
+        "/api/mdm/stewardship/assign",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "dataset_name": ds,
+            "role": "data_owner",
+            "assignee_name": "Real Steward",
+            "assigned_by": "someone-else-entirely@example.com",  # ignored by the server
+        },
+    )
+    assert r.status_code == 200
+    role = next(r_ for r_ in r.json()["roles"] if r_["role"] == "data_owner")
+    assert role["assigned_by"] == "owner2@example.com"
 
 
 def test_stewardship_unassign_denies_data_steward_role_itself(test_token_factory):
