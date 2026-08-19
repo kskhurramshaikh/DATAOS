@@ -198,16 +198,45 @@ class _PgCursor:
 
 
 class _PgConnection:
-    __slots__ = ("_conn",)
+    __slots__ = ("_conn", "_statements", "_replaced")
 
     def __init__(self, conn):
         self._conn = conn
+        self._statements = 0
+        self._replaced = False  # set if a stale pooled conn was swapped mid-checkout
 
     def execute(self, sql, params=()):
+        import psycopg2
         import psycopg2.extras
 
-        cur = _PgCursor(self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor))
-        return cur.execute(sql, params)
+        try:
+            cur = _PgCursor(self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor))
+            result = cur.execute(sql, params)
+        except (ValueError, psycopg2.Error) as e:
+            # STALE-CONNECTION RECOVERY (2026-08-19). A pooled connection
+            # can be dead (idle timeout, Postgres restart). We deliberately
+            # do NOT pre-probe every checkout with SELECT 1 -- measured
+            # live, that probe + its rollback cost two full cross-region
+            # round-trips (~0.7 s) on EVERY get_conn(). Instead: if the
+            # very FIRST statement on this checkout fails with a
+            # connection-level error, nothing has been done yet, so it is
+            # safe to reconnect once and retry that same statement. Any
+            # later statement is never retried -- a mid-transaction retry
+            # could silently double-apply a write.
+            cause = e if isinstance(e, psycopg2.Error) else e.__cause__
+            conn_error = isinstance(cause, (psycopg2.OperationalError, psycopg2.InterfaceError))
+            if not (self._statements == 0 and conn_error and not self._replaced):
+                raise
+            try:
+                self._conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._conn = psycopg2.connect(PG_DB_URI, options=_PG_CONNECT_OPTIONS)
+            self._replaced = True
+            cur = _PgCursor(self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor))
+            result = cur.execute(sql, params)
+        self._statements += 1
+        return result
 
     def commit(self):
         self._conn.commit()
@@ -354,9 +383,10 @@ def _pg_init_db():
 # live UX problem, not just a production-readiness checkbox.
 #
 # Connection health: a pooled connection can go stale (Postgres
-# restart, idle timeout). _pg_get_conn() does a cheap SELECT 1 probe
-# on checkout and reconnects transparently if it fails, so callers
-# never see the stale-connection error class. Any exception inside the
+# restart, idle timeout). Rather than a per-checkout SELECT 1 probe
+# (measured: +2 cross-region round-trips on every call), _PgConnection
+# reconnects transparently if the FIRST statement of a checkout fails
+# with a connection-level error -- see its execute(). Any exception inside the
 # `with get_conn()` block rolls back that connection before it's
 # returned to the pool, so a failed statement can't leave a later
 # request inside an aborted transaction ("current transaction is
@@ -410,7 +440,7 @@ def _pg_ensure_schema():
 
 @contextmanager
 def _pg_get_conn():
-    import psycopg2
+    import psycopg2.extensions as _ext
 
     pool = _pg_pool()
     _PG_POOL_SLOTS.acquire()
@@ -419,43 +449,39 @@ def _pg_get_conn():
     except BaseException:
         _PG_POOL_SLOTS.release()
         raise
-    replacement = False
-    # Stale-connection probe; replace transparently rather than surface
-    # "server closed the connection unexpectedly" to a caller.
-    try:
-        with raw.cursor() as probe:
-            probe.execute("SELECT 1")
-        raw.rollback()
-    except psycopg2.Error:
-        try:
-            pool.putconn(raw, close=True)
-        except Exception:  # noqa: BLE001 -- pool bookkeeping only
-            pass
-        raw = psycopg2.connect(PG_DB_URI, options=_PG_CONNECT_OPTIONS)
-        replacement = True
 
+    wrapper = _PgConnection(raw)
     try:
-        yield _PgConnection(raw)
+        yield wrapper
     except BaseException:
         try:
-            raw.rollback()
+            wrapper._conn.rollback()
         except Exception:  # noqa: BLE001
             pass
         raise
     else:
-        # Callers commit explicitly; anything still open (a read-only
-        # SELECT holds an implicit transaction) is rolled back so the
-        # connection goes back to the pool clean.
+        # Callers commit explicitly. If a read-only block left an implicit
+        # transaction open, roll it back so the connection goes back to
+        # the pool clean -- but skip that round-trip entirely when the
+        # connection is already idle (e.g. right after a commit).
         try:
-            raw.rollback()
+            if wrapper._conn.status != _ext.STATUS_READY:
+                wrapper._conn.rollback()
         except Exception:  # noqa: BLE001
             pass
     finally:
         try:
-            if replacement:
-                # A one-off replacement connection isn't tracked by the pool.
+            if wrapper._replaced:
+                # The pooled connection was dead; the wrapper already
+                # closed it and worked on a one-off replacement. Tell the
+                # pool to drop the dead one (it re-creates lazily on the
+                # next getconn) and close the replacement.
                 try:
-                    raw.close()
+                    pool.putconn(raw, close=True)
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    wrapper._conn.close()
                 except Exception:  # noqa: BLE001
                     pass
             else:
