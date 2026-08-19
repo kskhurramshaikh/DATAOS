@@ -84,6 +84,11 @@ export const api = {
   getSama: (datasetName) => getJSON(`/governance/sama${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
   getAuditLog: (datasetName) => getJSON(`/governance/audit-log${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
 
+  // Classification & PDPL + Data Quality Rules (item 7).
+  getClassification: (datasetName) => getJSON(`/governance/classification?dataset_name=${encodeURIComponent(datasetName)}`),
+  getClassificationCoverage: () => getJSON("/governance/classification/coverage"),
+  getQualityRules: (datasetName) => getJSON(`/governance/quality-rules?dataset_name=${encodeURIComponent(datasetName)}`),
+
   // NDI (item 5). No dataset parameter anywhere on purpose -- the
   // assessment runs on Dr. Saber's fixed BAJ baseline, not on an
   // uploaded dataset, so there is nothing to scope these to.
