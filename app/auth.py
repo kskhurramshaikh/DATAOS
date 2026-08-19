@@ -169,12 +169,32 @@ def create_user(email: str, name: str, password: str) -> dict:
     email = email.strip().lower()
     admin_token = _get_admin_token()
 
+    # Real bug, confirmed live (2026-08-19) via a step-by-step trace:
+    # requiredActions ended up genuinely empty and the password
+    # credential genuinely attached (a separate reset-password call
+    # confirmed 204), yet login still failed with Keycloak's raw
+    # "invalid_grant: Account is not fully set up" every time. The
+    # realm's Authentication > Required Actions config showed every
+    # action's defaultAction as false too -- ruling that out as well.
+    # Root cause: this realm's declarative User Profile has
+    # VERIFY_PROFILE enabled, which Keycloak triggers dynamically at
+    # authentication time if a user doesn't satisfy the profile's
+    # required attributes (lastName is one, by Keycloak's own
+    # out-of-the-box default schema) -- invisible in requiredActions or
+    # defaultAction, since profile validation isn't stored state, it's
+    # computed at login. The signup form only ever collects one "name"
+    # field, so it's split here rather than asking users for two.
+    name_parts = name.strip().split(maxsplit=1)
+    first_name = name_parts[0] if name_parts else name
+    last_name = name_parts[1] if len(name_parts) > 1 else first_name
+
     r = requests.post(
         f"{_ADMIN_BASE}/users",
         json={
             "email": email,
             "username": email,
-            "firstName": name,
+            "firstName": first_name,
+            "lastName": last_name,
             "enabled": True,
             "emailVerified": True,
             # Explicit empty list, not an omission -- confirmed live
@@ -193,6 +213,7 @@ def create_user(email: str, name: str, password: str) -> dict:
             "requiredActions": [],
             "credentials": [{"type": "password", "value": password, "temporary": False}],
         },
+
         headers={"Authorization": f"Bearer {admin_token}"},
         timeout=10,
     )
