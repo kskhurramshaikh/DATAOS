@@ -4,6 +4,7 @@
 // panels on canvas, teal accent, ink/ink-faint text scale).
 
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useAuth } from "../auth";
 
 const ROLE_LABELS = {
@@ -44,6 +45,7 @@ export default function Account() {
   }
 
   if (isAuthenticated) {
+    const isAdmin = roles.includes("admin");
     return (
       <div className="p-7 md:px-8 max-w-md">
         <h1 className="text-xl font-semibold text-ink tracking-tight mb-1">Account</h1>
@@ -71,17 +73,35 @@ export default function Account() {
               </div>
             ) : (
               <div className="text-[12px] text-ink-faint">
-                No realm role assigned yet -- an admin can grant one directly in Keycloak.
+                No realm role assigned yet -- an admin can grant one from Manage Users.
               </div>
             )}
           </div>
         </div>
-        <button
-          onClick={logout}
-          className="mt-4 text-[12.5px] font-semibold text-danger bg-danger-soft px-3.5 py-2 rounded-lg hover:opacity-80"
-        >
-          Log out
-        </button>
+
+        {/* Manage Users link, wired 2026-08-19 -- see
+            ManageUsers.jsx's module docstring. Only rendered for a
+            real admin, matching the backend's own admin-only gate on
+            every /api/admin/* route -- a non-admin would just get a
+            403 from every call on that page, so there's no reason to
+            show the entry point to them at all. */}
+        {isAdmin && (
+          <Link
+            to="/admin/users"
+            className="mt-4 inline-block text-[12.5px] font-semibold text-teal bg-teal-soft px-3.5 py-2 rounded-lg hover:opacity-80"
+          >
+            Manage Users →
+          </Link>
+        )}
+
+        <div>
+          <button
+            onClick={logout}
+            className="mt-4 text-[12.5px] font-semibold text-danger bg-danger-soft px-3.5 py-2 rounded-lg hover:opacity-80"
+          >
+            Log out
+          </button>
+        </div>
       </div>
     );
   }
@@ -94,7 +114,7 @@ export default function Account() {
       <p className="text-[13px] text-ink-faint mb-5">
         {mode === "login"
           ? "Most of this dashboard works without signing in. Classification detail and Data Stewardship assignment need a real role."
-          : "New accounts start with the least-privileged role (Data Consumer). An admin can promote you directly in Keycloak."}
+          : "New accounts start with the least-privileged role (Data Consumer). An admin can promote you from Manage Users."}
       </p>
       <form onSubmit={submit} className="bg-white border border-line rounded-card px-6 py-5 flex flex-col gap-3">
         {mode === "signup" && (
