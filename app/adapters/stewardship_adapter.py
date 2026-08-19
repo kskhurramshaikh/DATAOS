@@ -17,9 +17,13 @@
 # real trace.
 #
 # Deliberately NOT built (confirmed out of scope, per the scope-
-# boundary directive): approval workflows, RBAC enforcement tied to
-# these roles, notifications. Assignment is a record of who is
-# responsible, not an access-control system.
+# boundary directive): approval workflows, notifications. RBAC
+# enforcement tied to these roles WAS out of scope at the time this
+# module was first built (no login existed yet) -- that's since
+# closed: assigning/reassigning/unassigning now requires a real
+# Keycloak login and an OPA stewardship_assign_allow grant, wired in
+# main.py via app/opa_client.py. Assignment itself is still just a
+# record of who is responsible, not a workflow system.
 
 from datetime import datetime, timezone
 
