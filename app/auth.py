@@ -177,6 +177,20 @@ def create_user(email: str, name: str, password: str) -> dict:
             "firstName": name,
             "enabled": True,
             "emailVerified": True,
+            # Explicit empty list, not an omission -- confirmed live
+            # (2026-08-19) that leaving this out lets the realm's own
+            # default required actions apply regardless of the
+            # emailVerified flag above, producing a real, confusing
+            # failure: user creation succeeds (201), but the immediate
+            # login this function does right after it fails with
+            # Keycloak's own "invalid_grant: Account is not fully set
+            # up" -- emailVerified and a pending VERIFY_EMAIL required
+            # action are two separate fields Keycloak doesn't reconcile
+            # for you. This account is created by an authenticated
+            # signup flow that already collected and validated the
+            # password directly, so no further required action makes
+            # sense here.
+            "requiredActions": [],
             "credentials": [{"type": "password", "value": password, "temporary": False}],
         },
         headers={"Authorization": f"Bearer {admin_token}"},
