@@ -40,7 +40,7 @@ class FakeKeycloak:
     itself is faked."""
 
     def __init__(self):
-        self.users = {}  # email -> {"name": str, "password": str, "kc_id": str}
+        self.users = {}  # email -> {"name": str, "password": str, "kc_id": str, "roles": set[str]}
         self._next_id = 1
 
     def _issue_token(self, email: str) -> str:
@@ -73,12 +73,25 @@ class FakeKeycloak:
                 "name": json["firstName"],
                 "password": json["credentials"][0]["value"],
                 "kc_id": kc_id,
+                "roles": set(),
             }
             resp.status_code = 201
             resp.headers = {"Location": f"{auth._ADMIN_BASE}/users/{kc_id}"}
             return resp
 
         if url.endswith("/role-mappings/realm"):
+            # User-admin build (2026-08-19): now actually tracks roles
+            # per user, not just returns 200 -- needed for
+            # user_admin_adapter's real assign/list-back behavior to
+            # be testable, not just accepted-and-ignored the way
+            # signup's default role-grant used to be.
+            kc_id = url.split("/users/")[1].split("/role-mappings/realm")[0]
+            user = next((u for u in self.users.values() if u["kc_id"] == kc_id), None)
+            if user is None:
+                resp.status_code = 404
+                return resp
+            for role in json:
+                user["roles"].add(role["name"])
             resp.status_code = 200
             return resp
 
@@ -95,12 +108,30 @@ class FakeKeycloak:
 
         raise AssertionError(f"Unexpected POST to {url}")
 
-    def get(self, url, headers=None, timeout=None):
+    def get(self, url, headers=None, timeout=None, params=None):
         resp = MagicMock()
-        if url == f"{auth._ADMIN_BASE}/roles/data_consumer":
+        if url == f"{auth._ADMIN_BASE}/users":
+            # User-admin build (2026-08-19): real bulk user listing.
             resp.status_code = 200
-            resp.json.return_value = {"id": "role-data_consumer", "name": "data_consumer"}
+            resp.json.return_value = [
+                {"id": u["kc_id"], "email": email, "firstName": u["name"], "username": email, "enabled": True}
+                for email, u in self.users.items()
+            ]
             return resp
+
+        if "/role-mappings/realm" in url and "/users/" in url:
+            kc_id = url.split("/users/")[1].split("/role-mappings/realm")[0]
+            user = next((u for u in self.users.values() if u["kc_id"] == kc_id), None)
+            resp.status_code = 200
+            resp.json.return_value = [{"id": f"role-{r}", "name": r} for r in (user["roles"] if user else [])]
+            return resp
+
+        if url.startswith(f"{auth._ADMIN_BASE}/roles/"):
+            role_name = url.rsplit("/", 1)[-1]
+            resp.status_code = 200
+            resp.json.return_value = {"id": f"role-{role_name}", "name": role_name}
+            return resp
+
         raise AssertionError(f"Unexpected GET to {url}")
 
     def put(self, url, json=None, headers=None, timeout=None):
@@ -119,6 +150,21 @@ class FakeKeycloak:
             return resp
         raise AssertionError(f"Unexpected PUT to {url}")
 
+    def delete(self, url, json=None, headers=None, timeout=None):
+        resp = MagicMock()
+        if url.endswith("/role-mappings/realm"):
+            # User-admin build (2026-08-19): role revocation.
+            kc_id = url.split("/users/")[1].split("/role-mappings/realm")[0]
+            user = next((u for u in self.users.values() if u["kc_id"] == kc_id), None)
+            if user is None:
+                resp.status_code = 404
+                return resp
+            for role in json:
+                user["roles"].discard(role["name"])
+            resp.status_code = 200
+            return resp
+        raise AssertionError(f"Unexpected DELETE to {url}")
+
 
 @pytest.fixture(autouse=True)
 def fake_keycloak(monkeypatch):
@@ -126,6 +172,7 @@ def fake_keycloak(monkeypatch):
     monkeypatch.setattr(auth.requests, "post", fake.post)
     monkeypatch.setattr(auth.requests, "get", fake.get)
     monkeypatch.setattr(auth.requests, "put", fake.put)
+    monkeypatch.setattr(auth.requests, "delete", fake.delete)
     monkeypatch.setattr(auth, "_admin_token_cache", {"token": None, "expires_at": 0.0})
 
     fake_signing_key = MagicMock()
