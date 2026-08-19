@@ -160,11 +160,27 @@ export default function LakehouseZones() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Clears zone data the INSTANT the selected dataset changes -- the
+  // real fix for the cross-dataset state bleed Dr. Saber found live
+  // (2026-08-19): switching the picker used to leave the OLD dataset's
+  // numbers on screen (e.g. Silver showing "600 rows" under a newly-
+  // selected 2-row dataset) for however long the new fetch's round
+  // trip took, because the fetch effect below only ever merged onto
+  // the existing `zones` object (`setState(s => ({...s, loading:
+  // true}))`) rather than clearing it first -- so a dataset switch and
+  // a periodic 15s poll looked identical to that code, even though
+  // only the poll case should preserve old data while refetching.
+  // Deliberately a SEPARATE effect keyed only on `selected` (not
+  // `refreshTick`): the periodic-refresh/manual-trigger case should
+  // keep showing the last-known values while refetching, since the
+  // dataset hasn't changed and stale-but-correct data is better UX
+  // than a flash of "Loading…" every 15 seconds.
   useEffect(() => {
-    if (!selected) {
-      setState({ loading: false, configured: true, zones: {}, error: null });
-      return;
-    }
+    setState({ loading: !!selected, configured: true, zones: {}, error: null });
+  }, [selected]);
+
+  useEffect(() => {
+    if (!selected) return;
     let cancelled = false;
     async function load() {
       // Mark loading BEFORE the await -- previously this only got set
