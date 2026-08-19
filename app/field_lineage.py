@@ -66,7 +66,7 @@ def _dataset_record(dataset_name: str) -> dict | None:
     return datasets[0] if datasets else None
 
 
-def _national_id_lineage(dataset_name: str, record: dict | None) -> dict:
+def _national_id_lineage(dataset_name: str, record: dict | None, golden_records: list[dict]) -> dict:
     """NATIONAL_ID: a raw passthrough column, MDM/Postgres world only.
     Traces Bronze upload -> Silver -> whether it ever contributed to a
     merged golden record's field_sources (i.e. survived into curated
@@ -81,7 +81,6 @@ def _national_id_lineage(dataset_name: str, record: dict | None) -> dict:
         }
 
     null_count = (record.get("null_counts") or {}).get("NATIONAL_ID", 0)
-    golden_records = dedup_adapter.get_golden_records(dataset_name)
     contributing = [
         {"golden_record_id": g["id"], "source_row_id": g["field_sources"].get("NATIONAL_ID")}
         for g in golden_records
@@ -112,7 +111,7 @@ def _national_id_lineage(dataset_name: str, record: dict | None) -> dict:
     }
 
 
-def _duplicate_flag_lineage(dataset_name: str, record: dict | None) -> dict:
+def _duplicate_flag_lineage(dataset_name: str, record: dict | None, golden_records: list[dict]) -> dict:
     """DUPLICATE_FLAG: not a literal raw column -- represents a record's
     position in the duplicate_clusters status lifecycle. Traces Silver
     data -> clustering -> per-status counts -> golden records."""
@@ -129,7 +128,6 @@ def _duplicate_flag_lineage(dataset_name: str, record: dict | None) -> dict:
     decided = dedup_adapter.get_audit_log(dataset_name)
     confirmed = [d for d in decided if d["status"] == "confirmed_duplicate"]
     rejected = [d for d in decided if d["status"] == "not_duplicate"]
-    golden_records = dedup_adapter.get_golden_records(dataset_name)
     checked = record.get("duplicate_check_last_run_at")
 
     return {
@@ -295,12 +293,17 @@ def get_field_lineage_for_dataset(dataset_name: str) -> dict:
         raise ValueError(f"No dataset found matching '{dataset_name}'.")
 
     graph = marquez_client.get_field_lineage()
+    # SECOND PERFORMANCE FIX (2026-08-19, found by actually profiling):
+    # golden records were fetched twice per request (once per MDM field),
+    # and get_golden_records() itself was an N+1 (see its docstring).
+    # Fetched once here and shared, same pattern as the Marquez graph.
+    golden_records = dedup_adapter.get_golden_records(dataset_name)
 
     return {
         "dataset_name": dataset_name,
         "fields": {
-            "NATIONAL_ID": _national_id_lineage(dataset_name, record),
-            "DUPLICATE_FLAG": _duplicate_flag_lineage(dataset_name, record),
+            "NATIONAL_ID": _national_id_lineage(dataset_name, record, golden_records),
+            "DUPLICATE_FLAG": _duplicate_flag_lineage(dataset_name, record, golden_records),
             "ECL_SAR": _ecl_sar_lineage(dataset_name, graph),
             "NDI_SCORE": _ndi_score_lineage(dataset_name, graph),
         },
