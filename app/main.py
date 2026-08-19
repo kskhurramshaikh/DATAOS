@@ -101,7 +101,7 @@ from app.compliance_agent import evaluate
 from app.router import route, NoCapabilityRegisteredError
 from app.capability_registry import CAPABILITY_REGISTRY
 from app.db import init_db, storage_status
-from app import auth, chat_store, field_lineage, lakehouse_client, marquez_client, object_storage
+from app import auth, chat_store, field_lineage, lakehouse_client, marquez_client, object_storage, opa_client
 from app.adapters import dataset_adapter, banking_adapter, dedup_adapter, ndi_history, stewardship_adapter, classification_adapter, quality_adapter
 from app.visualization import suggest_visualization
 from app.interpreter import interpret, interpret_stream, explain_result
@@ -1161,7 +1161,16 @@ def mdm_stewardship_coverage():
 
 
 @app.post("/api/mdm/stewardship/assign")
-def mdm_stewardship_assign(req: StewardshipAssignRequest):
+def mdm_stewardship_assign(req: StewardshipAssignRequest, user: dict = Depends(auth.get_current_user)):
+    """RBAC/OPA enforcement wired 2026-08-19 (see opa_client.py's module
+    docstring) -- assigning/reassigning a Stewardship role is one of
+    the two policy points this RBAC work exists for. Requires a valid
+    Keycloak login AND an OPA stewardship_assign_allow decision for at
+    least one of the caller's realm roles; fails closed (403) on
+    either a missing/invalid token or a real OPA denial, not silently
+    permissive."""
+    if not opa_client.is_allowed("stewardship_assign_allow", user.get("roles", [])):
+        raise HTTPException(status_code=403, detail="You don't have permission to assign Data Stewardship roles.")
     try:
         return stewardship_adapter.assign_role(req.model_dump())
     except ValueError as e:
@@ -1171,7 +1180,11 @@ def mdm_stewardship_assign(req: StewardshipAssignRequest):
 
 
 @app.post("/api/mdm/stewardship/unassign")
-def mdm_stewardship_unassign(req: StewardshipUnassignRequest):
+def mdm_stewardship_unassign(req: StewardshipUnassignRequest, user: dict = Depends(auth.get_current_user)):
+    """Same RBAC/OPA gate as assign above -- unassigning is still a
+    Stewardship mutation, not a read."""
+    if not opa_client.is_allowed("stewardship_assign_allow", user.get("roles", [])):
+        raise HTTPException(status_code=403, detail="You don't have permission to change Data Stewardship roles.")
     try:
         return stewardship_adapter.unassign_role(req.model_dump())
     except ValueError as e:
@@ -1182,27 +1195,34 @@ def mdm_stewardship_unassign(req: StewardshipUnassignRequest):
 
 # ---------------------------------------------------------------------
 # Governance dashboard API (Item 7 -- Classification & PDPL + Data
-# Quality Rules, Section 04's 6th page group). Same unauthenticated,
-# read-only pattern as every dashboard endpoint above.
+# Quality Rules, Section 04's 6th page group).
 #
-# Classification & PDPL wraps app/adapters/classification_adapter.py --
-# see that module's own docstring for the full OPA-deferral reasoning
-# (real column classification now, policy enforcement deferred until
-# Item 9/RBAC exists).
+# Classification & PDPL wraps app/adapters/classification_adapter.py.
+# RBAC/OPA enforcement wired 2026-08-19 -- see opa_client.py's module
+# docstring for why: this page's own module used to disclose the
+# enforcement as deferred pending real login/roles existing; both now
+# do (Keycloak + OPA, see /areas/onetech-dataos-rbac-opa-keycloak.md),
+# so the deferral is closed here rather than left stale.
 #
 # Data Quality Rules wraps app/adapters/quality_adapter.py -- a real
 # Great Expectations suite run against a dataset's actual Silver data,
 # using the exact same null-rate thresholds dataset_adapter.py's own
-# promotion gate uses (imported, not restated).
+# promotion gate uses (imported, not restated). Left unauthenticated,
+# same as every other read-only dashboard endpoint -- pass/fail rule
+# results carry no PII, unlike raw classified column data.
 # ---------------------------------------------------------------------
 
 @app.get("/api/governance/classification")
-def governance_classification(dataset_name: str):
+def governance_classification(dataset_name: str, user: dict = Depends(auth.get_current_user)):
     """Per-column sensitivity classification (PUBLIC/INTERNAL/
     CONFIDENTIAL/RESTRICTED) + PDPL completeness detail for one
-    dataset. See classification_adapter.py's module docstring for what
-    this does and does not cover (classification is real; OPA policy
-    enforcement is deferred and disclosed, not built)."""
+    dataset. Requires login AND an OPA classification_allow decision --
+    this is the other of the two RBAC/OPA policy points (see
+    opa_client.py); it's the RESTRICTED/CONFIDENTIAL column detail this
+    endpoint returns that made viewing it a real policy question, not
+    just a read."""
+    if not opa_client.is_allowed("classification_allow", user.get("roles", [])):
+        raise HTTPException(status_code=403, detail="You don't have permission to view column classification detail.")
     try:
         return classification_adapter.classify_dataset(dataset_name)
     except ValueError as e:
