@@ -102,7 +102,7 @@ from app.router import route, NoCapabilityRegisteredError
 from app.capability_registry import CAPABILITY_REGISTRY
 from app.db import init_db, storage_status
 from app import auth, chat_store, field_lineage, lakehouse_client, marquez_client, object_storage, opa_client
-from app.adapters import dataset_adapter, banking_adapter, dedup_adapter, ndi_history, stewardship_adapter, classification_adapter, quality_adapter
+from app.adapters import dataset_adapter, banking_adapter, dedup_adapter, ndi_history, stewardship_adapter, classification_adapter, quality_adapter, user_admin_adapter
 from app.visualization import suggest_visualization
 from app.interpreter import interpret, interpret_stream, explain_result
 
@@ -1382,6 +1382,75 @@ def catalog_job_runs(job_name: str, limit: int = 10):
 @app.get("/api/catalog/lineage")
 def catalog_lineage():
     return marquez_client.get_field_lineage()
+
+
+# ---------------------------------------------------------------------
+# User & role administration -- real Keycloak Admin REST API calls,
+# wired 2026-08-19 (see app/adapters/user_admin_adapter.py's module
+# docstring for the full reasoning). Admin-only, checked directly
+# below rather than via opa_client.is_allowed -- account
+# administration is the root of the whole permission system, not a
+# data-governance decision made within it, and every existing OPA rule
+# already grants admin unconditionally, so this is the same authority
+# level without a redundant network hop.
+# ---------------------------------------------------------------------
+
+def _require_admin(user: dict) -> None:
+    if "admin" not in user.get("roles", []):
+        raise HTTPException(status_code=403, detail="Only an admin can manage users and roles.")
+
+
+@app.get("/api/admin/users")
+def admin_list_users(user: dict = Depends(auth.get_current_user)):
+    """Every real user in the realm with their current managed realm
+    roles -- see user_admin_adapter.list_users()'s own docstring for
+    why this is two real API calls per user, not one."""
+    _require_admin(user)
+    try:
+        return user_admin_adapter.list_users()
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/api/admin/roles")
+def admin_list_roles(user: dict = Depends(auth.get_current_user)):
+    """The 6 real roles this project manages -- static, but served
+    from the backend rather than duplicated as a frontend constant, so
+    there's exactly one place that defines the managed-role set."""
+    _require_admin(user)
+    return {"roles": user_admin_adapter.MANAGED_ROLES}
+
+
+class UserRoleRequest(BaseModel):
+    role: str
+
+
+@app.post("/api/admin/users/{user_id}/roles")
+def admin_assign_role(user_id: str, req: UserRoleRequest, user: dict = Depends(auth.get_current_user)):
+    """Grants one managed realm role to one user -- the actual
+    promotion action (e.g. data_consumer -> data_owner) that used to
+    require going into Keycloak's own admin console directly."""
+    _require_admin(user)
+    try:
+        user_admin_adapter.assign_role(user_id, req.role)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return user_admin_adapter.list_users()
+
+
+@app.delete("/api/admin/users/{user_id}/roles/{role}")
+def admin_remove_role(user_id: str, role: str, user: dict = Depends(auth.get_current_user)):
+    """Revokes one managed realm role from one user."""
+    _require_admin(user)
+    try:
+        user_admin_adapter.remove_role(user_id, role)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return user_admin_adapter.list_users()
 
 
 @app.post("/intent")
