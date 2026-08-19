@@ -207,3 +207,138 @@ def list_snapshots(limit: int = 100) -> dict:
             "this look like real tracking."
         ),
     }
+
+
+def compare_snapshots(id_a: int, id_b: int) -> dict:
+    """Diffs any two recorded snapshots against each other -- period
+    comparison, not just "vs the immediately previous record" the way
+    list_snapshots()'s deltas work. Deliberately chronology-ordered
+    regardless of which id the caller passed first (id_a/id_b are just
+    "the two the user picked," not "from" and "to") -- the snapshot
+    with the earlier recorded_at is always "from", the later one always
+    "to", so a positive delta always means "improved since then" no
+    matter which order they were selected in the UI.
+
+    Domain deltas are matched by code, not position -- domains_json is
+    stored per-snapshot exactly as computed at that time, and while the
+    14-domain set hasn't changed since this was built, matching by code
+    is the same defensive practice already used elsewhere in this
+    codebase (see classification_adapter's keyword matching) rather
+    than assuming two arrays stay aligned forever."""
+    if id_a == id_b:
+        raise ValueError("Pick two different assessments to compare.")
+
+    snap_a = get_snapshot(id_a)
+    snap_b = get_snapshot(id_b)
+
+    # Order chronologically -- ties broken by id (matches list_snapshots'
+    # own ORDER BY recorded_at ASC, id ASC).
+    if (snap_a["recorded_at"], snap_a["id"]) <= (snap_b["recorded_at"], snap_b["id"]):
+        earlier, later = snap_a, snap_b
+    else:
+        earlier, later = snap_b, snap_a
+
+    domains_by_code_earlier = {d["code"]: d for d in earlier["domains"]}
+    domains_by_code_later = {d["code"]: d for d in later["domains"]}
+    all_codes = [d["code"] for d in later["domains"]]  # preserves later's own domain ordering
+
+    domain_deltas = []
+    for code in all_codes:
+        d_from = domains_by_code_earlier.get(code)
+        d_to = domains_by_code_later.get(code)
+        if d_from is None or d_to is None:
+            # Genuinely possible if the domain set itself ever changes
+            # between the two recorded dates -- reported honestly
+            # rather than silently skipped or defaulted to a fake 0.
+            domain_deltas.append({
+                "code": code,
+                "name": d_to["name"] if d_to else d_from["name"],
+                "comparable": False,
+                "note": "This domain wasn't present in both snapshots.",
+            })
+            continue
+        domain_deltas.append({
+            "code": code,
+            "name": d_to["name"],
+            "comparable": True,
+            "maturity_score_from": d_from["maturity_score"],
+            "maturity_score_to": d_to["maturity_score"],
+            "delta_maturity_score": round(d_to["maturity_score"] - d_from["maturity_score"], 2),
+            "compliance_pct_from": d_from["compliance_pct"],
+            "compliance_pct_to": d_to["compliance_pct"],
+            "delta_compliance_pct": round(d_to["compliance_pct"] - d_from["compliance_pct"], 1),
+        })
+
+    return {
+        "from": {
+            "id": earlier["id"], "recorded_at": earlier["recorded_at"], "recorded_by": earlier["recorded_by"],
+            "display_score": earlier["display_score"], "maturity_level": earlier["maturity_level"],
+            "overall_compliance_pct": earlier["overall_compliance_pct"],
+        },
+        "to": {
+            "id": later["id"], "recorded_at": later["recorded_at"], "recorded_by": later["recorded_by"],
+            "display_score": later["display_score"], "maturity_level": later["maturity_level"],
+            "overall_compliance_pct": later["overall_compliance_pct"],
+        },
+        "delta_display_score": round(later["display_score"] - earlier["display_score"], 1),
+        "delta_compliance_pct": round(later["overall_compliance_pct"] - earlier["overall_compliance_pct"], 1),
+        "delta_oe_score": round(later["overall_oe_score"] - earlier["overall_oe_score"], 3),
+        "domains": domain_deltas,
+        "identical": earlier["display_score"] == later["display_score"]
+        and earlier["overall_compliance_pct"] == later["overall_compliance_pct"],
+    }
+
+
+def export_history_csv() -> str:
+    """One row per recorded snapshot -- the same summary data
+    list_snapshots() shows in the History table, as a real downloadable
+    CSV for a compliance handoff. Domain-level detail isn't included
+    here (14 columns x every snapshot would make this unreadable in a
+    spreadsheet) -- see export_snapshot_csv() for that, per snapshot."""
+    import csv
+    import io
+
+    data = list_snapshots(limit=100000)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "id", "recorded_at", "recorded_by", "note", "display_score", "maturity_level",
+        "overall_compliance_pct", "overall_oe_score", "total_specs", "compliant_specs",
+    ])
+    # list_snapshots returns newest-first; export oldest-first, the
+    # natural reading order for a record someone will open in Excel.
+    for s in reversed(data["snapshots"]):
+        writer.writerow([
+            s["id"], s["recorded_at"], s["recorded_by"], s["note"] or "", s["display_score"],
+            s["maturity_level"], s["overall_compliance_pct"], s["overall_oe_score"],
+            s["total_specs"], s["compliant_specs"],
+        ])
+    return buf.getvalue()
+
+
+def export_snapshot_csv(snapshot_id: int) -> str:
+    """The full 14-domain breakdown for one recorded snapshot, as a
+    real downloadable CSV -- everything DomainDetail shows on the
+    History page, plus the fields the page doesn't render (spec_count,
+    compliance_status, evidence) since a CSV handoff is exactly the
+    place for the full record, not just the summary view."""
+    import csv
+    import io
+
+    snap = get_snapshot(snapshot_id)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([f"NDI assessment #{snap['id']}", f"recorded {snap['recorded_at']}", f"by {snap['recorded_by']}"])
+    if snap["note"]:
+        writer.writerow([f"note: {snap['note']}"])
+    writer.writerow([])
+    writer.writerow([
+        "code", "name", "spec_count", "maturity_score", "compliance_pct",
+        "compliance_status", "is_oe_domain", "evidence",
+    ])
+    for d in snap["domains"]:
+        writer.writerow([
+            d["code"], d["name"], d["spec_count"], d["maturity_score"], d["compliance_pct"],
+            d["compliance_status"], d["is_oe_domain"], d["evidence"],
+        ])
+    return buf.getvalue()
