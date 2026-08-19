@@ -216,10 +216,14 @@ class _PgConnection:
         self._conn.rollback()
 
     def close(self):
-        self._conn.close()
+        # No-op: pooled connection, returned by _pg_get_conn(). No caller
+        # calls close() directly (all use `with get_conn()`), but hard-
+        # closing a pooled connection here would poison the pool.
+        pass
 
 
 def _pg_init_db():
+    _pg_ensure_schema()
     with get_conn() as conn:
         conn.execute(
             """
@@ -331,19 +335,133 @@ def _pg_init_db():
         conn.commit()
 
 
-@contextmanager
-def _pg_get_conn():
+# ---------------------------------------------------------------------
+# CONNECTION POOLING (2026-08-19). Found by profiling the MDM Field-
+# Level Lineage page: every get_conn() used to do a brand-new cross-
+# region psycopg2.connect() (Oregon app -> Singapore Postgres, full
+# TCP+TLS handshake), then CREATE SCHEMA, then SET search_path, then
+# the actual query, then close -- four sequential round-trips at
+# cross-region latency per call. Measured live: a single-query
+# endpoint (/api/mdm/datasets) cost ~4 s; the field-lineage endpoint
+# (5 get_conn() calls) cost ~19 s. Now: a small ThreadedConnectionPool
+# so the handshake happens once per pooled connection (not per
+# request), CREATE SCHEMA runs once at init_db(), and search_path is
+# set via the libpq `options` at connect time (zero extra round-trips).
+# Pool max stays deliberately small -- Render's Basic Postgres tier
+# has a modest max_connections and Airflow + Marquez share the same
+# instance. This is also the "connection pooling" hardening ask that
+# was already logged from Dr. Saber's list -- it turned out to be a
+# live UX problem, not just a production-readiness checkbox.
+#
+# Connection health: a pooled connection can go stale (Postgres
+# restart, idle timeout). _pg_get_conn() does a cheap SELECT 1 probe
+# on checkout and reconnects transparently if it fails, so callers
+# never see the stale-connection error class. Any exception inside the
+# `with get_conn()` block rolls back that connection before it's
+# returned to the pool, so a failed statement can't leave a later
+# request inside an aborted transaction ("current transaction is
+# aborted, commands ignored until end of transaction block").
+# ---------------------------------------------------------------------
+
+_PG_POOL = None
+_PG_POOL_LOCK = __import__("threading").Lock()
+_PG_POOL_SLOTS = None  # BoundedSemaphore(_PG_POOL_MAX): callers wait instead of PoolError
+_PG_POOL_MIN = int(os.environ.get("DATAOS_PG_POOL_MIN", "1"))
+_PG_POOL_MAX = int(os.environ.get("DATAOS_PG_POOL_MAX", "5"))
+_PG_CONNECT_OPTIONS = f"-c search_path={PG_SCHEMA},public"
+
+
+def _pg_pool():
+    global _PG_POOL, _PG_POOL_SLOTS
+    with _PG_POOL_LOCK:
+        if _PG_POOL is None:
+            import psycopg2.pool
+            import threading
+
+            _PG_POOL = psycopg2.pool.ThreadedConnectionPool(
+                _PG_POOL_MIN, _PG_POOL_MAX, PG_DB_URI, options=_PG_CONNECT_OPTIONS
+            )
+            # psycopg2's pool raises PoolError("connection pool exhausted")
+            # the instant every slot is checked out -- confirmed by a
+            # 20-thread test against a real Postgres before this shipped.
+            # FastAPI runs sync endpoints on a threadpool, so a burst of
+            # parallel dashboard requests would have 500'd. Gate checkouts
+            # with a semaphore the same size as the pool so excess callers
+            # queue briefly instead of failing.
+            _PG_POOL_SLOTS = threading.BoundedSemaphore(_PG_POOL_MAX)
+    return _PG_POOL
+
+
+def _pg_ensure_schema():
+    """Runs once at init_db() -- was previously executed on EVERY
+    get_conn() as a separate round-trip. Must run before the pool does
+    real work: the pool's search_path option only resolves once the
+    schema actually exists."""
     import psycopg2
 
     raw = psycopg2.connect(PG_DB_URI)
     try:
-        with raw.cursor() as setup_cur:
-            setup_cur.execute(f"CREATE SCHEMA IF NOT EXISTS {PG_SCHEMA}")
-            setup_cur.execute(f"SET search_path TO {PG_SCHEMA}, public")
+        with raw.cursor() as cur:
+            cur.execute(f"CREATE SCHEMA IF NOT EXISTS {PG_SCHEMA}")
         raw.commit()
-        yield _PgConnection(raw)
     finally:
         raw.close()
+
+
+@contextmanager
+def _pg_get_conn():
+    import psycopg2
+
+    pool = _pg_pool()
+    _PG_POOL_SLOTS.acquire()
+    try:
+        raw = pool.getconn()
+    except BaseException:
+        _PG_POOL_SLOTS.release()
+        raise
+    replacement = False
+    # Stale-connection probe; replace transparently rather than surface
+    # "server closed the connection unexpectedly" to a caller.
+    try:
+        with raw.cursor() as probe:
+            probe.execute("SELECT 1")
+        raw.rollback()
+    except psycopg2.Error:
+        try:
+            pool.putconn(raw, close=True)
+        except Exception:  # noqa: BLE001 -- pool bookkeeping only
+            pass
+        raw = psycopg2.connect(PG_DB_URI, options=_PG_CONNECT_OPTIONS)
+        replacement = True
+
+    try:
+        yield _PgConnection(raw)
+    except BaseException:
+        try:
+            raw.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        raise
+    else:
+        # Callers commit explicitly; anything still open (a read-only
+        # SELECT holds an implicit transaction) is rolled back so the
+        # connection goes back to the pool clean.
+        try:
+            raw.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        try:
+            if replacement:
+                # A one-off replacement connection isn't tracked by the pool.
+                try:
+                    raw.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                pool.putconn(raw)
+        finally:
+            _PG_POOL_SLOTS.release()
 
 
 # ---------------------------------------------------------------------
