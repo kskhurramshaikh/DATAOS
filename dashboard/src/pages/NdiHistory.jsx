@@ -84,8 +84,16 @@ function DomainDetail({ snapshotId }) {
 
   return (
     <div className="px-4 py-3 bg-[#FAFAFB] border-t border-line">
-      <div className="text-[11px] font-bold text-ink-faint uppercase tracking-wide mb-2">
-        14 domains as recorded
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-[11px] font-bold text-ink-faint uppercase tracking-wide">
+          14 domains as recorded
+        </div>
+        <a
+          href={api.ndiSnapshotExportUrl(snapshotId)}
+          className="text-[11px] font-semibold text-teal hover:underline"
+        >
+          Export CSV
+        </a>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2.5">
         {state.data.domains.map((d) => (
@@ -96,6 +104,139 @@ function DomainDetail({ snapshotId }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function CompareDelta({ value, suffix = "" }) {
+  if (value === 0) {
+    return <span className="text-[11px] text-ink-faint font-mono">no change</span>;
+  }
+  const up = value > 0;
+  return (
+    <span className={`text-[11px] font-mono font-semibold ${up ? "text-success" : "text-danger"}`}>
+      {up ? "+" : ""}
+      {value}
+      {suffix}
+    </span>
+  );
+}
+
+function ComparePanel({ snapshots }) {
+  const [idA, setIdA] = useState("");
+  const [idB, setIdB] = useState("");
+  const [state, setState] = useState({ loading: false, data: null, error: null });
+
+  async function runCompare() {
+    if (!idA || !idB) return;
+    if (idA === idB) {
+      setState({ loading: false, data: null, error: "Pick two different assessments to compare." });
+      return;
+    }
+    setState({ loading: true, data: null, error: null });
+    try {
+      const res = await api.compareNdiSnapshots(idA, idB);
+      setState({ loading: false, data: res, error: null });
+    } catch (e) {
+      setState({ loading: false, data: null, error: e.message });
+    }
+  }
+
+  const options = [...snapshots].reverse(); // oldest first in the pickers, easier to reason about "from -> to"
+
+  return (
+    <div className="bg-white border border-line rounded-card px-6 py-4 mb-5">
+      <div className="text-[12px] font-bold text-ink-faint uppercase tracking-wide mb-2.5">
+        Compare two assessments
+      </div>
+      <div className="flex flex-wrap items-center gap-2.5">
+        <select
+          value={idA}
+          onChange={(e) => setIdA(e.target.value)}
+          className="text-[12.5px] border border-line rounded-lg px-3 py-1.5 bg-white"
+        >
+          <option value="">First assessment…</option>
+          {options.map((s) => (
+            <option key={s.id} value={s.id}>
+              {formatWhen(s.recorded_at)} — {s.recorded_by}
+            </option>
+          ))}
+        </select>
+        <span className="text-[12px] text-ink-faint">vs</span>
+        <select
+          value={idB}
+          onChange={(e) => setIdB(e.target.value)}
+          className="text-[12.5px] border border-line rounded-lg px-3 py-1.5 bg-white"
+        >
+          <option value="">Second assessment…</option>
+          {options.map((s) => (
+            <option key={s.id} value={s.id}>
+              {formatWhen(s.recorded_at)} — {s.recorded_by}
+            </option>
+          ))}
+        </select>
+        <button
+          onClick={runCompare}
+          disabled={!idA || !idB || state.loading}
+          className="text-[12px] font-semibold text-white bg-teal px-3.5 py-1.5 rounded-lg hover:opacity-90 disabled:opacity-50"
+        >
+          {state.loading ? "Comparing…" : "Compare"}
+        </button>
+      </div>
+
+      {state.error && <div className="mt-3 text-[12px] text-danger">{state.error}</div>}
+
+      {state.data && (
+        <div className="mt-4">
+          <div className="text-[11.5px] text-ink-soft mb-2">
+            {formatWhen(state.data.from.recorded_at)} ({state.data.from.recorded_by}) →{" "}
+            {formatWhen(state.data.to.recorded_at)} ({state.data.to.recorded_by})
+          </div>
+
+          {state.data.identical && (
+            <div className="mb-3 text-[12px] text-ink-soft bg-[#FFF8E8] border border-[#F0DFAE] rounded-xl px-3.5 py-2.5">
+              These two assessments scored identically — expected while the per-domain inputs are the
+              fixed BAJ baseline.
+            </div>
+          )}
+
+          <div className="grid grid-cols-3 gap-3 mb-3.5">
+            <div className="bg-[#FAFAFB] border border-line rounded-xl px-3.5 py-2.5">
+              <div className="text-[10.5px] font-bold text-ink-faint uppercase tracking-wide">Score</div>
+              <div className="text-[16px] font-mono font-semibold text-ink mt-0.5">{state.data.to.display_score}</div>
+              <CompareDelta value={state.data.delta_display_score} />
+            </div>
+            <div className="bg-[#FAFAFB] border border-line rounded-xl px-3.5 py-2.5">
+              <div className="text-[10.5px] font-bold text-ink-faint uppercase tracking-wide">Compliance</div>
+              <div className="text-[16px] font-mono font-semibold text-ink mt-0.5">{state.data.to.overall_compliance_pct}%</div>
+              <CompareDelta value={state.data.delta_compliance_pct} suffix="pp" />
+            </div>
+            <div className="bg-[#FAFAFB] border border-line rounded-xl px-3.5 py-2.5">
+              <div className="text-[10.5px] font-bold text-ink-faint uppercase tracking-wide">Maturity level</div>
+              <div className="text-[13.5px] font-medium text-ink mt-1.5">{state.data.to.maturity_level}</div>
+            </div>
+          </div>
+
+          <div className="text-[10.5px] font-bold text-ink-faint uppercase tracking-wide mb-1.5">
+            Per-domain movement
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+            {state.data.domains.map((d) => (
+              <div key={d.code} className="bg-[#FAFAFB] border border-line rounded-lg px-2.5 py-2">
+                <div className="text-[10px] font-bold text-ink-faint font-mono">{d.code}</div>
+                {d.comparable ? (
+                  <>
+                    <div className="text-[12.5px] font-mono font-semibold text-ink">{d.maturity_score_to.toFixed(1)}</div>
+                    <CompareDelta value={d.delta_maturity_score} />
+                  </>
+                ) : (
+                  <div className="text-[10px] text-ink-faint">not comparable</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -124,11 +265,21 @@ export default function NdiHistory() {
 
   return (
     <div className="p-7 md:px-8">
-      <div className="mb-5">
-        <h1 className="text-xl font-semibold text-ink tracking-tight">NDI Assessment History</h1>
-        <p className="text-[13px] text-ink-faint mt-1">
-          Every assessment recorded — when it was taken, by whom, and exactly what it said
-        </p>
+      <div className="mb-5 flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-xl font-semibold text-ink tracking-tight">NDI Assessment History</h1>
+          <p className="text-[13px] text-ink-faint mt-1">
+            Every assessment recorded — when it was taken, by whom, and exactly what it said
+          </p>
+        </div>
+        {snapshots.length > 0 && (
+          <a
+            href={api.ndiHistoryExportUrl()}
+            className="text-[12px] font-semibold text-teal bg-teal-soft px-3.5 py-2 rounded-lg hover:opacity-80"
+          >
+            Export CSV
+          </a>
+        )}
       </div>
 
       {state.error && (
@@ -195,6 +346,8 @@ export default function NdiHistory() {
               <Sparkline snapshots={snapshots} />
             )}
           </div>
+
+          {snapshots.length >= 2 && <ComparePanel snapshots={snapshots} />}
 
           <div className="bg-white border border-line rounded-card overflow-hidden">
             <table className="w-full text-left">
