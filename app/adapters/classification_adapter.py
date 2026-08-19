@@ -2,21 +2,19 @@
 # two pages: "Classification & PDPL" + "Data Quality Rules").
 #
 # Scoped 2026-08-19, confirmed with Khurram before building: Section 02
-# names OPA for the policy/enforcement half of this page group. Checked
-# directly -- unlike OpenMetadata (Item 6's resource wall), OPA is a
-# single small Go binary, genuinely light enough for this tier. But OPA
-# is a POLICY ENFORCEMENT engine -- it needs something real to enforce
-# against (authenticated users, roles, allow/deny decisions), and that
-# doesn't exist yet: there's no login on this dashboard (Item 9,
-# multi-tenancy/RBAC, is still unbuilt). Standing up OPA now would only
-# evaluate policies with nothing actually gating access -- indistinguishable
-# from real enforcement in a demo, but not actually enforcing anything.
-# Rather than build that illusion, this module does the real, honest half
-# available today: classifying every column's sensitivity for real, and
-# computing PDPL completeness per classified column. OPA enforcement is
-# deferred until Item 9 exists, and that gap is disclosed on the page
-# itself, not hidden -- same pattern as the NDI/PDP disclosures elsewhere
-# in this codebase.
+# names OPA for the policy/enforcement half of this page group. At the
+# time this module was first built, OPA enforcement was deliberately
+# deferred -- it needs something real to enforce against (authenticated
+# users, roles), and there was no login on this dashboard yet. That gap
+# is now closed: Keycloak (real login) and OPA (real policy service)
+# are both live, and app/opa_client.py wires a real classification_allow
+# check into the GET /api/governance/classification route in main.py --
+# viewing this module's RESTRICTED/CONFIDENTIAL detail now requires a
+# real role grant, not just a network call. See that route and
+# opa_client.py's own docstrings for the enforcement side; this module
+# stays focused on what it always did well: classifying every column's
+# sensitivity for real, and computing PDPL completeness per classified
+# column.
 #
 # Classification is a deterministic, name-based heuristic -- same style
 # and same honesty level as dataset_adapter.py's _looks_like_identifier()
@@ -145,10 +143,10 @@ def classify_dataset(dataset_name: str) -> dict:
             ),
         },
         "enforcement_note": (
-            "Classification tiers are computed and real. Policy ENFORCEMENT (blocking or masking "
-            "access based on these tiers, via OPA) is not built -- it requires authenticated users "
-            "and roles to enforce against, which don't exist on this dashboard yet (Item 9, "
-            "multi-tenancy/RBAC). Deferred until that exists, not silently skipped."
+            "Viewing this detail is real OPA policy enforcement, not just computed data -- "
+            "requires a signed-in Keycloak user whose realm role (admin, data_owner, or "
+            "data_steward) OPA's classification_allow rule actually grants. See "
+            "app/opa_client.py and the RBAC/OPA build history for the full reasoning."
         ),
         "tier_reference": [
             {"tier": t, "description": TIER_DESCRIPTIONS[t]} for t in TIERS
