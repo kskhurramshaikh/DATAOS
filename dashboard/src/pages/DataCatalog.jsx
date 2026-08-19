@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 
@@ -10,8 +11,23 @@ import { api } from "../api";
 // Same honesty principle as every other dashboard page here: this is
 // NOT a full data catalog (no PII tagging, no business glossary, no
 // search across types) -- it's a real, live view of what Airflow's
-// OpenLineage integration actually captured. Every row below is a
-// real job Marquez has seen a lineage event for, not a static list.
+// OpenLineage integration actually captured, plus (2026-08-19) a real
+// browsable dataset list + per-column schema view built directly on
+// top of data that already existed (dataset_adapter.list_datasets()),
+// no new backend computation.
+//
+// GAPS CLOSED 2026-08-19, per Dr. Saber's direct review: this page
+// previously only showed the job/run table -- the Directive also
+// calls for a browsable dataset list and a schema view, both missing.
+// Added below as a new "Datasets" section. Deliberately does NOT
+// duplicate the lineage graph inline (that's a real, already-built
+// page at /catalog/lineage, adjacent tab) -- linked prominently
+// instead, since rendering a second copy of the same graph here would
+// be redundant work with no real benefit over one clear link. Business
+// glossary and PII tagging remain out of scope here -- both are tied
+// to the OpenMetadata tooling question, which is a separate discussion
+// (see this page's own "not a full data catalog" framing above,
+// unchanged since the original scoping message).
 
 const STATE_STYLE = {
   COMPLETED: { bg: "#EAF6F1", text: "#0F7A6B", dot: "#2FA37E", label: "Completed" },
@@ -36,6 +52,21 @@ function StatusChip({ state }) {
   );
 }
 
+const STAGE_STYLE = {
+  gold: { bg: "#FFF8E8", text: "#946E1B", label: "Gold" },
+  silver_held: { bg: "#F4F4F5", text: "#6B6B70", label: "Silver (held)" },
+  silver: { bg: "#F2F2F4", text: "#6B6B70", label: "Silver" },
+};
+
+function StageChip({ stage }) {
+  const s = STAGE_STYLE[stage] || { bg: "#F4F4F5", text: "#8E8E93", label: stage || "Unknown" };
+  return (
+    <span className="inline-flex text-[10.5px] font-semibold px-2 py-0.5 rounded-full" style={{ background: s.bg, color: s.text }}>
+      {s.label}
+    </span>
+  );
+}
+
 function formatWhen(ts) {
   if (!ts) return "—";
   return String(ts).replace("T", " ").slice(0, 19) + " UTC";
@@ -45,6 +76,87 @@ function formatDuration(ms) {
   if (ms == null) return "—";
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+// Real per-column detail computed client-side from data
+// dataset_adapter.list_datasets() already returns -- no new backend
+// endpoint. Deliberately lighter than Classification & PDPL's own
+// per-column view (that one requires an OPA-gated role, since it also
+// shows sensitivity tier): this is the plain schema -- column name,
+// completeness, whether it was dropped during Silver cleaning -- kept
+// unauthenticated like the rest of this page. A link to the full
+// classification detail is offered per-dataset instead of duplicating
+// that RBAC-gated logic here.
+function SchemaView({ dataset }) {
+  const rows = dataset.rows || 0;
+  return (
+    <div className="px-5 py-4 bg-[#FAFAFB] border-t border-line">
+      <div className="flex items-center justify-between mb-2.5">
+        <div className="text-[11px] font-bold text-ink-faint uppercase tracking-wide">
+          Schema — {dataset.columns.length} columns
+        </div>
+        <Link
+          to="/governance/classification"
+          className="text-[11.5px] font-semibold text-teal hover:underline"
+        >
+          View sensitivity classification →
+        </Link>
+      </div>
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-2">
+        {dataset.columns.map((col) => {
+          const nullCount = dataset.null_counts?.[col] ?? 0;
+          const completeness = rows ? Math.round(100 * (rows - nullCount) / rows * 10) / 10 : null;
+          const dropped = dataset.dropped_columns?.includes(col);
+          return (
+            <div key={col} className="bg-white border border-line rounded-lg px-3 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11.5px] font-mono font-semibold text-ink truncate">{col}</span>
+                {dropped && (
+                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-danger-soft text-danger shrink-0">
+                    dropped
+                  </span>
+                )}
+              </div>
+              <div className="text-[10.5px] text-ink-faint mt-0.5">
+                {completeness != null ? `${completeness}% complete` : "—"}
+                {nullCount > 0 && ` · ${nullCount} null`}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DatasetRow({ dataset, expanded, onToggle }) {
+  return (
+    <>
+      <tr className="border-b border-line last:border-0 hover:bg-[#FAFAFB]">
+        <td className="py-3 px-5">
+          <span className="text-[12.5px] font-mono font-semibold text-ink">{dataset.dataset_name}</span>
+        </td>
+        <td className="py-3 px-3">
+          <StageChip stage={dataset.stage} />
+        </td>
+        <td className="py-3 px-3 text-[12px] font-mono text-ink-soft text-right">{dataset.rows ?? 0}</td>
+        <td className="py-3 px-3 text-[12px] font-mono text-ink-soft text-right">{dataset.columns?.length ?? 0}</td>
+        <td className="py-3 px-3 text-[12px] text-ink-faint font-mono">{formatWhen(dataset.updated_at)}</td>
+        <td className="py-3 px-5 text-right">
+          <button onClick={onToggle} className="text-[11.5px] font-semibold text-teal hover:underline">
+            {expanded ? "Hide schema" : "View schema"}
+          </button>
+        </td>
+      </tr>
+      {expanded && (
+        <tr>
+          <td colSpan={6} className="p-0">
+            <SchemaView dataset={dataset} />
+          </td>
+        </tr>
+      )}
+    </>
+  );
 }
 
 function RunHistory({ jobName, onClose }) {
@@ -152,6 +264,8 @@ function JobRow({ job, expanded, onToggle }) {
 export default function DataCatalog() {
   const [state, setState] = useState({ loading: true, data: null, error: null });
   const [expandedJob, setExpandedJob] = useState(null);
+  const [datasetState, setDatasetState] = useState({ loading: true, datasets: [], error: null });
+  const [expandedDataset, setExpandedDataset] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -168,6 +282,21 @@ export default function DataCatalog() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.getDatasets();
+        if (!cancelled) setDatasetState({ loading: false, datasets: res.datasets ?? [], error: null });
+      } catch (e) {
+        if (!cancelled) setDatasetState({ loading: false, datasets: [], error: e.message });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const jobs = state.data?.jobs ?? [];
 
   return (
@@ -175,6 +304,63 @@ export default function DataCatalog() {
       <div className="mb-5">
         <h1 className="text-xl font-semibold text-ink tracking-tight">Data Catalog</h1>
         <p className="text-[13px] text-ink-faint mt-1">
+          Every dataset and DAG/task run this platform actually knows about — live, not a static registry
+        </p>
+      </div>
+
+      <div className="mb-5">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-[12px] font-bold text-ink-faint uppercase tracking-wide">Datasets</div>
+          <Link to="/catalog/lineage" className="text-[11.5px] font-semibold text-teal hover:underline">
+            View full lineage graph →
+          </Link>
+        </div>
+
+        {datasetState.error && (
+          <div className="mb-3 text-[12.5px] text-danger bg-danger-soft border border-danger/20 rounded-xl px-4 py-3">
+            Couldn't reach the dataset list: {datasetState.error}
+          </div>
+        )}
+
+        {!datasetState.loading && datasetState.datasets.length === 0 && !datasetState.error && (
+          <div className="bg-white border border-line rounded-card px-6 py-6 text-center text-[12.5px] text-ink-soft">
+            No datasets yet — upload one from the MDM tab first.
+          </div>
+        )}
+
+        {datasetState.datasets.length > 0 && (
+          <div className="bg-white border border-line rounded-card overflow-hidden">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="border-b border-line">
+                  <th className="py-2.5 px-5 text-[10.5px] font-bold text-ink-faint uppercase tracking-wide">Dataset</th>
+                  <th className="py-2.5 px-3 text-[10.5px] font-bold text-ink-faint uppercase tracking-wide">Stage</th>
+                  <th className="py-2.5 px-3 text-[10.5px] font-bold text-ink-faint uppercase tracking-wide text-right">Rows</th>
+                  <th className="py-2.5 px-3 text-[10.5px] font-bold text-ink-faint uppercase tracking-wide text-right">Columns</th>
+                  <th className="py-2.5 px-3 text-[10.5px] font-bold text-ink-faint uppercase tracking-wide">Updated</th>
+                  <th className="py-2.5 px-5 text-[10.5px] font-bold text-ink-faint uppercase tracking-wide text-right">Schema</th>
+                </tr>
+              </thead>
+              <tbody>
+                {datasetState.datasets.map((d) => (
+                  <DatasetRow
+                    key={d.dataset_name}
+                    dataset={d}
+                    expanded={expandedDataset === d.dataset_name}
+                    onToggle={() => setExpandedDataset(expandedDataset === d.dataset_name ? null : d.dataset_name)}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="mb-2">
+        <div className="text-[12px] font-bold text-ink-faint uppercase tracking-wide mb-2">
+          Jobs &amp; Runs
+        </div>
+        <p className="text-[12px] text-ink-faint mb-3">
           Every DAG and task Marquez has seen a real OpenLineage event for — live from{" "}
           <code className="font-mono">dataos-marquez.onrender.com</code>
         </p>
@@ -227,7 +413,7 @@ export default function DataCatalog() {
         </div>
       )}
 
-      <div className="mt-4 text-[11.5px] text-ink-faint">{state.loading ? "Loading catalog…" : ""}</div>
+      <div className="mt-4 text-[11.5px] text-ink-faint">{state.loading || datasetState.loading ? "Loading catalog…" : ""}</div>
     </div>
   );
 }
