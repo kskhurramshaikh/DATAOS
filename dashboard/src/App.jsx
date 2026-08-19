@@ -14,6 +14,7 @@ import NdiDashboard from "./pages/NdiDashboard";
 import NdiHistory from "./pages/NdiHistory";
 import DataCatalog from "./pages/DataCatalog";
 import FieldLineage from "./pages/FieldLineage";
+import Account from "./pages/Account";
 
 const TAB_GROUPS = {
   lakehouse: [
@@ -152,6 +153,7 @@ export default function App() {
           <Route path="/ndi/*" element={<NdiSection />} />
           <Route path="/governance/*" element={<GovernanceSection />} />
           <Route path="/catalog/*" element={<CatalogSection />} />
+          <Route path="/account" element={<Account />} />
         </Routes>
       </div>
     </div>
