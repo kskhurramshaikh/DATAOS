@@ -281,6 +281,55 @@ def debug_keycloak_user(email: str):
     return {"status": r.status_code, "users": r.json() if r.status_code == 200 else r.text}
 
 
+@app.get("/api/debug/keycloak-grant-test")
+def debug_keycloak_grant_test(email: str, password: str):
+    """TEMPORARY diagnostic (2026-08-19), continuing the investigation
+    above -- requiredActions=[] alone did NOT fix live signup (confirmed
+    directly: a fresh signup with a brand-new email still gets 401 from
+    our own authenticate_user()). That function only ever surfaces a
+    generic "Invalid email or password." on any non-200, so this hits
+    the same token endpoint directly and returns Keycloak's own raw
+    error body verbatim instead of guessing further. Deliberately
+    unauthenticated, same pattern as every other /api/debug/* route --
+    remove once this is root-caused."""
+    from app import auth as _auth
+    import requests as _requests
+
+    r = _requests.post(
+        _auth._TOKEN_URL,
+        data={
+            "client_id": _auth.KEYCLOAK_CLIENT_ID,
+            "client_secret": _auth.KEYCLOAK_CLIENT_SECRET,
+            "username": email,
+            "password": password,
+            "grant_type": "password",
+        },
+        timeout=10,
+    )
+    return {"status": r.status_code, "body": r.text, "client_id_used": _auth.KEYCLOAK_CLIENT_ID}
+
+
+@app.get("/api/debug/keycloak-client")
+def debug_keycloak_client():
+    """TEMPORARY diagnostic (2026-08-19), same investigation -- checks
+    the dataos-app client's ACTUAL stored config (directAccessGrantsEnabled
+    in particular) rather than assuming it matches what was set during
+    the original Keycloak build. Deliberately unauthenticated, same
+    pattern as every other /api/debug/* route -- remove once this is
+    root-caused."""
+    from app import auth as _auth
+    import requests as _requests
+
+    admin_token = _auth._get_admin_token()
+    r = _requests.get(
+        f"{_auth._ADMIN_BASE}/clients",
+        params={"clientId": _auth.KEYCLOAK_CLIENT_ID},
+        headers={"Authorization": f"Bearer {admin_token}"},
+        timeout=10,
+    )
+    return {"status": r.status_code, "clients": r.json() if r.status_code == 200 else r.text}
+
+
 @app.get("/api/debug/storage-write")
 def debug_storage_write():
     """Diagnostic for the SeaweedFS write path specifically (2026-08-17)
