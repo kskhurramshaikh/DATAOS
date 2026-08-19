@@ -93,7 +93,7 @@ import threading
 import time
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
-from fastapi.responses import FileResponse, StreamingResponse, PlainTextResponse
+from fastapi.responses import FileResponse, StreamingResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -1335,6 +1335,35 @@ def governance_ndi_history(limit: int = 100):
     return ndi_history.list_snapshots(limit=limit)
 
 
+@app.get("/api/governance/ndi/history/export")
+def governance_ndi_history_export():
+    """CSV export of the full recorded history -- one row per
+    snapshot, oldest first. Registered BEFORE the /{snapshot_id} route
+    below on purpose: both start with /api/governance/ndi/history/,
+    and if this literal route weren't registered first, "export" would
+    hit {snapshot_id}'s int conversion and fail with a 422 instead of
+    ever reaching this handler."""
+    csv_text = ndi_history.export_history_csv()
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=ndi_history.csv"},
+    )
+
+
+@app.get("/api/governance/ndi/compare")
+def governance_ndi_compare(a: int, b: int):
+    """Period comparison between any two recorded snapshots -- not just
+    "vs the immediately previous record" the way the History table's
+    own deltas work. See ndi_history.compare_snapshots()'s docstring
+    for why the two ids are always ordered chronologically regardless
+    of which one the caller passed as a/b."""
+    try:
+        return ndi_history.compare_snapshots(a, b)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.get("/api/governance/ndi/history/{snapshot_id}")
 def governance_ndi_snapshot(snapshot_id: int):
     """One recorded assessment in full, including the 14-domain
@@ -1345,6 +1374,24 @@ def governance_ndi_snapshot(snapshot_id: int):
         return ndi_history.get_snapshot(snapshot_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/api/governance/ndi/history/{snapshot_id}/export")
+def governance_ndi_snapshot_export(snapshot_id: int):
+    """CSV export of one recorded snapshot's full 14-domain breakdown,
+    including fields the History page's own DomainDetail view doesn't
+    render (spec_count, compliance_status, evidence) -- a CSV handoff
+    is exactly the place for the complete record, not just the summary
+    view."""
+    try:
+        csv_text = ndi_history.export_snapshot_csv(snapshot_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=ndi_snapshot_{snapshot_id}.csv"},
+    )
 
 
 @app.post("/api/governance/ndi/snapshot")
