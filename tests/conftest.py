@@ -90,12 +90,29 @@ class FakeKeycloak:
             return resp
         raise AssertionError(f"Unexpected GET to {url}")
 
+    def put(self, url, json=None, headers=None, timeout=None):
+        resp = MagicMock()
+        if url.endswith("/reset-password"):
+            # Real endpoint added 2026-08-19 -- see app/auth.py's
+            # create_user() docstring for why the inline "credentials"
+            # array on creation isn't relied on anymore.
+            kc_id = url.split("/users/")[1].split("/reset-password")[0]
+            user = next((u for u in self.users.values() if u["kc_id"] == kc_id), None)
+            if user is None:
+                resp.status_code = 404
+                return resp
+            user["password"] = json["value"]
+            resp.status_code = 204
+            return resp
+        raise AssertionError(f"Unexpected PUT to {url}")
+
 
 @pytest.fixture(autouse=True)
 def fake_keycloak(monkeypatch):
     fake = FakeKeycloak()
     monkeypatch.setattr(auth.requests, "post", fake.post)
     monkeypatch.setattr(auth.requests, "get", fake.get)
+    monkeypatch.setattr(auth.requests, "put", fake.put)
     monkeypatch.setattr(auth, "_admin_token_cache", {"token": None, "expires_at": 0.0})
 
     fake_signing_key = MagicMock()
