@@ -204,6 +204,27 @@ def create_user(email: str, name: str, password: str) -> dict:
     user_location = r.headers.get("Location", "")
     kc_user_id = user_location.rstrip("/").split("/")[-1] if user_location else None
     if kc_user_id:
+        # REAL BUG, confirmed live (2026-08-19): the inline "credentials"
+        # array above does NOT reliably attach a password credential on
+        # this Keycloak version -- confirmed directly via
+        # /api/debug/keycloak-user: a freshly-created user came back with
+        # "disableableCredentialTypes": [] (i.e. Keycloak's own record of
+        # what credential types exist for this user was empty), which is
+        # exactly why the immediate login below failed with Keycloak's
+        # raw "invalid_grant: Account is not fully set up" even with
+        # requiredActions explicitly cleared. The fix is to set the
+        # password via a SEPARATE, dedicated call after creation --
+        # PUT .../reset-password -- rather than relying on the create
+        # payload's embedded credentials to take effect.
+        pw_r = requests.put(
+            f"{_ADMIN_BASE}/users/{kc_user_id}/reset-password",
+            json={"type": "password", "value": password, "temporary": False},
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=10,
+        )
+        if pw_r.status_code not in (200, 204):
+            raise HTTPException(status_code=400, detail="Could not set account password.")
+
         role_r = requests.get(
             f"{_ADMIN_BASE}/roles/data_consumer",
             headers={"Authorization": f"Bearer {admin_token}"},
