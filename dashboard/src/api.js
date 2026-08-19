@@ -121,6 +121,15 @@ export const api = {
   getNdiSnapshot: (id) => getJSON(`/governance/ndi/history/${id}`),
   recordNdiSnapshot: (recordedBy, note) =>
     postJSON("/governance/ndi/snapshot", { recorded_by: recordedBy, note: note || null }),
+  // Period comparison + CSV export, wired 2026-08-19 -- the two gaps
+  // flagged and deferred when NDI History first shipped. Export URLs
+  // are plain paths, not fetch-based -- these are unauthenticated GETs
+  // that return a real file (Content-Disposition: attachment), so a
+  // direct <a href> download is simpler and more correct than
+  // fetch+blob for the same result.
+  compareNdiSnapshots: (idA, idB) => getJSON(`/governance/ndi/compare?a=${idA}&b=${idB}`),
+  ndiHistoryExportUrl: () => `${BASE}/governance/ndi/history/export`,
+  ndiSnapshotExportUrl: (id) => `${BASE}/governance/ndi/history/${id}/export`,
 
   // Data Catalog + Field Lineage (item 6). Real data from Marquez --
   // see app/marquez_client.py's module docstring. No dataset
