@@ -90,3 +90,81 @@ def test_get_snapshot_rejects_unknown_id(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError):
         ndi_history.get_snapshot(99999)
+
+
+def test_compare_snapshots_orders_chronologically_regardless_of_arg_order(tmp_path, monkeypatch):
+    _fresh_db(tmp_path, monkeypatch)
+
+    first = ndi_history.record_snapshot("first@example.com")
+    second = ndi_history.record_snapshot("second@example.com")
+
+    # Pass the LATER id as "a" and the EARLIER id as "b" -- the
+    # comparison must still put "first" under "from" and "second"
+    # under "to", proving it orders by recorded_at/id, not argument
+    # position.
+    result = ndi_history.compare_snapshots(second["id"], first["id"])
+
+    assert result["from"]["id"] == first["id"]
+    assert result["to"]["id"] == second["id"]
+    # Fixed baseline -> genuinely identical, real signal not a stub.
+    assert result["identical"] is True
+    assert result["delta_display_score"] == 0.0
+    assert len(result["domains"]) == 14
+    assert all(d["comparable"] for d in result["domains"])
+    assert all(d["delta_maturity_score"] == 0 for d in result["domains"])
+
+
+def test_compare_snapshots_rejects_comparing_a_record_to_itself(tmp_path, monkeypatch):
+    _fresh_db(tmp_path, monkeypatch)
+
+    snap = ndi_history.record_snapshot("solo@example.com")
+    with pytest.raises(ValueError):
+        ndi_history.compare_snapshots(snap["id"], snap["id"])
+
+
+def test_compare_snapshots_rejects_unknown_id(tmp_path, monkeypatch):
+    _fresh_db(tmp_path, monkeypatch)
+
+    snap = ndi_history.record_snapshot("solo2@example.com")
+    with pytest.raises(ValueError):
+        ndi_history.compare_snapshots(snap["id"], 999999)
+
+
+def test_export_history_csv_has_one_row_per_snapshot_oldest_first(tmp_path, monkeypatch):
+    _fresh_db(tmp_path, monkeypatch)
+
+    ndi_history.record_snapshot("first@example.com", note="Q1")
+    ndi_history.record_snapshot("second@example.com", note="Q2")
+
+    csv_text = ndi_history.export_history_csv()
+    lines = csv_text.strip().splitlines()
+
+    assert lines[0].startswith("id,recorded_at,recorded_by")
+    assert len(lines) == 3  # header + 2 real rows
+    assert "first@example.com" in lines[1]
+    assert "Q1" in lines[1]
+    assert "second@example.com" in lines[2]
+    assert "Q2" in lines[2]
+
+
+def test_export_snapshot_csv_includes_full_domain_breakdown(tmp_path, monkeypatch):
+    _fresh_db(tmp_path, monkeypatch)
+
+    snap = ndi_history.record_snapshot("reviewer@example.com", note="full detail check")
+    csv_text = ndi_history.export_snapshot_csv(snap["id"])
+
+    assert f"NDI assessment #{snap['id']}" in csv_text
+    assert "note: full detail check" in csv_text
+    assert "code,name,spec_count,maturity_score" in csv_text
+    # 14 real domain rows, not a placeholder count.
+    domain_lines = [l for l in csv_text.strip().splitlines() if l and l[0].isalpha() and "," in l and "code,name" not in l]
+    # Every domain code from the real assessment appears somewhere in the export.
+    for d in snap["domains"]:
+        assert d["code"] in csv_text
+
+
+def test_export_snapshot_csv_rejects_unknown_id(tmp_path, monkeypatch):
+    _fresh_db(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError):
+        ndi_history.export_snapshot_csv(999999)
