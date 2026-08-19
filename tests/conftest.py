@@ -13,9 +13,22 @@ import jwt as pyjwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from app import auth
+from app import auth, opa_client
 
 _RSA_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+def make_test_token(email: str, roles: list[str]) -> str:
+    """Signs a real RS256 JWT against the same test RSA keypair the
+    fake_keycloak fixture's JWKS mock verifies against -- for tests
+    that need a specific realm role (e.g. checking the RBAC/OPA gates
+    on classification/stewardship), rather than the fixed
+    ["data_consumer"] role FakeKeycloak's own login flow issues."""
+    return pyjwt.encode(
+        {"email": email, "given_name": email, "realm_access": {"roles": roles}, "exp": 9999999999},
+        _RSA_KEY,
+        algorithm="RS256",
+    )
 
 
 class FakeKeycloak:
@@ -122,3 +135,37 @@ def fake_keycloak(monkeypatch):
     monkeypatch.setattr(auth, "_jwk_client", fake_jwks_client)
 
     yield fake
+
+
+# Real deployed OPA policy (see /areas/onetech-dataos-rbac-opa-keycloak.md
+# and app/opa_client.py's module docstring): classification_allow grants
+# admin/data_owner/data_steward; stewardship_assign_allow grants
+# admin/data_owner. Mirrored here exactly rather than a generic "allow
+# everything" stub, so tests exercise the same role logic that's live.
+_OPA_POLICY = {
+    "classification_allow": {"admin", "data_owner", "data_steward"},
+    "stewardship_assign_allow": {"admin", "data_owner"},
+}
+
+
+@pytest.fixture(autouse=True)
+def fake_opa(monkeypatch):
+    def fake_query_opa(rule, role):
+        return role in _OPA_POLICY.get(rule, set())
+
+    monkeypatch.setattr(opa_client, "_query_opa", fake_query_opa)
+    yield fake_query_opa
+
+
+@pytest.fixture
+def test_token_factory():
+    """Fixture wrapper around make_test_token(), so callers get the
+    closure bound to THIS conftest module instance's _RSA_KEY -- a
+    plain `from tests.conftest import make_test_token` in a test file
+    can resolve to a second, separately-imported copy of this module
+    (pytest's own conftest loading vs. a regular package import), each
+    generating its own RSA key, which silently breaks signature
+    verification against the fake_keycloak fixture's JWKS mock.
+    Confirmed as the real cause of an InvalidSignatureError live during
+    this file's own test development, not a hypothetical risk."""
+    return make_test_token
