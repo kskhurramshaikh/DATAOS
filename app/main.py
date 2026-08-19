@@ -102,7 +102,7 @@ from app.router import route, NoCapabilityRegisteredError
 from app.capability_registry import CAPABILITY_REGISTRY
 from app.db import init_db, storage_status
 from app import auth, chat_store, field_lineage, lakehouse_client, marquez_client, object_storage
-from app.adapters import dataset_adapter, banking_adapter, dedup_adapter, ndi_history
+from app.adapters import dataset_adapter, banking_adapter, dedup_adapter, ndi_history, stewardship_adapter
 from app.visualization import suggest_visualization
 from app.interpreter import interpret, interpret_stream, explain_result
 
@@ -1123,6 +1123,61 @@ def mdm_field_lineage(dataset_name: str):
         return field_lineage.get_field_lineage_for_dataset(dataset_name)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+class StewardshipAssignRequest(BaseModel):
+    dataset_name: str
+    role: str
+    assignee_name: str
+    assignee_email: str | None = None
+    assigned_by: str
+    note: str | None = None
+
+
+class StewardshipUnassignRequest(BaseModel):
+    dataset_name: str
+    role: str
+
+
+@app.get("/api/mdm/stewardship")
+def mdm_stewardship(dataset_name: str):
+    """Data Stewardship (Item 3's 4th and last required MDM page,
+    scoped and confirmed with Khurram 2026-08-19 -- see
+    app/adapters/stewardship_adapter.py's own docstring). Real,
+    human-entered role assignments for one dataset -- always returns
+    all 5 roles, unassigned ones shown honestly as unassigned rather
+    than omitted."""
+    try:
+        return stewardship_adapter.get_assignments(dataset_name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/api/mdm/stewardship/coverage")
+def mdm_stewardship_coverage():
+    """Across every dataset, how many of the 5 roles are assigned --
+    a small at-a-glance summary computed from real assignment rows."""
+    return stewardship_adapter.get_coverage_summary()
+
+
+@app.post("/api/mdm/stewardship/assign")
+def mdm_stewardship_assign(req: StewardshipAssignRequest):
+    try:
+        return stewardship_adapter.assign_role(req.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other MDM write routes above.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+@app.post("/api/mdm/stewardship/unassign")
+def mdm_stewardship_unassign(req: StewardshipUnassignRequest):
+    try:
+        return stewardship_adapter.unassign_role(req.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other MDM write routes above.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 # ---------------------------------------------------------------------
