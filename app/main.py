@@ -1130,7 +1130,6 @@ class StewardshipAssignRequest(BaseModel):
     role: str
     assignee_name: str
     assignee_email: str | None = None
-    assigned_by: str
     note: str | None = None
 
 
@@ -1168,11 +1167,18 @@ def mdm_stewardship_assign(req: StewardshipAssignRequest, user: dict = Depends(a
     Keycloak login AND an OPA stewardship_assign_allow decision for at
     least one of the caller's realm roles; fails closed (403) on
     either a missing/invalid token or a real OPA denial, not silently
-    permissive."""
+    permissive.
+    AUTO-ATTRIBUTION, wired 2026-08-19: assigned_by is no longer a
+    free-typed field on the request -- it's the real logged-in user's
+    email, taken from their verified token, the same way
+    /duplicates/decide already attributes decided_by to user["email"].
+    A caller can no longer claim to be someone else."""
     if not opa_client.is_allowed("stewardship_assign_allow", user.get("roles", [])):
         raise HTTPException(status_code=403, detail="You don't have permission to assign Data Stewardship roles.")
     try:
-        return stewardship_adapter.assign_role(req.model_dump())
+        payload = req.model_dump()
+        payload["assigned_by"] = user["email"]
+        return stewardship_adapter.assign_role(payload)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other MDM write routes above.
