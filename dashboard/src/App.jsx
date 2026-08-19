@@ -15,6 +15,7 @@ import NdiHistory from "./pages/NdiHistory";
 import DataCatalog from "./pages/DataCatalog";
 import FieldLineage from "./pages/FieldLineage";
 import Account from "./pages/Account";
+import ManageUsers from "./pages/ManageUsers";
 
 const TAB_GROUPS = {
   lakehouse: [
@@ -154,6 +155,7 @@ export default function App() {
           <Route path="/governance/*" element={<GovernanceSection />} />
           <Route path="/catalog/*" element={<CatalogSection />} />
           <Route path="/account" element={<Account />} />
+          <Route path="/admin/users" element={<ManageUsers />} />
         </Routes>
       </div>
     </div>
