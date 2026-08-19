@@ -153,19 +153,31 @@ export default function PipelineMonitoring() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Same real fix as LakehouseZones.jsx's dataset-switch bug -- see
+  // that file's comment for the full reasoning. This page had the
+  // even plainer version of the bug: `load()` here never set `loading`
+  // at all before its await, so switching datasets left the OLD
+  // dataset's run history and task statuses on screen with no loading
+  // indicator whatsoever until the new fetch resolved. A separate
+  // effect keyed only on `selected` clears `runs` immediately on
+  // dataset change; the periodic-refresh effect below still preserves
+  // last-known data across a 10s poll/manual trigger, which is correct
+  // (the dataset hasn't changed in that case).
   useEffect(() => {
     setSelectedTask(null);
-    if (!selected) {
-      setState({ loading: false, configured: true, runs: [], error: null });
-      return;
-    }
+    setState({ loading: !!selected, configured: true, runs: [], error: null });
+  }, [selected]);
+
+  useEffect(() => {
+    if (!selected) return;
     let cancelled = false;
     async function load() {
+      setState((s) => ({ ...s, loading: true }));
       try {
         const res = await api.getPipelineRuns(selected, 5);
         if (!cancelled) setState({ loading: false, configured: res.configured, runs: res.runs, error: res.error || null });
       } catch (e) {
-        if (!cancelled) setState({ loading: false, configured: true, runs: [], error: e.message });
+        if (!cancelled) setState((s) => ({ ...s, loading: false, error: e.message }));
       }
     }
     load();
