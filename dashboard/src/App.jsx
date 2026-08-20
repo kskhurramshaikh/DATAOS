@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate, Link, useLocation } from "react-router-dom";
 import Sidebar from "./components/Sidebar";
+import ComplianceStrip from "./components/ComplianceStrip";
 import LakehouseZones from "./pages/LakehouseZones";
 import PipelineMonitoring from "./pages/PipelineMonitoring";
 import GoldenRecordRegistry from "./pages/GoldenRecordRegistry";
@@ -118,6 +119,7 @@ function GovernanceSection() {
   return (
     <>
       <TopTabs group="governance" />
+      <ComplianceStrip />
       <div className="flex-1 overflow-auto">
         <Routes>
           <Route path="/" element={<SamaDashboard />} />
