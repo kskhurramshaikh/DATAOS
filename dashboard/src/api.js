@@ -141,6 +141,13 @@ export const api = {
   compareNdiSnapshots: (idA, idB) => getJSON(`/governance/ndi/compare?a=${idA}&b=${idB}`),
   ndiHistoryExportUrl: () => `${BASE}/governance/ndi/history/export`,
   ndiSnapshotExportUrl: (id) => `${BASE}/governance/ndi/history/${id}/export`,
+  // Real Excel (.xlsx) and PDF export, wired 2026-08-20 -- closes the
+  // "export ships as CSV, not the literal Excel/PDF named in the doc"
+  // gap. Same plain-<a>-download pattern as the CSV URLs above.
+  ndiHistoryExportXlsxUrl: () => `${BASE}/governance/ndi/history/export.xlsx`,
+  ndiHistoryExportPdfUrl: () => `${BASE}/governance/ndi/history/export.pdf`,
+  ndiSnapshotExportXlsxUrl: (id) => `${BASE}/governance/ndi/history/${id}/export.xlsx`,
+  ndiSnapshotExportPdfUrl: (id) => `${BASE}/governance/ndi/history/${id}/export.pdf`,
 
   // Data Catalog + Field Lineage (item 6). Real data from Marquez --
   // see app/marquez_client.py's module docstring. No dataset
