@@ -1246,6 +1246,93 @@ def mdm_stewardship_set_policy(req: StewardshipPolicyRequest, user: dict = Depen
 
 
 # ---------------------------------------------------------------------
+# Data Stewardship Task Assignment (2026-08-20) -- last named gap on
+# this page (see stewardship_adapter.py's module docstring for the
+# WHO/WHAT/WHAT-NEEDS-DOING distinction from role assignment and the
+# Policy Wizard above). Same RBAC/OPA gate as those two -- creating,
+# moving, or deleting a task is still a Stewardship mutation.
+# created_by is auto-attributed from the caller's verified token, same
+# pattern as assigned_by/set_by above; there is no separate "completed
+# by" field since update_task_status is a plain status move, not a
+# sign-off.
+# ---------------------------------------------------------------------
+
+class StewardshipTaskCreateRequest(BaseModel):
+    dataset_name: str
+    title: str
+    assignee_name: str
+    assignee_email: str | None = None
+    due_date: str | None = None
+    notes: str | None = None
+
+
+class StewardshipTaskStatusRequest(BaseModel):
+    dataset_name: str
+    task_id: int
+    status: str
+
+
+class StewardshipTaskDeleteRequest(BaseModel):
+    dataset_name: str
+    task_id: int
+
+
+@app.get("/api/mdm/stewardship/tasks")
+def mdm_stewardship_list_tasks(dataset_name: str):
+    """Every task for one dataset, open/in-progress ones first. Same
+    unauthenticated read pattern as the role-assignment and policy GETs
+    above -- viewing is open, mutating requires the RBAC/OPA gate."""
+    try:
+        return stewardship_adapter.list_tasks(dataset_name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/mdm/stewardship/tasks")
+def mdm_stewardship_create_task(req: StewardshipTaskCreateRequest, user: dict = Depends(auth.get_current_user)):
+    """Creates a new task for one dataset. Same RBAC/OPA gate as role
+    assign/unassign and the policy wizard."""
+    if not opa_client.is_allowed("stewardship_assign_allow", user.get("roles", [])):
+        raise HTTPException(status_code=403, detail="You don't have permission to create Data Stewardship tasks.")
+    try:
+        payload = req.model_dump()
+        payload["created_by"] = user["email"]
+        return stewardship_adapter.create_task(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other MDM write routes above.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+@app.post("/api/mdm/stewardship/tasks/status")
+def mdm_stewardship_update_task_status(req: StewardshipTaskStatusRequest, user: dict = Depends(auth.get_current_user)):
+    """Moves one task to a new status. Same RBAC/OPA gate -- changing a
+    task's status is still a Stewardship mutation, not a read."""
+    if not opa_client.is_allowed("stewardship_assign_allow", user.get("roles", [])):
+        raise HTTPException(status_code=403, detail="You don't have permission to update Data Stewardship tasks.")
+    try:
+        return stewardship_adapter.update_task_status(req.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other MDM write routes above.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+@app.post("/api/mdm/stewardship/tasks/delete")
+def mdm_stewardship_delete_task(req: StewardshipTaskDeleteRequest, user: dict = Depends(auth.get_current_user)):
+    """Deletes one task outright. Same RBAC/OPA gate as the other task
+    mutations above."""
+    if not opa_client.is_allowed("stewardship_assign_allow", user.get("roles", [])):
+        raise HTTPException(status_code=403, detail="You don't have permission to delete Data Stewardship tasks.")
+    try:
+        return stewardship_adapter.delete_task(req.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other MDM write routes above.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+# ---------------------------------------------------------------------
 # Governance dashboard API (Item 7 -- Classification & PDPL + Data
 # Quality Rules, Section 04's 6th page group).
 #
