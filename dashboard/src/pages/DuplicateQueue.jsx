@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 
 function Pill({ tier }) {
@@ -66,6 +66,25 @@ function DecidedRow({ entry }) {
       <td className="py-2 pr-4 text-[11.5px] text-ink-faint">{entry.decided_by}</td>
       <td className="py-2 text-[11.5px] text-ink-faint font-mono">{entry.decided_at?.slice(0, 16).replace("T", " ")}</td>
     </tr>
+  );
+}
+
+// Sortable column header for the Decided audit table -- click to sort by
+// this column, click again to flip direction. Plain <th> buttons rather
+// than a table library since this is the only sortable table on the page
+// and the existing markup/styling didn't need a dependency to gain this.
+function SortableHeader({ label, sortKey: key, activeKey, dir, onSort }) {
+  const active = activeKey === key;
+  return (
+    <th
+      onClick={() => onSort(key)}
+      className="text-left py-2 px-4 text-[10.5px] font-bold text-ink-faint uppercase tracking-wide cursor-pointer select-none hover:text-ink-soft"
+    >
+      <span className="inline-flex items-center gap-1">
+        {label}
+        <span className={`text-[9px] ${active ? "opacity-100" : "opacity-0"}`}>{dir === "asc" ? "▲" : "▼"}</span>
+      </span>
+    </th>
   );
 }
 
@@ -247,6 +266,16 @@ export default function DuplicateQueue() {
   // one selection, not a second redundant dropdown.
   const [selectedDataset, setSelectedDataset] = useState("");
 
+  // Decided audit-table search/sort (2026-08-20, closes the "no search
+  // box or sort control" gap Dr. Saber flagged). Search matches the
+  // lead name or the reviewer (decided_by) -- the two fields someone
+  // reviewing an audit trail actually looks up by. Purely client-side:
+  // the decided list for a single dataset is never large enough to
+  // warrant a server-side search endpoint.
+  const [decidedSearch, setDecidedSearch] = useState("");
+  const [sortKey, setSortKey] = useState("decided_at");
+  const [sortDir, setSortDir] = useState("desc");
+
   // Real bug found in live testing (2026-08-18) -- see DatasetBulkBar's
   // own comment for the full story. Any error tied to the currently
   // selected dataset (a failed re-detection, a failed queue load) now
@@ -293,6 +322,7 @@ export default function DuplicateQueue() {
     setSelectedDataset(name);
     setDetectResult(null);
     setBulkResult(null);
+    setDecidedSearch("");
     loadQueue(name);
   }
 
@@ -336,6 +366,47 @@ export default function DuplicateQueue() {
   function setPageError(msg) {
     setState((s) => ({ ...s, error: msg }));
   }
+
+  function handleSort(key) {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
+    }
+  }
+
+  // Search + sort applied client-side over the current dataset's
+  // decided list. Sort accessors pull the same fields DecidedRow
+  // already renders, so the header labels and the actual sort behavior
+  // never drift apart.
+  const filteredSortedDecided = useMemo(() => {
+    const q = decidedSearch.trim().toLowerCase();
+    const filtered = q
+      ? state.decided.filter((e) => {
+          const leadName = (e.members?.[0]?.name ?? "").toLowerCase();
+          const decidedBy = (e.decided_by ?? "").toLowerCase();
+          return leadName.includes(q) || decidedBy.includes(q);
+        })
+      : state.decided;
+
+    const accessor = {
+      name: (e) => (e.members?.[0]?.name ?? "").toLowerCase(),
+      size: (e) => e.members?.length ?? 0,
+      outcome: (e) => e.status ?? "",
+      decided_by: (e) => (e.decided_by ?? "").toLowerCase(),
+      decided_at: (e) => e.decided_at ?? "",
+    }[sortKey];
+
+    const sorted = [...filtered].sort((a, b) => {
+      const av = accessor(a);
+      const bv = accessor(b);
+      if (av < bv) return sortDir === "asc" ? -1 : 1;
+      if (av > bv) return sortDir === "asc" ? 1 : -1;
+      return 0;
+    });
+    return sorted;
+  }, [state.decided, decidedSearch, sortKey, sortDir]);
 
   // Pending clusters carry their own dataset_name -- kept as a grouped
   // map even though there's only ever one group now (Pending is always
@@ -449,8 +520,18 @@ export default function DuplicateQueue() {
         </div>
       )}
 
-      <div className="mb-3 text-[12.5px] font-semibold text-ink-soft">
-        Decided {selectedDataset ? `(${state.decided.length})` : ""} — permanent audit record
+      <div className="mb-3 flex items-end justify-between flex-wrap gap-2">
+        <div className="text-[12.5px] font-semibold text-ink-soft">
+          Decided {selectedDataset ? `(${filteredSortedDecided.length}${decidedSearch ? ` of ${state.decided.length}` : ""})` : ""} — permanent audit record
+        </div>
+        {selectedDataset && state.decided.length > 0 && (
+          <input
+            value={decidedSearch}
+            onChange={(e) => setDecidedSearch(e.target.value)}
+            placeholder="Search by name or reviewer…"
+            className="text-[12px] border border-line rounded-lg px-2.5 py-1.5 w-56"
+          />
+        )}
       </div>
       {!selectedDataset && (
         <div className="text-[12.5px] text-ink-faint bg-[#FAFAFB] border border-line rounded-xl px-4 py-3">
@@ -462,17 +543,24 @@ export default function DuplicateQueue() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-line bg-[#FAFAFB]">
-                <th className="text-left py-2 px-4 text-[10.5px] font-bold text-ink-faint uppercase tracking-wide">Lead name</th>
-                <th className="text-left py-2 px-4 text-[10.5px] font-bold text-ink-faint uppercase tracking-wide">Size</th>
-                <th className="text-left py-2 px-4 text-[10.5px] font-bold text-ink-faint uppercase tracking-wide">Outcome</th>
-                <th className="text-left py-2 px-4 text-[10.5px] font-bold text-ink-faint uppercase tracking-wide">Decided by</th>
-                <th className="text-left py-2 px-4 text-[10.5px] font-bold text-ink-faint uppercase tracking-wide">When</th>
+                <SortableHeader label="Lead name" sortKey="name" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+                <SortableHeader label="Size" sortKey="size" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+                <SortableHeader label="Outcome" sortKey="outcome" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+                <SortableHeader label="Decided by" sortKey="decided_by" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+                <SortableHeader label="When" sortKey="decided_at" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               </tr>
             </thead>
             <tbody className="px-4">
-              {state.decided.map((e) => (
+              {filteredSortedDecided.map((e) => (
                 <DecidedRow key={e.id} entry={e} />
               ))}
+              {filteredSortedDecided.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="py-3 px-4 text-[12px] text-ink-faint text-center">
+                    No decided records match "{decidedSearch}".
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
