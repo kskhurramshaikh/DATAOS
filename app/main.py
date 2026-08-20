@@ -1863,8 +1863,21 @@ def mdm_reference_data_list():
     """Every reference list with its value count -- deliberately
     unauthenticated read, same as Glossary. Auto-seeds the 3 standard
     lists (ISO countries, ISO currencies, Saudi regions) on first call
-    if they don't exist yet."""
-    return reference_data_adapter.list_reference_lists()
+    if they don't exist yet.
+
+    REAL BUG FOUND AND FIXED (2026-08-20, live testing): this had no
+    try/except at all, unlike every write route below and unlike the
+    detail endpoint right after it -- so when seeding hit a real
+    Postgres error, it surfaced as a bare, undiagnosable 500 instead
+    of a real message. See reference_data_adapter.seed_standard_lists()'s
+    own docstring for what the underlying error actually was (298
+    sequential round trips, now batched to 3)."""
+    try:
+        return reference_data_adapter.list_reference_lists()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other governance write routes above.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @app.get("/api/mdm/reference-data/{list_id}")
@@ -1874,6 +1887,8 @@ def mdm_reference_data_detail(list_id: int):
         return reference_data_adapter.get_reference_list(list_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other governance write routes above.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @app.post("/api/mdm/reference-data")
