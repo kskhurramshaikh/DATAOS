@@ -108,6 +108,17 @@ export const api = {
   getSama: (datasetName) => getJSON(`/governance/sama${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
   getAuditLog: (datasetName) => getJSON(`/governance/audit-log${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
 
+  // SAMA History (2026-08-20) -- closes the "no trend-over-time
+  // exists" gap. dataset_name REQUIRED on every call here, unlike NDI
+  // history -- SAMA compliance is always scoped to one dataset.
+  getSamaHistory: (datasetName, limit = 100) =>
+    getJSON(`/governance/sama/history?dataset_name=${encodeURIComponent(datasetName)}&limit=${limit}`),
+  getSamaSnapshot: (id) => getJSON(`/governance/sama/history/${id}`),
+  recordSamaSnapshot: (datasetName, recordedBy, note) =>
+    postJSON("/governance/sama/snapshot", { dataset_name: datasetName, recorded_by: recordedBy, note: note || null }),
+  samaHistoryExportUrl: (datasetName) => `${BASE}/governance/sama/history/export?dataset_name=${encodeURIComponent(datasetName)}`,
+  samaSnapshotExportUrl: (id) => `${BASE}/governance/sama/history/${id}/export`,
+
   // Classification & PDPL + Data Quality Rules (item 7).
   getClassification: (datasetName) => getJSON(`/governance/classification?dataset_name=${encodeURIComponent(datasetName)}`),
   getClassificationCoverage: () => getJSON("/governance/classification/coverage"),
