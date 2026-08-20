@@ -1427,6 +1427,32 @@ def governance_ndi_history_export():
     )
 
 
+@app.get("/api/governance/ndi/history/export.xlsx")
+def governance_ndi_history_export_xlsx():
+    """Real .xlsx export of the full recorded history -- see
+    ndi_history.export_history_xlsx()'s docstring. Registered before
+    /{snapshot_id} for the same route-ordering reason as the CSV export
+    above."""
+    xlsx_bytes = ndi_history.export_history_xlsx()
+    return Response(
+        content=xlsx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=ndi_history.xlsx"},
+    )
+
+
+@app.get("/api/governance/ndi/history/export.pdf")
+def governance_ndi_history_export_pdf():
+    """Real .pdf export of the full recorded history -- see
+    ndi_history.export_history_pdf()'s docstring."""
+    pdf_bytes = ndi_history.export_history_pdf()
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=ndi_history.pdf"},
+    )
+
+
 @app.get("/api/governance/ndi/compare")
 def governance_ndi_compare(a: int, b: int):
     """Period comparison between any two recorded snapshots -- not just
@@ -1467,6 +1493,36 @@ def governance_ndi_snapshot_export(snapshot_id: int):
         content=csv_text,
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=ndi_snapshot_{snapshot_id}.csv"},
+    )
+
+
+@app.get("/api/governance/ndi/history/{snapshot_id}/export.xlsx")
+def governance_ndi_snapshot_export_xlsx(snapshot_id: int):
+    """Real .xlsx export of one recorded snapshot's full 14-domain
+    breakdown -- see ndi_history.export_snapshot_xlsx()'s docstring."""
+    try:
+        xlsx_bytes = ndi_history.export_snapshot_xlsx(snapshot_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return Response(
+        content=xlsx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=ndi_snapshot_{snapshot_id}.xlsx"},
+    )
+
+
+@app.get("/api/governance/ndi/history/{snapshot_id}/export.pdf")
+def governance_ndi_snapshot_export_pdf(snapshot_id: int):
+    """Real .pdf export of one recorded snapshot's full 14-domain
+    breakdown -- see ndi_history.export_snapshot_pdf()'s docstring."""
+    try:
+        pdf_bytes = ndi_history.export_snapshot_pdf(snapshot_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=ndi_snapshot_{snapshot_id}.pdf"},
     )
 
 
