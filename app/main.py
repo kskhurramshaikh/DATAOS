@@ -1200,6 +1200,52 @@ def mdm_stewardship_unassign(req: StewardshipUnassignRequest, user: dict = Depen
 
 
 # ---------------------------------------------------------------------
+# Data Stewardship Policy Wizard (2026-08-20) -- closes the "no policy
+# wizard anywhere on the page" gap. Same RBAC/OPA gate as role
+# assign/unassign above (stewardship_assign_allow) -- setting a
+# dataset's stewardship policy is the same class of governance
+# mutation. set_by is auto-attributed from the caller's verified
+# token, same pattern as assigned_by on the role-assignment routes.
+# ---------------------------------------------------------------------
+
+class StewardshipPolicyRequest(BaseModel):
+    dataset_name: str
+    retention_period_days: int | None = None
+    review_frequency: str | None = None
+    quality_threshold_pct: float | None = None
+    escalation_contact: str | None = None
+    notes: str | None = None
+
+
+@app.get("/api/mdm/stewardship/policy")
+def mdm_stewardship_get_policy(dataset_name: str):
+    """The current stewardship policy for one dataset -- retention
+    period, review cadence, quality threshold, escalation contact --
+    or the honest "not configured yet" state. Read-only, same
+    unauthenticated pattern as the role-assignment GET above."""
+    try:
+        return stewardship_adapter.get_policy(dataset_name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/mdm/stewardship/policy")
+def mdm_stewardship_set_policy(req: StewardshipPolicyRequest, user: dict = Depends(auth.get_current_user)):
+    """Creates or replaces the stewardship policy for one dataset via
+    the wizard. Same RBAC/OPA gate as role assign/unassign."""
+    if not opa_client.is_allowed("stewardship_assign_allow", user.get("roles", [])):
+        raise HTTPException(status_code=403, detail="You don't have permission to configure Data Stewardship policy.")
+    try:
+        payload = req.model_dump()
+        payload["set_by"] = user["email"]
+        return stewardship_adapter.set_policy(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other MDM write routes above.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+# ---------------------------------------------------------------------
 # Governance dashboard API (Item 7 -- Classification & PDPL + Data
 # Quality Rules, Section 04's 6th page group).
 #
