@@ -22,8 +22,16 @@ function formatWhen(ts) {
 // Period/quarter filter (2026-08-20) -- Item B (UI polish), part 3 of
 // the remaining 4. Same client-side filter as NdiHistory.jsx's own --
 // see that file's comment for the full reasoning.
+//
+// REAL BUG FOUND AND FIXED (2026-08-20, live testing): same root cause
+// as NdiHistory.jsx's identical bug -- recorded_at has no 'Z'/offset
+// suffix, so `new Date(recordedAt)` parsed it as the viewer's LOCAL
+// time while getUTCMonth()/getUTCFullYear() read it back as UTC,
+// skewing quarter boundaries by the viewer's timezone offset.
+// Appending 'Z' when missing forces correct UTC parsing.
 function getPeriod(recordedAt) {
-  const d = new Date(recordedAt);
+  const iso = /Z|[+-]\d{2}:\d{2}$/.test(recordedAt) ? recordedAt : `${recordedAt}Z`;
+  const d = new Date(iso);
   const q = Math.floor(d.getUTCMonth() / 3) + 1;
   return `${d.getUTCFullYear()} Q${q}`;
 }
