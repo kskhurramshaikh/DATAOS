@@ -189,6 +189,15 @@ export const api = {
   getCatalogJobRuns: (jobName, limit = 10) => getJSON(`/catalog/jobs/${encodeURIComponent(jobName)}/runs?limit=${limit}`),
   getFieldLineage: () => getJSON("/catalog/lineage"),
 
+  // Business Glossary (2026-08-20) -- closes the last of the
+  // Directive's four named Data Catalog requirements. Global, not
+  // dataset-scoped -- see app/adapters/glossary_adapter.py's module
+  // docstring for the full "why not OpenMetadata" / design reasoning.
+  getGlossaryTerms: () => getJSON("/catalog/glossary"),
+  createGlossaryTerm: (fields) => postJSON("/catalog/glossary", fields),
+  updateGlossaryTerm: (id, fields) => postJSON("/catalog/glossary/update", { id, ...fields }),
+  deleteGlossaryTerm: (id) => postJSON("/catalog/glossary/delete", { id }),
+
   // User & role administration, wired 2026-08-19 -- real Keycloak
   // Admin REST API calls, admin-only (see app/adapters/
   // user_admin_adapter.py's module docstring). Closes the
