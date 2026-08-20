@@ -70,7 +70,17 @@ def _national_id_lineage(dataset_name: str, record: dict | None, golden_records:
     """NATIONAL_ID: a raw passthrough column, MDM/Postgres world only.
     Traces Bronze upload -> Silver -> whether it ever contributed to a
     merged golden record's field_sources (i.e. survived into curated
-    output)."""
+    output).
+
+    REAL TABLE/COLUMN NAMES (2026-08-20, per Dr. Saber's direct
+    request): steps now cite the actual storage path and Postgres
+    table/column at each stage -- record['bronze_path']/['silver_path']
+    are the real object-storage keys land_bronze()/clean_to_silver()
+    write to (see dataset_adapter.py), and golden_records is the real
+    Postgres table name (see db.py's schema). Previously these steps
+    were generic prose with no named path/table -- the same standard
+    NDI_SCORE's DAG-based trace already met (real Iceberg table URIs),
+    now applied here too."""
     if record is None or "NATIONAL_ID" not in (record.get("columns") or []):
         return {
             "field": "NATIONAL_ID",
@@ -93,17 +103,21 @@ def _national_id_lineage(dataset_name: str, record: dict | None, golden_records:
         "available": True,
         "reason": None,
         "steps": [
-            {"stage": "Bronze", "description": "Raw uploaded file, column present as-is."},
             {
-                "stage": "Silver",
-                "description": f"Deduplicated CSV in object storage. {null_count} null value(s) out of {record.get('rows')} rows.",
+                "stage": "Bronze",
+                "description": f"Object: {record.get('bronze_path') or 'not recorded'}, column NATIONAL_ID present as uploaded.",
             },
             {
-                "stage": "Golden Records",
+                "stage": "Silver",
+                "description": f"Object: {record.get('silver_path') or 'not recorded'}, column NATIONAL_ID. {null_count} null value(s) out of {record.get('rows')} rows.",
+            },
+            {
+                "stage": "Golden Records (Postgres)",
                 "description": (
+                    f"Table golden_records, column field_sources_json->'NATIONAL_ID'. "
                     f"Contributed a value to {len(contributing)} of {len(golden_records)} merged golden record(s)."
                     if golden_records
-                    else "No duplicate detection run yet for this dataset -- no golden records exist to check."
+                    else "Table golden_records -- no rows yet: no duplicate detection run for this dataset."
                 ),
             },
         ],
@@ -114,7 +128,12 @@ def _national_id_lineage(dataset_name: str, record: dict | None, golden_records:
 def _duplicate_flag_lineage(dataset_name: str, record: dict | None, golden_records: list[dict]) -> dict:
     """DUPLICATE_FLAG: not a literal raw column -- represents a record's
     position in the duplicate_clusters status lifecycle. Traces Silver
-    data -> clustering -> per-status counts -> golden records."""
+    data -> clustering -> per-status counts -> golden records.
+
+    REAL TABLE/COLUMN NAMES (2026-08-20) -- same fix as
+    _national_id_lineage() above: cites the real silver_path object and
+    the real Postgres tables (duplicate_clusters, golden_records) and
+    columns involved, instead of generic prose."""
     if record is None:
         return {
             "field": "DUPLICATE_FLAG",
@@ -136,12 +155,21 @@ def _duplicate_flag_lineage(dataset_name: str, record: dict | None, golden_recor
         "available": bool(checked),
         "reason": None if checked else "Duplicate detection has not been run yet for this dataset.",
         "steps": [
-            {"stage": "Silver", "description": "Cleaned dataset used as clustering input."},
             {
-                "stage": "Duplicate detection",
-                "description": f"Exact-DOB clustering. {len(pending)} pending, {len(confirmed)} confirmed_duplicate, {len(rejected)} not_duplicate.",
+                "stage": "Silver",
+                "description": f"Object: {record.get('silver_path') or 'not recorded'} used as clustering input.",
             },
-            {"stage": "Golden Records", "description": f"{len(golden_records)} record(s) actually merged as a result."},
+            {
+                "stage": "Duplicate detection (Postgres)",
+                "description": (
+                    f"Table duplicate_clusters, column status. Exact-DOB clustering: "
+                    f"{len(pending)} pending, {len(confirmed)} confirmed_duplicate, {len(rejected)} not_duplicate."
+                ),
+            },
+            {
+                "stage": "Golden Records (Postgres)",
+                "description": f"Table golden_records. {len(golden_records)} row(s) actually merged as a result.",
+            },
         ],
         "status_counts": {
             "pending": len(pending),
