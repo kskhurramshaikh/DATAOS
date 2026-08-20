@@ -203,6 +203,23 @@ def _freshness_label(iso_timestamp: str | None) -> str:
     return f"{int(seconds // 86400)}d ago"
 
 
+def _table_row_count(table) -> int:
+    """Real row count from the Iceberg snapshot's own summary metadata
+    (total-records) -- reads zero data files. REAL BUG FOUND AND FIXED
+    (2026-08-20, live testing): get_zone_stats() previously did
+    `len(catalog.load_table(...).scan().to_pandas())` -- a full
+    materialization of every data file in the table just to count
+    rows. Confirmed live: GET /api/lakehouse/zones took 21+ seconds
+    for a single 600-row table on the real cross-region SeaweedFS
+    connection. total-records is standard Iceberg spec snapshot-
+    summary metadata, written on every commit -- pyiceberg's own
+    Summary class exposes it as a plain dict lookup, no scan needed."""
+    snapshot = table.current_snapshot()
+    if snapshot is None or snapshot.summary is None:
+        return 0
+    return int(snapshot.summary.get("total-records", 0) or 0)
+
+
 def get_zone_stats(dataset_name: str | None) -> dict:
     """Live Bronze/Silver/Gold stats for ONE dataset. Bronze comes from
     a plain S3 listing scoped to that dataset's prefix; Silver/Gold
@@ -242,7 +259,7 @@ def get_zone_stats(dataset_name: str | None) -> dict:
                 with conn.cursor() as cur:
                     silver_table_id = f"silver.{dataset_name}"
                     if catalog.table_exists(silver_table_id):
-                        rows = len(catalog.load_table(silver_table_id).scan().to_pandas())
+                        rows = _table_row_count(catalog.load_table(silver_table_id))
                         run_info = _last_task_run(cur, "silver_to_iceberg", dataset_name) or {}
                         zones["silver"] = {
                             "tables": 1,
@@ -260,7 +277,7 @@ def get_zone_stats(dataset_name: str | None) -> dict:
                         tid = f"gold.{dataset_name}{suffix}"
                         if catalog.table_exists(tid):
                             gold_table_count += 1
-                            gold_rows_total += len(catalog.load_table(tid).scan().to_pandas())
+                            gold_rows_total += _table_row_count(catalog.load_table(tid))
                     run_info = _last_task_run(cur, "gold_compute", dataset_name) or {}
                     zones["gold"] = {
                         "tables": gold_table_count,
