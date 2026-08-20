@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 
@@ -33,6 +33,18 @@ function ExportLinks({ csvUrl, xlsxUrl, pdfUrl, className = "" }) {
 function formatWhen(ts) {
   if (!ts) return "—";
   return String(ts).replace("T", " ").slice(0, 16) + " UTC";
+}
+
+// Period/quarter filter (2026-08-20) -- Item B (UI polish), part 3 of
+// the remaining 4. Sourced from a reference platform's own sidebar
+// quarter selector; rebuilt here as a plain client-side filter over
+// the real recorded snapshots this page already has -- no new
+// backend, no synthetic periods invented for datasets that don't have
+// a record in them.
+function getPeriod(recordedAt) {
+  const d = new Date(recordedAt);
+  const q = Math.floor(d.getUTCMonth() / 3) + 1;
+  return `${d.getUTCFullYear()} Q${q}`;
 }
 
 function Delta({ value, suffix = "" }) {
@@ -261,6 +273,7 @@ function ComparePanel({ snapshots }) {
 export default function NdiHistory() {
   const [state, setState] = useState({ loading: true, data: null, error: null });
   const [expanded, setExpanded] = useState(null);
+  const [periodFilter, setPeriodFilter] = useState("all");
 
   useEffect(() => {
     let cancelled = false;
@@ -280,6 +293,17 @@ export default function NdiHistory() {
   const d = state.data;
   const snapshots = d?.snapshots ?? [];
 
+  const periods = useMemo(() => {
+    const set = new Set(snapshots.map((s) => getPeriod(s.recorded_at)));
+    return Array.from(set).sort().reverse();
+  }, [snapshots]);
+
+  // Filters the trend chart, comparison panel, and table rows -- the
+  // 4 top tiles deliberately stay on the overall latest record
+  // (snapshots[0]) regardless of filter, matching "current state"
+  // rather than "state as of the selected period."
+  const filteredSnapshots = periodFilter === "all" ? snapshots : snapshots.filter((s) => getPeriod(s.recorded_at) === periodFilter);
+
   return (
     <div className="p-7 md:px-8">
       <div className="mb-5 flex items-start justify-between flex-wrap gap-3">
@@ -290,12 +314,28 @@ export default function NdiHistory() {
           </p>
         </div>
         {snapshots.length > 0 && (
-          <ExportLinks
-            csvUrl={api.ndiHistoryExportUrl()}
-            xlsxUrl={api.ndiHistoryExportXlsxUrl()}
-            pdfUrl={api.ndiHistoryExportPdfUrl()}
-            className="bg-teal-soft px-3.5 py-2 rounded-lg"
-          />
+          <div className="flex items-center gap-2.5 flex-wrap">
+            {periods.length > 1 && (
+              <select
+                value={periodFilter}
+                onChange={(e) => setPeriodFilter(e.target.value)}
+                className="text-[12px] border border-line rounded-lg px-2.5 py-2 bg-white"
+              >
+                <option value="all">All periods</option>
+                {periods.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+            )}
+            <ExportLinks
+              csvUrl={api.ndiHistoryExportUrl()}
+              xlsxUrl={api.ndiHistoryExportXlsxUrl()}
+              pdfUrl={api.ndiHistoryExportPdfUrl()}
+              className="bg-teal-soft px-3.5 py-2 rounded-lg"
+            />
+          </div>
         )}
       </div>
 
@@ -353,18 +393,20 @@ export default function NdiHistory() {
 
           <div className="bg-white border border-line rounded-card px-6 py-4 mb-5">
             <div className="text-[12px] font-bold text-ink-faint uppercase tracking-wide mb-2">
-              Display score over recorded assessments
+              Display score over recorded assessments{periodFilter !== "all" ? ` — ${periodFilter}` : ""}
             </div>
-            {snapshots.length < 2 ? (
+            {filteredSnapshots.length < 2 ? (
               <div className="text-[12.5px] text-ink-soft py-6 text-center">
-                One record so far — a line needs at least two points. Record another assessment to start a series.
+                {periodFilter !== "all"
+                  ? `Only ${filteredSnapshots.length} record(s) in ${periodFilter} — a line needs at least two points.`
+                  : "One record so far — a line needs at least two points. Record another assessment to start a series."}
               </div>
             ) : (
-              <Sparkline snapshots={snapshots} />
+              <Sparkline snapshots={filteredSnapshots} />
             )}
           </div>
 
-          {snapshots.length >= 2 && <ComparePanel snapshots={snapshots} />}
+          {filteredSnapshots.length >= 2 && <ComparePanel snapshots={filteredSnapshots} />}
 
           <div className="bg-white border border-line rounded-card overflow-hidden">
             <table className="w-full text-left">
@@ -380,7 +422,14 @@ export default function NdiHistory() {
                 </tr>
               </thead>
               <tbody>
-                {snapshots.map((s) => (
+                {filteredSnapshots.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="py-4 px-5 text-[12px] text-ink-faint text-center">
+                      No assessments recorded in {periodFilter}.
+                    </td>
+                  </tr>
+                )}
+                {filteredSnapshots.map((s) => (
                   <Fragment key={s.id}>
                     <tr className="border-b border-line last:border-0">
                       <td className="py-3 px-5 text-[12px] font-mono text-ink">{formatWhen(s.recorded_at)}</td>
