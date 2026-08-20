@@ -102,7 +102,7 @@ from app.router import route, NoCapabilityRegisteredError
 from app.capability_registry import CAPABILITY_REGISTRY
 from app.db import init_db, storage_status
 from app import auth, chat_store, field_lineage, lakehouse_client, marquez_client, object_storage, opa_client
-from app.adapters import dataset_adapter, banking_adapter, dedup_adapter, ndi_history, stewardship_adapter, classification_adapter, quality_adapter, user_admin_adapter
+from app.adapters import dataset_adapter, banking_adapter, dedup_adapter, ndi_history, sama_history, stewardship_adapter, classification_adapter, quality_adapter, user_admin_adapter
 from app.visualization import suggest_visualization
 from app.interpreter import interpret, interpret_stream, explain_result
 
@@ -1289,6 +1289,82 @@ def governance_sama(dataset_name: str | None = None):
 @app.get("/api/governance/audit-log")
 def governance_audit_log(dataset_name: str | None = None):
     return {"entries": dedup_adapter.get_audit_log(dataset_name, limit=500)}
+
+
+# ---------------------------------------------------------------------
+# SAMA History (2026-08-20) -- closes the "no trend-over-time exists"
+# gap flagged in the 2026-08-19 gap analysis. See
+# app/adapters/sama_history.py's own module docstring for how this
+# differs from NDI's history (SAMA's domain scores are real,
+# data-derived signals, so genuine movement is possible, unlike NDI's
+# fixed-baseline series). dataset_name is REQUIRED on every route here
+# (unlike NDI history, which has none) -- SAMA compliance is always
+# scoped to one dataset, same as the live SAMA Compliance page's own
+# dataset picker.
+# ---------------------------------------------------------------------
+
+class SamaSnapshotRequest(BaseModel):
+    dataset_name: str
+    recorded_by: str
+    note: str | None = None
+
+
+@app.get("/api/governance/sama/history")
+def governance_sama_history(dataset_name: str, limit: int = 100):
+    """Every SAMA snapshot recorded for one dataset, newest first, with
+    movement against the previous record for that same dataset."""
+    return sama_history.list_snapshots(dataset_name, limit=limit)
+
+
+@app.get("/api/governance/sama/history/export")
+def governance_sama_history_export(dataset_name: str):
+    """CSV export of one dataset's full recorded SAMA history --
+    registered BEFORE /{snapshot_id} below, same reason as NDI
+    history's identical route-ordering note."""
+    csv_text = sama_history.export_history_csv(dataset_name)
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=sama_history_{dataset_name}.csv"},
+    )
+
+
+@app.get("/api/governance/sama/history/{snapshot_id}")
+def governance_sama_snapshot(snapshot_id: int):
+    """One recorded SAMA snapshot in full, including the per-domain
+    breakdown exactly as computed at record time."""
+    try:
+        return sama_history.get_snapshot(snapshot_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/api/governance/sama/history/{snapshot_id}/export")
+def governance_sama_snapshot_export(snapshot_id: int):
+    """CSV export of one recorded SAMA snapshot's full per-domain
+    breakdown."""
+    try:
+        csv_text = sama_history.export_snapshot_csv(snapshot_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=sama_snapshot_{snapshot_id}.csv"},
+    )
+
+
+@app.post("/api/governance/sama/snapshot")
+def governance_sama_record_snapshot(req: SamaSnapshotRequest):
+    """Records the current SAMA compliance view for one dataset as a
+    dated, attributed audit record. recorded_by is required and never
+    defaulted -- see sama_history.record_snapshot()."""
+    try:
+        return sama_history.record_snapshot(req.dataset_name, req.recorded_by, req.note)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the NDI snapshot write route above.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 # ---------------------------------------------------------------------
