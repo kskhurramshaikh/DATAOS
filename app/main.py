@@ -102,7 +102,7 @@ from app.router import route, NoCapabilityRegisteredError
 from app.capability_registry import CAPABILITY_REGISTRY
 from app.db import init_db, storage_status
 from app import auth, chat_store, field_lineage, lakehouse_client, marquez_client, object_storage, opa_client
-from app.adapters import dataset_adapter, banking_adapter, dedup_adapter, ndi_history, sama_history, stewardship_adapter, classification_adapter, quality_adapter, user_admin_adapter, policy_documents_adapter
+from app.adapters import dataset_adapter, banking_adapter, dedup_adapter, ndi_history, sama_history, stewardship_adapter, classification_adapter, quality_adapter, user_admin_adapter, policy_documents_adapter, glossary_adapter
 from app.visualization import suggest_visualization
 from app.interpreter import interpret, interpret_stream, explain_result
 
@@ -1730,6 +1730,87 @@ def governance_ndi_record_snapshot(req: NdiSnapshotRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the MDM write routes above; a bare 500 on a DB write cost several rounds to diagnose during the Postgres migration.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+# ---------------------------------------------------------------------
+# Business Glossary (2026-08-20) -- closes the last of the Directive's
+# four named Data Catalog requirements (see
+# app/adapters/glossary_adapter.py's module docstring for the exact
+# citation and the full "why not OpenMetadata" / design reasoning).
+# Same RBAC/OPA gate as Classification & Stewardship
+# (stewardship_assign_allow) for create/update/delete -- viewing the
+# glossary is open to everyone, same unauthenticated-read pattern as
+# every other dashboard GET; only maintaining it requires the gate.
+# ---------------------------------------------------------------------
+
+class GlossaryTermCreateRequest(BaseModel):
+    term: str
+    definition: str
+    domain: str = "Other"
+    tags: list[str] = []
+
+
+class GlossaryTermUpdateRequest(BaseModel):
+    id: int
+    definition: str
+    domain: str = "Other"
+    tags: list[str] = []
+
+
+class GlossaryTermDeleteRequest(BaseModel):
+    id: int
+
+
+@app.get("/api/catalog/glossary")
+def catalog_glossary_list():
+    """Every glossary term, alphabetical -- deliberately unauthenticated
+    read, same as the rest of the Data Catalog page."""
+    return glossary_adapter.list_terms()
+
+
+@app.post("/api/catalog/glossary")
+def catalog_glossary_create(req: GlossaryTermCreateRequest, user: dict = Depends(auth.get_current_user)):
+    """Creates a new glossary term. Same RBAC/OPA gate as Classification
+    & Stewardship -- maintaining the glossary is the same class of
+    governance mutation."""
+    if not opa_client.is_allowed("stewardship_assign_allow", user.get("roles", [])):
+        raise HTTPException(status_code=403, detail="You don't have permission to add glossary terms.")
+    try:
+        payload = req.model_dump()
+        payload["created_by"] = user["email"]
+        return glossary_adapter.create_term(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other governance write routes above.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+@app.post("/api/catalog/glossary/update")
+def catalog_glossary_update(req: GlossaryTermUpdateRequest, user: dict = Depends(auth.get_current_user)):
+    """Updates an existing term's definition/domain/tags. Same RBAC/OPA
+    gate as create above."""
+    if not opa_client.is_allowed("stewardship_assign_allow", user.get("roles", [])):
+        raise HTTPException(status_code=403, detail="You don't have permission to edit glossary terms.")
+    try:
+        return glossary_adapter.update_term(req.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other governance write routes above.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+@app.post("/api/catalog/glossary/delete")
+def catalog_glossary_delete(req: GlossaryTermDeleteRequest, user: dict = Depends(auth.get_current_user)):
+    """Deletes one glossary term outright. Same RBAC/OPA gate as
+    create/update above."""
+    if not opa_client.is_allowed("stewardship_assign_allow", user.get("roles", [])):
+        raise HTTPException(status_code=403, detail="You don't have permission to delete glossary terms.")
+    try:
+        return glossary_adapter.delete_term(req.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other governance write routes above.
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
