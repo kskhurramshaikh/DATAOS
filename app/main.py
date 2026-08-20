@@ -102,7 +102,7 @@ from app.router import route, NoCapabilityRegisteredError
 from app.capability_registry import CAPABILITY_REGISTRY
 from app.db import init_db, storage_status
 from app import auth, chat_store, field_lineage, lakehouse_client, marquez_client, object_storage, opa_client
-from app.adapters import dataset_adapter, banking_adapter, dedup_adapter, ndi_history, sama_history, stewardship_adapter, classification_adapter, quality_adapter, user_admin_adapter
+from app.adapters import dataset_adapter, banking_adapter, dedup_adapter, ndi_history, sama_history, stewardship_adapter, classification_adapter, quality_adapter, user_admin_adapter, policy_documents_adapter
 from app.visualization import suggest_visualization
 from app.interpreter import interpret, interpret_stream, explain_result
 
@@ -1240,6 +1240,67 @@ def governance_classification_coverage():
     """Across every dataset, how many RESTRICTED/CONFIDENTIAL columns
     exist -- a small at-a-glance summary."""
     return classification_adapter.get_coverage_summary()
+
+
+# ---------------------------------------------------------------------
+# Policy Document Upload (2026-08-20) -- closes the "no 'uploaded
+# policy documents' feature anywhere on the page" gap. See
+# app/adapters/policy_documents_adapter.py's module docstring for why
+# this is global (org-level), not scoped to the currently-selected
+# dataset on the Classification & PDPL page.
+# ---------------------------------------------------------------------
+
+@app.post("/api/governance/classification/policy-documents")
+async def governance_upload_policy_document(
+    file: UploadFile = File(...),
+    uploaded_by: str = Form(...),
+    note: str | None = Form(None),
+):
+    """Uploads one real policy document (PDF/Word) -- see
+    policy_documents_adapter.upload_policy_document()'s docstring for
+    the validation it applies (file type, size, required uploader
+    name)."""
+    content = await file.read()
+    try:
+        return policy_documents_adapter.upload_policy_document(
+            file.filename, content, file.content_type or "application/octet-stream", uploaded_by, note
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other DB/storage write routes above.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+@app.get("/api/governance/classification/policy-documents")
+def governance_list_policy_documents():
+    """Every uploaded policy document, newest first -- shown on the
+    Classification & PDPL page regardless of which dataset is
+    selected there."""
+    return policy_documents_adapter.list_policy_documents()
+
+
+@app.get("/api/governance/classification/policy-documents/{doc_id}/download")
+def governance_download_policy_document(doc_id: int):
+    """Streams back the real uploaded file -- correct content-type and
+    filename via Content-Disposition, read straight from object
+    storage."""
+    try:
+        content, filename, content_type = policy_documents_adapter.get_policy_document_content(doc_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.delete("/api/governance/classification/policy-documents/{doc_id}")
+def governance_delete_policy_document(doc_id: int):
+    try:
+        return policy_documents_adapter.delete_policy_document(doc_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @app.get("/api/governance/quality-rules")
