@@ -27,6 +27,7 @@
 
 from datetime import datetime, timezone
 
+from app import db as db_module
 from app.db import get_conn
 
 # Order matters for display -- this is the actual accountability chain
@@ -219,3 +220,182 @@ def get_coverage_summary() -> dict:
     ]
     fully_assigned = sum(1 for d in datasets if d["roles_assigned"] == len(ROLES))
     return {"datasets": datasets, "fully_assigned_count": fully_assigned, "dataset_count": len(datasets)}
+
+
+# ---------------------------------------------------------------------
+# Stewardship Policy Wizard (2026-08-20) -- closes the "no policy
+# wizard anywhere on the page" gap. A policy is a separate, real
+# concern from role assignments above: WHO is accountable (roles) vs
+# WHAT the accountability rules actually are for this dataset
+# (retention period, review cadence, a real quality bar, who to
+# escalate to). One current policy per dataset (UNIQUE on
+# dataset_safe_name) -- same "current state, not a history" reasoning
+# assign_role() above already applies; reconfiguring overwrites the
+# previous policy outright.
+#
+# SCHEMA LOCATION NOTE (same as ndi_history.py/sama_history.py/
+# policy_documents_adapter.py): self-contained _ensure_policy_schema()
+# rather than living in db.py's init_db() alongside stewardship_
+# assignments -- this table is read/written only by the two functions
+# below, and _ensure_policy_schema() is idempotent on both backends.
+# ---------------------------------------------------------------------
+
+POLICY_REVIEW_FREQUENCIES = ["monthly", "quarterly", "semi_annual", "annual"]
+POLICY_REVIEW_FREQUENCY_LABELS = {
+    "monthly": "Monthly",
+    "quarterly": "Quarterly",
+    "semi_annual": "Semi-annual",
+    "annual": "Annual",
+}
+
+
+def _ensure_policy_schema():
+    pk = "SERIAL PRIMARY KEY" if db_module._is_postgres() else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    with get_conn() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS stewardship_policies (
+                id {pk},
+                dataset_safe_name TEXT NOT NULL UNIQUE,
+                retention_period_days INTEGER,
+                review_frequency TEXT,
+                quality_threshold_pct REAL,
+                escalation_contact TEXT,
+                notes TEXT,
+                set_by TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+
+def get_policy(dataset_safe_name: str) -> dict:
+    """The current stewardship policy for one dataset, or the honest
+    "not yet configured" state if none has been set -- never a
+    fabricated default. Validates the dataset itself exists first,
+    same existence-check bug class get_assignments() above already
+    guards against."""
+    if not dataset_safe_name:
+        raise ValueError("dataset_name is required.")
+    with get_conn() as conn:
+        dataset_row = conn.execute(
+            "SELECT id FROM datasets WHERE safe_name = ?", (dataset_safe_name,)
+        ).fetchone()
+        if dataset_row is None:
+            raise ValueError(f"No dataset found matching '{dataset_safe_name}'.")
+
+    _ensure_policy_schema()
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM stewardship_policies WHERE dataset_safe_name = ?", (dataset_safe_name,)
+        ).fetchone()
+
+    if row is None:
+        return {
+            "dataset_name": dataset_safe_name,
+            "configured": False,
+            "retention_period_days": None,
+            "review_frequency": None,
+            "review_frequency_label": None,
+            "quality_threshold_pct": None,
+            "escalation_contact": None,
+            "notes": None,
+            "set_by": None,
+            "updated_at": None,
+        }
+
+    return {
+        "dataset_name": dataset_safe_name,
+        "configured": True,
+        "retention_period_days": row["retention_period_days"],
+        "review_frequency": row["review_frequency"],
+        "review_frequency_label": POLICY_REVIEW_FREQUENCY_LABELS.get(row["review_frequency"]),
+        "quality_threshold_pct": row["quality_threshold_pct"],
+        "escalation_contact": row["escalation_contact"],
+        "notes": row["notes"],
+        "set_by": row["set_by"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def set_policy(payload: dict) -> dict:
+    """Creates or replaces the stewardship policy for one dataset --
+    upsert on dataset_safe_name. Validates every field genuinely
+    (retention_period_days a positive whole number of days if given,
+    review_frequency one of the 4 real cadences, quality_threshold_pct
+    between 0 and 100) rather than storing whatever was typed in."""
+    dataset_safe_name = payload.get("dataset_name")
+    if not dataset_safe_name:
+        raise ValueError("dataset_name is required.")
+    set_by = payload.get("set_by")
+    if not set_by:
+        raise ValueError("set_by is required.")
+
+    retention_period_days = payload.get("retention_period_days")
+    if retention_period_days is not None and retention_period_days != "":
+        try:
+            retention_period_days = int(retention_period_days)
+        except (TypeError, ValueError):
+            raise ValueError("retention_period_days must be a whole number of days.")
+        if retention_period_days <= 0:
+            raise ValueError("retention_period_days must be a positive number of days.")
+    else:
+        retention_period_days = None
+
+    review_frequency = payload.get("review_frequency") or None
+    if review_frequency is not None and review_frequency not in POLICY_REVIEW_FREQUENCIES:
+        raise ValueError(f"review_frequency must be one of {', '.join(POLICY_REVIEW_FREQUENCIES)}.")
+
+    quality_threshold_pct = payload.get("quality_threshold_pct")
+    if quality_threshold_pct is not None and quality_threshold_pct != "":
+        try:
+            quality_threshold_pct = float(quality_threshold_pct)
+        except (TypeError, ValueError):
+            raise ValueError("quality_threshold_pct must be a number.")
+        if not (0 <= quality_threshold_pct <= 100):
+            raise ValueError("quality_threshold_pct must be between 0 and 100.")
+    else:
+        quality_threshold_pct = None
+
+    escalation_contact = (payload.get("escalation_contact") or "").strip() or None
+    notes = (payload.get("notes") or "").strip() or None
+
+    with get_conn() as conn:
+        dataset_row = conn.execute(
+            "SELECT id FROM datasets WHERE safe_name = ?", (dataset_safe_name,)
+        ).fetchone()
+        if dataset_row is None:
+            raise ValueError(f"No dataset found matching '{dataset_safe_name}'.")
+
+    _ensure_policy_schema()
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        existing = conn.execute(
+            "SELECT id FROM stewardship_policies WHERE dataset_safe_name = ?", (dataset_safe_name,)
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """UPDATE stewardship_policies
+                   SET retention_period_days = ?, review_frequency = ?, quality_threshold_pct = ?,
+                       escalation_contact = ?, notes = ?, set_by = ?, updated_at = ?
+                   WHERE dataset_safe_name = ?""",
+                (
+                    retention_period_days, review_frequency, quality_threshold_pct,
+                    escalation_contact, notes, set_by, now, dataset_safe_name,
+                ),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO stewardship_policies
+                   (dataset_safe_name, retention_period_days, review_frequency, quality_threshold_pct,
+                    escalation_contact, notes, set_by, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    dataset_safe_name, retention_period_days, review_frequency, quality_threshold_pct,
+                    escalation_contact, notes, set_by, now,
+                ),
+            )
+        conn.commit()
+
+    return get_policy(dataset_safe_name)
