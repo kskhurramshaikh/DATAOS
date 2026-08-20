@@ -36,6 +36,17 @@
 # null_counts) uses the same json.dumps/json.loads-on-TEXT pattern for
 # exactly this reason -- kept consistent here rather than reaching for
 # a Postgres-only type that would break the SQLite fallback.
+#
+# REAL BUG FIXED (2026-08-20, post-deploy): list_terms() originally
+# ordered with `ORDER BY term COLLATE NOCASE` -- SQLite-only syntax.
+# Postgres (the real production backend) has no NOCASE collation by
+# default, so every call to this in production 500'd outright
+# (confirmed live: a raw "Internal Server Error" with no detail body,
+# meaning an unhandled exception below main.py's own try/except).
+# Fixed to `ORDER BY LOWER(term)`, which is portable across both
+# SQLite and Postgres and produces the identical case-insensitive
+# ordering -- same fix class as other SQLite/Postgres syntax gaps this
+# codebase has hit before (see db.py's own docstring for the pattern).
 
 import json
 from datetime import datetime, timezone
@@ -92,7 +103,7 @@ def list_terms() -> dict:
     _ensure_schema()
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM glossary_terms ORDER BY term COLLATE NOCASE"
+            "SELECT * FROM glossary_terms ORDER BY LOWER(term)"
         ).fetchall()
 
     terms = [_row_to_dict(r) for r in rows]
