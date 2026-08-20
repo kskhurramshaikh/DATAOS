@@ -12,6 +12,24 @@ import { api } from "../api";
 // improvement curve). See app/adapters/ndi_history.py's module
 // docstring for the full reasoning.
 
+// Small reusable "Export: CSV · Excel · PDF" link group -- used at both
+// the full-history level and per-snapshot level below. Real files for
+// all three (see ndi_history.py's export_*_csv/xlsx/pdf), not a CSV
+// renamed -- closes the "export ships as CSV, not the literal Excel/
+// PDF named in the doc" gap.
+function ExportLinks({ csvUrl, xlsxUrl, pdfUrl, className = "" }) {
+  return (
+    <div className={`flex items-center gap-1 text-[11px] font-semibold text-teal ${className}`}>
+      <span className="text-ink-faint font-normal mr-0.5">Export:</span>
+      <a href={csvUrl} className="hover:underline">CSV</a>
+      <span className="text-ink-faint">·</span>
+      <a href={xlsxUrl} className="hover:underline">Excel</a>
+      <span className="text-ink-faint">·</span>
+      <a href={pdfUrl} className="hover:underline">PDF</a>
+    </div>
+  );
+}
+
 function formatWhen(ts) {
   if (!ts) return "—";
   return String(ts).replace("T", " ").slice(0, 16) + " UTC";
@@ -88,12 +106,11 @@ function DomainDetail({ snapshotId }) {
         <div className="text-[11px] font-bold text-ink-faint uppercase tracking-wide">
           14 domains as recorded
         </div>
-        <a
-          href={api.ndiSnapshotExportUrl(snapshotId)}
-          className="text-[11px] font-semibold text-teal hover:underline"
-        >
-          Export CSV
-        </a>
+        <ExportLinks
+          csvUrl={api.ndiSnapshotExportUrl(snapshotId)}
+          xlsxUrl={api.ndiSnapshotExportXlsxUrl(snapshotId)}
+          pdfUrl={api.ndiSnapshotExportPdfUrl(snapshotId)}
+        />
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2.5">
         {state.data.domains.map((d) => (
@@ -273,12 +290,12 @@ export default function NdiHistory() {
           </p>
         </div>
         {snapshots.length > 0 && (
-          <a
-            href={api.ndiHistoryExportUrl()}
-            className="text-[12px] font-semibold text-teal bg-teal-soft px-3.5 py-2 rounded-lg hover:opacity-80"
-          >
-            Export CSV
-          </a>
+          <ExportLinks
+            csvUrl={api.ndiHistoryExportUrl()}
+            xlsxUrl={api.ndiHistoryExportXlsxUrl()}
+            pdfUrl={api.ndiHistoryExportPdfUrl()}
+            className="bg-teal-soft px-3.5 py-2 rounded-lg"
+          />
         )}
       </div>
 
