@@ -41,8 +41,19 @@ function formatWhen(ts) {
 // the real recorded snapshots this page already has -- no new
 // backend, no synthetic periods invented for datasets that don't have
 // a record in them.
+//
+// REAL BUG FOUND AND FIXED (2026-08-20, live testing): recorded_at
+// comes back from the backend as UTC but without a 'Z'/offset suffix
+// (db.py's own CURRENT_TIMESTAMP formatting -- see its docstring), so
+// `new Date(recordedAt)` parsed it as the VIEWER'S LOCAL time, not
+// UTC, while getUTCMonth()/getUTCFullYear() then read it back as UTC
+// -- a genuine mismatch. Confirmed live in a UTC+5 browser: an
+// "2026-04-01T00:00:00" record landed in Q1 instead of Q2. Appending
+// 'Z' when the string has no explicit zone forces UTC parsing, making
+// the period bucketing correct regardless of the viewer's timezone.
 function getPeriod(recordedAt) {
-  const d = new Date(recordedAt);
+  const iso = /Z|[+-]\d{2}:\d{2}$/.test(recordedAt) ? recordedAt : `${recordedAt}Z`;
+  const d = new Date(iso);
   const q = Math.floor(d.getUTCMonth() / 3) + 1;
   return `${d.getUTCFullYear()} Q${q}`;
 }
