@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 
 function Pill({ tier }) {
@@ -266,6 +267,18 @@ export default function DuplicateQueue() {
   // one selection, not a second redundant dropdown.
   const [selectedDataset, setSelectedDataset] = useState("");
 
+  // Quick-action deep-link support (2026-08-20, Item B/UI polish part
+  // 4 -- sourced from a reference platform's own "alert names a real
+  // problem -> jumps straight to the relevant page pre-filtered"
+  // pattern). ComplianceStrip links here as
+  // /mdm/queue?dataset=<name> when SAMA's own priority_alert names a
+  // pending-duplicates issue -- read once on mount below, same
+  // pre-selection path a manual dataset choice already goes through
+  // (handleSelectedDatasetChange), so nothing about how Pending/
+  // Decided load needs to know this selection came from a link rather
+  // than a click.
+  const [searchParams] = useSearchParams();
+
   // Decided audit-table search/sort (2026-08-20, closes the "no search
   // box or sort control" gap Dr. Saber flagged). Search matches the
   // lead name or the reviewer (decided_by) -- the two fields someone
@@ -316,6 +329,11 @@ export default function DuplicateQueue() {
 
   useEffect(() => {
     loadDatasets();
+    const deepLinkedDataset = searchParams.get("dataset");
+    if (deepLinkedDataset) {
+      handleSelectedDatasetChange(deepLinkedDataset);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function handleSelectedDatasetChange(name) {
