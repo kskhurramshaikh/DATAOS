@@ -400,6 +400,284 @@ function PolicyWizard({ datasetName, canEdit }) {
   );
 }
 
+const TASK_STATUS_STYLES = {
+  open: "bg-[#F0F0F2] text-ink-faint",
+  in_progress: "bg-teal-soft text-teal",
+  done: "bg-[#E4F5EA] text-[#1F8A4C]",
+  cancelled: "bg-[#F0F0F2] text-ink-faint line-through",
+};
+
+const TASK_STATUS_CYCLE = { open: "in_progress", in_progress: "done", done: "open" };
+
+function TaskRow({ task, onAdvance, onCancel, onDelete, canEdit, busy }) {
+  const isTerminal = task.status === "done" || task.status === "cancelled";
+  return (
+    <div className="bg-white border border-line rounded-xl px-4 py-3 flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className={`text-[10.5px] font-semibold px-2 py-0.5 rounded-full ${TASK_STATUS_STYLES[task.status]}`}>
+            {task.status_label}
+          </span>
+          <span className="text-[12.5px] font-semibold text-ink">{task.title}</span>
+        </div>
+        <div className="text-[11.5px] text-ink-soft mt-1">
+          {task.assignee_name}
+          {task.assignee_email && <span className="text-ink-faint"> · {task.assignee_email}</span>}
+          {task.due_date && <span className="text-ink-faint"> · due {task.due_date}</span>}
+        </div>
+        {task.notes && <div className="text-[11.5px] text-ink-soft mt-1">{task.notes}</div>}
+        <div className="text-[10.5px] text-ink-faint mt-1.5">
+          Created by {task.created_by} on {task.created_at?.slice(0, 16).replace("T", " ")}
+        </div>
+      </div>
+      {canEdit && (
+        <div className="flex items-center gap-2 shrink-0">
+          {!isTerminal && (
+            <>
+              <button
+                onClick={() => onAdvance(task)}
+                disabled={busy}
+                className="text-[11px] font-semibold text-teal bg-teal-soft px-2.5 py-1 rounded-full hover:opacity-80 disabled:opacity-50"
+              >
+                {task.status === "open" ? "Start" : "Mark done"}
+              </button>
+              <button
+                onClick={() => onCancel(task)}
+                disabled={busy}
+                className="text-[11px] font-medium text-ink-faint hover:text-danger px-1"
+              >
+                Cancel
+              </button>
+            </>
+          )}
+          <button
+            onClick={() => onDelete(task)}
+            disabled={busy}
+            className="text-[11px] font-medium text-ink-faint hover:text-danger px-1"
+          >
+            Delete
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Data Stewardship Task Assignment -- the last named gap on this page.
+// Distinct from BOTH the role cards (WHO holds each standing role) and
+// the Policy Wizard above (WHAT the accountability rules are): tasks
+// answer WHAT NEEDS DOING, right now, by whom, by when. Deliberately a
+// plain status list a human moves themselves (open -> in_progress ->
+// done, or -> cancelled) -- no approval workflow, no notifications, no
+// due-date reminders. See stewardship_adapter.py's Task Assignment
+// section for the full backend reasoning.
+function TaskList({ datasetName, canEdit }) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
+  const [busy, setBusy] = useState(false);
+  const [formOpen, setFormOpen] = useState(false);
+  const [form, setForm] = useState({ title: "", assignee_name: "", assignee_email: "", due_date: "", notes: "" });
+  const [formError, setFormError] = useState(null);
+  const [showDone, setShowDone] = useState(false);
+
+  async function load() {
+    setState((s) => ({ ...s, loading: true }));
+    try {
+      const res = await api.getStewardshipTasks(datasetName);
+      setState({ loading: false, data: res, error: null });
+    } catch (e) {
+      setState({ loading: false, data: null, error: e.message });
+    }
+  }
+
+  useEffect(() => {
+    if (datasetName) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [datasetName]);
+
+  function openForm() {
+    setForm({ title: "", assignee_name: "", assignee_email: "", due_date: "", notes: "" });
+    setFormError(null);
+    setFormOpen(true);
+  }
+
+  async function handleCreate() {
+    if (!form.title.trim() || !form.assignee_name.trim()) {
+      setFormError("Title and assignee name are required.");
+      return;
+    }
+    setBusy(true);
+    setFormError(null);
+    try {
+      const res = await api.createStewardshipTask(datasetName, {
+        title: form.title.trim(),
+        assignee_name: form.assignee_name.trim(),
+        assignee_email: form.assignee_email.trim() || null,
+        due_date: form.due_date || null,
+        notes: form.notes.trim() || null,
+      });
+      setState({ loading: false, data: res, error: null });
+      setFormOpen(false);
+    } catch (e) {
+      setFormError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleAdvance(task) {
+    setBusy(true);
+    try {
+      const nextStatus = TASK_STATUS_CYCLE[task.status] || "done";
+      const res = await api.updateStewardshipTaskStatus(datasetName, task.id, nextStatus);
+      setState({ loading: false, data: res, error: null });
+    } catch (e) {
+      setState((s) => ({ ...s, error: e.message }));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCancel(task) {
+    setBusy(true);
+    try {
+      const res = await api.updateStewardshipTaskStatus(datasetName, task.id, "cancelled");
+      setState({ loading: false, data: res, error: null });
+    } catch (e) {
+      setState((s) => ({ ...s, error: e.message }));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDelete(task) {
+    setBusy(true);
+    try {
+      const res = await api.deleteStewardshipTask(datasetName, task.id);
+      setState({ loading: false, data: res, error: null });
+    } catch (e) {
+      setState((s) => ({ ...s, error: e.message }));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const tasks = state.data?.tasks ?? [];
+  const visibleTasks = showDone ? tasks : tasks.filter((t) => t.status !== "done" && t.status !== "cancelled");
+
+  return (
+    <div className="bg-white border border-line rounded-card px-6 py-4 mb-5">
+      <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <div className="text-[12px] font-bold text-ink-faint uppercase tracking-wide">Tasks</div>
+          {state.data && (
+            <span className="text-[10.5px] text-ink-faint">
+              {state.data.tasks_open} open of {state.data.tasks_total}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          {tasks.some((t) => t.status === "done" || t.status === "cancelled") && (
+            <button
+              onClick={() => setShowDone((v) => !v)}
+              className="text-[11px] font-medium text-ink-faint hover:text-ink"
+            >
+              {showDone ? "Hide done/cancelled" : "Show done/cancelled"}
+            </button>
+          )}
+          {canEdit && !formOpen && (
+            <button
+              onClick={openForm}
+              className="text-[11px] font-semibold text-teal bg-teal-soft px-2.5 py-1 rounded-full hover:opacity-80"
+            >
+              New task
+            </button>
+          )}
+        </div>
+      </div>
+
+      {state.loading && <div className="text-[12px] text-ink-faint">Loading…</div>}
+      {state.error && <div className="text-[12px] text-danger">{state.error}</div>}
+
+      {formOpen && (
+        <div className="mt-3 mb-3 flex flex-col gap-2 max-w-sm">
+          <input
+            value={form.title}
+            onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+            placeholder="Task title *"
+            className="text-[12.5px] border border-line rounded-lg px-3 py-1.5"
+          />
+          <input
+            value={form.assignee_name}
+            onChange={(e) => setForm((f) => ({ ...f, assignee_name: e.target.value }))}
+            placeholder="Assignee name *"
+            className="text-[12.5px] border border-line rounded-lg px-3 py-1.5"
+          />
+          <input
+            value={form.assignee_email}
+            onChange={(e) => setForm((f) => ({ ...f, assignee_email: e.target.value }))}
+            placeholder="Assignee email (optional)"
+            className="text-[12.5px] border border-line rounded-lg px-3 py-1.5"
+          />
+          <label className="text-[11.5px] text-ink-soft">
+            Due date (optional)
+            <input
+              type="date"
+              value={form.due_date}
+              onChange={(e) => setForm((f) => ({ ...f, due_date: e.target.value }))}
+              className="mt-1 w-full text-[12.5px] border border-line rounded-lg px-3 py-1.5"
+            />
+          </label>
+          <textarea
+            value={form.notes}
+            onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
+            placeholder="Notes (optional)"
+            className="text-[12.5px] border border-line rounded-lg px-3 py-1.5"
+            rows={2}
+          />
+          {formError && <div className="text-[11px] text-danger">{formError}</div>}
+          <div className="flex items-center gap-2 mt-0.5">
+            <button
+              onClick={handleCreate}
+              disabled={busy}
+              className="text-[11.5px] font-semibold text-white bg-teal px-3 py-1.5 rounded-lg hover:opacity-90 disabled:opacity-50"
+            >
+              Create task
+            </button>
+            <button
+              onClick={() => setFormOpen(false)}
+              className="text-[11.5px] font-medium text-ink-faint hover:text-ink px-1"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!state.loading && !state.error && visibleTasks.length === 0 && (
+        <div className="text-[11.5px] text-ink-faint mt-2">
+          {tasks.length === 0 ? "No tasks yet for this dataset." : "No open tasks -- all caught up."}
+        </div>
+      )}
+
+      {visibleTasks.length > 0 && (
+        <div className="flex flex-col gap-2.5 mt-3">
+          {visibleTasks.map((task) => (
+            <TaskRow
+              key={task.id}
+              task={task}
+              onAdvance={handleAdvance}
+              onCancel={handleCancel}
+              onDelete={handleDelete}
+              canEdit={canEdit}
+              busy={busy}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function DataStewardship() {
   const { isAuthenticated } = useAuth();
   const [datasets, setDatasets] = useState([]);
@@ -520,6 +798,7 @@ export default function DataStewardship() {
       {selected && state.data && (
         <>
           <PolicyWizard datasetName={selected} canEdit={isAuthenticated} />
+          <TaskList datasetName={selected} canEdit={isAuthenticated} />
 
           <div className="text-[11.5px] text-ink-faint mb-3">
             {state.data.roles_assigned} of {state.data.roles_total} roles assigned
