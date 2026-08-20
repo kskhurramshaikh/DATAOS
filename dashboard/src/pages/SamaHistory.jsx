@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import DatasetPicker from "../components/DatasetPicker";
 
@@ -17,6 +17,15 @@ import DatasetPicker from "../components/DatasetPicker";
 function formatWhen(ts) {
   if (!ts) return "—";
   return String(ts).replace("T", " ").slice(0, 16) + " UTC";
+}
+
+// Period/quarter filter (2026-08-20) -- Item B (UI polish), part 3 of
+// the remaining 4. Same client-side filter as NdiHistory.jsx's own --
+// see that file's comment for the full reasoning.
+function getPeriod(recordedAt) {
+  const d = new Date(recordedAt);
+  const q = Math.floor(d.getUTCMonth() / 3) + 1;
+  return `${d.getUTCFullYear()} Q${q}`;
 }
 
 function Delta({ value }) {
@@ -119,6 +128,7 @@ export default function SamaHistory() {
   const [selected, setSelected] = useState("");
   const [state, setState] = useState({ loading: false, data: null, error: null });
   const [expanded, setExpanded] = useState(null);
+  const [periodFilter, setPeriodFilter] = useState("all");
   const [recorderName, setRecorderName] = useState("");
   const [recording, setRecording] = useState(false);
   const [recordError, setRecordError] = useState(null);
@@ -162,6 +172,7 @@ export default function SamaHistory() {
 
   useEffect(() => {
     setExpanded(null);
+    setPeriodFilter("all");
     loadHistory(selected);
   }, [selected]);
 
@@ -182,6 +193,16 @@ export default function SamaHistory() {
   const d = state.data;
   const snapshots = d?.snapshots ?? [];
 
+  const periods = useMemo(() => {
+    const set = new Set(snapshots.map((s) => getPeriod(s.recorded_at)));
+    return Array.from(set).sort().reverse();
+  }, [snapshots]);
+
+  // Filters the trend chart and table rows -- the top 3 tiles stay on
+  // the overall latest record regardless of filter, same "current
+  // state" reasoning as NdiHistory.jsx's identical filter.
+  const filteredSnapshots = periodFilter === "all" ? snapshots : snapshots.filter((s) => getPeriod(s.recorded_at) === periodFilter);
+
   return (
     <div className="p-7 md:px-8">
       <div className="mb-5 flex items-start justify-between flex-wrap gap-3">
@@ -191,7 +212,23 @@ export default function SamaHistory() {
             Recorded SAMA snapshots for one dataset — when, by whom, and the real measured average at that moment
           </p>
         </div>
-        <DatasetPicker datasets={datasets} value={selected} onChange={setSelected} />
+        <div className="flex items-center gap-2.5 flex-wrap">
+          {periods.length > 1 && (
+            <select
+              value={periodFilter}
+              onChange={(e) => setPeriodFilter(e.target.value)}
+              className="text-[12px] border border-line rounded-lg px-2.5 py-2 bg-white"
+            >
+              <option value="all">All periods</option>
+              {periods.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+          )}
+          <DatasetPicker datasets={datasets} value={selected} onChange={setSelected} />
+        </div>
       </div>
 
       {!selected && datasetsLoaded && datasets.length > 1 && (
@@ -266,14 +303,16 @@ export default function SamaHistory() {
 
           <div className="bg-white border border-line rounded-card px-6 py-4 mb-5">
             <div className="text-[12px] font-bold text-ink-faint uppercase tracking-wide mb-2">
-              Average measured domain score over recorded snapshots
+              Average measured domain score over recorded snapshots{periodFilter !== "all" ? ` — ${periodFilter}` : ""}
             </div>
-            {snapshots.filter((s) => s.average_measured_score !== null).length < 2 ? (
+            {filteredSnapshots.filter((s) => s.average_measured_score !== null).length < 2 ? (
               <div className="text-[12.5px] text-ink-soft py-6 text-center">
-                Not enough measured records yet for a line — a trend needs at least two snapshots with a measured score.
+                {periodFilter !== "all"
+                  ? `Not enough measured records in ${periodFilter} for a line — a trend needs at least two.`
+                  : "Not enough measured records yet for a line — a trend needs at least two snapshots with a measured score."}
               </div>
             ) : (
-              <Sparkline snapshots={snapshots} />
+              <Sparkline snapshots={filteredSnapshots} />
             )}
           </div>
 
@@ -289,7 +328,14 @@ export default function SamaHistory() {
                 </tr>
               </thead>
               <tbody>
-                {snapshots.map((s) => (
+                {filteredSnapshots.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="py-4 px-5 text-[12px] text-ink-faint text-center">
+                      No snapshots recorded in {periodFilter}.
+                    </td>
+                  </tr>
+                )}
+                {filteredSnapshots.map((s) => (
                   <Fragment key={s.id}>
                     <tr className="border-b border-line last:border-0">
                       <td className="py-3 px-5 text-[12px] font-mono text-ink">{formatWhen(s.recorded_at)}</td>
