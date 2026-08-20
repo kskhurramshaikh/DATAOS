@@ -16,3 +16,4 @@ pyiceberg[pyarrow]==0.11.1
 requests
 curl_cffi
 great_expectations
+reportlab
