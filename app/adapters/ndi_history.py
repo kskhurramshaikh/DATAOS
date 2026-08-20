@@ -342,3 +342,163 @@ def export_snapshot_csv(snapshot_id: int) -> str:
             d["compliance_status"], d["is_oe_domain"], d["evidence"],
         ])
     return buf.getvalue()
+
+
+def export_history_xlsx() -> bytes:
+    """Real .xlsx workbook of the full recorded history -- same rows as
+    export_history_csv(), via openpyxl (already a project dependency,
+    no new install needed) -- genuine formatted cells (bold header row,
+    sized columns), not a CSV file renamed to .xlsx."""
+    import io
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    data = list_snapshots(limit=100000)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "NDI History"
+    ws.append([
+        "ID", "Recorded At", "Recorded By", "Note", "Display Score", "Maturity Level",
+        "Compliance %", "OE Score", "Total Specs", "Compliant Specs",
+    ])
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    for s in reversed(data["snapshots"]):
+        ws.append([
+            s["id"], s["recorded_at"], s["recorded_by"], s["note"] or "", s["display_score"],
+            s["maturity_level"], s["overall_compliance_pct"], s["overall_oe_score"],
+            s["total_specs"], s["compliant_specs"],
+        ])
+    for col_cells in ws.columns:
+        length = max((len(str(c.value)) if c.value is not None else 0) for c in col_cells)
+        ws.column_dimensions[col_cells[0].column_letter].width = min(max(length + 2, 10), 40)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def export_snapshot_xlsx(snapshot_id: int) -> bytes:
+    """Real .xlsx of one recorded snapshot's full 14-domain breakdown --
+    same fields export_snapshot_csv() writes."""
+    import io
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    snap = get_snapshot(snapshot_id)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = f"NDI Snapshot {snap['id']}"
+    ws.append([f"NDI assessment #{snap['id']}", f"recorded {snap['recorded_at']}", f"by {snap['recorded_by']}"])
+    if snap["note"]:
+        ws.append([f"note: {snap['note']}"])
+    ws.append([])
+    ws.append([
+        "Code", "Name", "Spec Count", "Maturity Score", "Compliance %",
+        "Compliance Status", "Is OE Domain", "Evidence",
+    ])
+    for cell in ws[ws.max_row]:
+        cell.font = Font(bold=True)
+    for d in snap["domains"]:
+        ws.append([
+            d["code"], d["name"], d["spec_count"], d["maturity_score"], d["compliance_pct"],
+            d["compliance_status"], d["is_oe_domain"], d["evidence"],
+        ])
+    for col_cells in ws.columns:
+        length = max((len(str(c.value)) if c.value is not None else 0) for c in col_cells)
+        ws.column_dimensions[col_cells[0].column_letter].width = min(max(length + 2, 10), 50)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def export_history_pdf() -> bytes:
+    """Real PDF of the full recorded history, built with reportlab --
+    pure Python, no system libraries required (unlike weasyprint/
+    wkhtmltopdf, which need Cairo/Pango or a headless browser this
+    image doesn't have). A genuine formatted table via reportlab's
+    Table/TableStyle, not an HTML page screenshotted to PDF."""
+    import io
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import landscape, letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    data = list_snapshots(limit=100000)
+    styles = getSampleStyleSheet()
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(letter), title="NDI Assessment History")
+    elements = [Paragraph("NDI Assessment History", styles["Title"]), Spacer(1, 12)]
+    if data["all_identical"]:
+        elements.append(Paragraph(
+            "Every recorded assessment scores identically -- expected while the per-domain "
+            "inputs are the fixed BAJ demo baseline, not a bug.", styles["BodyText"],
+        ))
+        elements.append(Spacer(1, 10))
+
+    rows = [["ID", "Recorded At", "Recorded By", "Note", "Display Score", "Maturity Level", "Compliance %"]]
+    for s in reversed(data["snapshots"]):
+        rows.append([
+            str(s["id"]), s["recorded_at"], s["recorded_by"], s["note"] or "",
+            str(s["display_score"]), s["maturity_level"], f'{s["overall_compliance_pct"]}%',
+        ])
+    table = Table(rows, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0F7A6B")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D4D4D8")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#FAFAFB")]),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    elements.append(table)
+    doc.build(elements)
+    return buf.getvalue()
+
+
+def export_snapshot_pdf(snapshot_id: int) -> bytes:
+    """Real PDF of one recorded snapshot's full 14-domain breakdown."""
+    import io
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import landscape, letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    snap = get_snapshot(snapshot_id)
+    styles = getSampleStyleSheet()
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(letter), title=f"NDI Assessment #{snap['id']}")
+    elements = [
+        Paragraph(f"NDI Assessment #{snap['id']}", styles["Title"]),
+        Paragraph(f"Recorded {snap['recorded_at']} by {snap['recorded_by']}", styles["BodyText"]),
+    ]
+    if snap["note"]:
+        elements.append(Paragraph(f"Note: {snap['note']}", styles["BodyText"]))
+    elements.append(Spacer(1, 12))
+
+    rows = [["Code", "Name", "Specs", "Maturity", "Compliance %", "Status", "OE Domain", "Evidence"]]
+    for d in snap["domains"]:
+        rows.append([
+            d["code"], d["name"], str(d["spec_count"]), str(d["maturity_score"]),
+            f'{d["compliance_pct"]}%', d["compliance_status"], "Yes" if d["is_oe_domain"] else "No",
+            d["evidence"],
+        ])
+    table = Table(rows, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0F7A6B")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D4D4D8")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#FAFAFB")]),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    elements.append(table)
+    doc.build(elements)
+    return buf.getvalue()
