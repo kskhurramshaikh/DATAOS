@@ -11,6 +11,14 @@ import { api } from "../api";
 // flat line for the reader to interpret (or, worse, a synthetic
 // improvement curve). See app/adapters/ndi_history.py's module
 // docstring for the full reasoning.
+//
+// UI CALLOUT REMOVED (2026-08-20, per Dr. Saber's review): the page
+// used to show a "That's expected, not a bug" banner explaining the
+// frozen-baseline behavior directly in the live product. Per Khurram's
+// instruction, that discussion belongs in direct conversation with the
+// reviewer, not embedded permanently in the UI -- removed outright,
+// not reworded. The underlying behavior (identical scores while inputs
+// are frozen) is unchanged; only the defensive framing is gone.
 
 // Small reusable "Export: CSV · Excel · PDF" link group -- used at both
 // the full-history level and per-snapshot level below. Real files for
@@ -372,15 +380,6 @@ export default function NdiHistory() {
 
       {d && snapshots.length > 0 && (
         <>
-          {d.all_identical && (
-            <div className="mb-4 text-[12.5px] text-ink-soft bg-[#FFF8E8] border border-[#F0DFAE] rounded-xl px-4 py-3 leading-relaxed">
-              <span className="font-semibold text-ink">Every recorded assessment scores identically.</span>{" "}
-              That's expected, not a bug: the per-domain maturity and compliance inputs are currently the fixed BAJ
-              demo baseline, so re-running the assessment can't move the score. This becomes a real trend the moment
-              those inputs become editable or data-derived — nothing synthetic has been added in the meantime.
-            </div>
-          )}
-
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
             <div className="bg-white border border-line rounded-2xl px-5 py-4">
               <div className="text-[11px] font-bold text-ink-faint uppercase tracking-wide">Records</div>
