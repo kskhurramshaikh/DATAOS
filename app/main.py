@@ -102,7 +102,7 @@ from app.router import route, NoCapabilityRegisteredError
 from app.capability_registry import CAPABILITY_REGISTRY
 from app.db import init_db, storage_status
 from app import auth, chat_store, field_lineage, lakehouse_client, marquez_client, object_storage, opa_client
-from app.adapters import dataset_adapter, banking_adapter, dedup_adapter, ndi_history, sama_history, stewardship_adapter, classification_adapter, quality_adapter, user_admin_adapter, policy_documents_adapter, glossary_adapter
+from app.adapters import dataset_adapter, banking_adapter, dedup_adapter, ndi_history, sama_history, stewardship_adapter, classification_adapter, quality_adapter, user_admin_adapter, policy_documents_adapter, glossary_adapter, reference_data_adapter
 from app.visualization import suggest_visualization
 from app.interpreter import interpret, interpret_stream, explain_result
 
@@ -1808,6 +1808,154 @@ def catalog_glossary_delete(req: GlossaryTermDeleteRequest, user: dict = Depends
         raise HTTPException(status_code=403, detail="You don't have permission to delete glossary terms.")
     try:
         return glossary_adapter.delete_term(req.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other governance write routes above.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+# ---------------------------------------------------------------------
+# Reference Data Management (2026-08-20) -- Item A from the
+# baj-dashboard reference-platform review (see
+# app/adapters/reference_data_adapter.py's module docstring for the
+# full design/seeding reasoning). New MDM section -- named lists of
+# code/label pairs (country codes, currency codes, region codes), real
+# Postgres-backed with full CRUD. Same RBAC/OPA gate as Glossary/
+# Classification/Stewardship (stewardship_assign_allow) for every
+# mutation; reads are open, same unauthenticated-GET pattern as the
+# rest of the dashboard.
+# ---------------------------------------------------------------------
+
+class ReferenceListCreateRequest(BaseModel):
+    name: str
+    slug: str
+    description: str | None = None
+    owner: str | None = None
+
+
+class ReferenceListUpdateRequest(BaseModel):
+    id: int
+    description: str | None = None
+    owner: str | None = None
+
+
+class ReferenceListDeleteRequest(BaseModel):
+    id: int
+
+
+class ReferenceValueCreateRequest(BaseModel):
+    list_id: int
+    code: str
+    label: str
+
+
+class ReferenceValueUpdateRequest(BaseModel):
+    id: int
+    label: str
+
+
+class ReferenceValueDeleteRequest(BaseModel):
+    id: int
+
+
+@app.get("/api/mdm/reference-data")
+def mdm_reference_data_list():
+    """Every reference list with its value count -- deliberately
+    unauthenticated read, same as Glossary. Auto-seeds the 3 standard
+    lists (ISO countries, ISO currencies, Saudi regions) on first call
+    if they don't exist yet."""
+    return reference_data_adapter.list_reference_lists()
+
+
+@app.get("/api/mdm/reference-data/{list_id}")
+def mdm_reference_data_detail(list_id: int):
+    """One list with its full values -- powers the detail drawer."""
+    try:
+        return reference_data_adapter.get_reference_list(list_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/mdm/reference-data")
+def mdm_reference_data_create_list(req: ReferenceListCreateRequest, user: dict = Depends(auth.get_current_user)):
+    """Creates a new (empty) reference list. Same RBAC/OPA gate as
+    Glossary/Classification/Stewardship -- maintaining reference data
+    is the same class of governance mutation."""
+    if not opa_client.is_allowed("stewardship_assign_allow", user.get("roles", [])):
+        raise HTTPException(status_code=403, detail="You don't have permission to create reference lists.")
+    try:
+        payload = req.model_dump()
+        payload["created_by"] = user["email"]
+        return reference_data_adapter.create_reference_list(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other governance write routes above.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+@app.post("/api/mdm/reference-data/update")
+def mdm_reference_data_update_list(req: ReferenceListUpdateRequest, user: dict = Depends(auth.get_current_user)):
+    """Updates a list's description/owner. Same RBAC/OPA gate as
+    create above."""
+    if not opa_client.is_allowed("stewardship_assign_allow", user.get("roles", [])):
+        raise HTTPException(status_code=403, detail="You don't have permission to edit reference lists.")
+    try:
+        return reference_data_adapter.update_reference_list(req.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other governance write routes above.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+@app.post("/api/mdm/reference-data/delete")
+def mdm_reference_data_delete_list(req: ReferenceListDeleteRequest, user: dict = Depends(auth.get_current_user)):
+    """Deletes a list and every value inside it. Same RBAC/OPA gate as
+    create/update above."""
+    if not opa_client.is_allowed("stewardship_assign_allow", user.get("roles", [])):
+        raise HTTPException(status_code=403, detail="You don't have permission to delete reference lists.")
+    try:
+        return reference_data_adapter.delete_reference_list(req.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other governance write routes above.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+@app.post("/api/mdm/reference-data/values")
+def mdm_reference_data_add_value(req: ReferenceValueCreateRequest, user: dict = Depends(auth.get_current_user)):
+    """Adds one code/label value to a list. Same RBAC/OPA gate as
+    list mutations above."""
+    if not opa_client.is_allowed("stewardship_assign_allow", user.get("roles", [])):
+        raise HTTPException(status_code=403, detail="You don't have permission to add reference values.")
+    try:
+        return reference_data_adapter.add_reference_value(req.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other governance write routes above.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+@app.post("/api/mdm/reference-data/values/update")
+def mdm_reference_data_update_value(req: ReferenceValueUpdateRequest, user: dict = Depends(auth.get_current_user)):
+    """Updates one value's label. Same RBAC/OPA gate as value creation."""
+    if not opa_client.is_allowed("stewardship_assign_allow", user.get("roles", [])):
+        raise HTTPException(status_code=403, detail="You don't have permission to edit reference values.")
+    try:
+        return reference_data_adapter.update_reference_value(req.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other governance write routes above.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+@app.post("/api/mdm/reference-data/values/delete")
+def mdm_reference_data_delete_value(req: ReferenceValueDeleteRequest, user: dict = Depends(auth.get_current_user)):
+    """Deletes one value outright. Same RBAC/OPA gate as the other
+    value mutations above."""
+    if not opa_client.is_allowed("stewardship_assign_allow", user.get("roles", [])):
+        raise HTTPException(status_code=403, detail="You don't have permission to delete reference values.")
+    try:
+        return reference_data_adapter.delete_reference_value(req.model_dump())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:  # noqa: BLE001 -- same diagnostic widening as the other governance write routes above.
