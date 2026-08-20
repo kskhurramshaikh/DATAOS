@@ -68,12 +68,14 @@ of the dashboard keeps working even when one zone/table has a problem.
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import boto3
 import psycopg2
 import psycopg2.extras
 import requests
+from pyiceberg.exceptions import NoSuchTableError
 
 LAKEHOUSE_DB_URI = os.environ.get("LAKEHOUSE_DB_URI", "")
 SEAWEEDFS_PUBLIC_URL = os.environ.get("SEAWEEDFS_PUBLIC_URL", "")
@@ -220,14 +222,58 @@ def _table_row_count(table) -> int:
     return int(snapshot.summary.get("total-records", 0) or 0)
 
 
+def _load_table_or_none(table_id: str):
+    """Single round trip per table instead of two, AND its own private
+    catalog/connection instead of a shared one. Two stacked fixes here:
+
+    (1) REAL BUG FOUND AND FIXED (2026-08-20, live testing, second
+    pass): the previous version called `catalog.table_exists(id)` THEN
+    `catalog.load_table(id)` -- but pyiceberg's base `table_exists()`
+    has no cheap existence check of its own; it's implemented as `try:
+    load_table() except NoSuchTableError: return False` (pyiceberg's
+    own documented idiom). So every table was fetching its
+    metadata.json TWICE over the slow cross-region SeaweedFS
+    connection. This collapses each table to one load_table() wrapped
+    in try/except NoSuchTableError, halving the round trips.
+
+    (2) This function opens its OWN short-lived catalog/connection
+    (via _iceberg_catalog()) rather than sharing the caller's, because
+    get_zone_stats() below runs these concurrently in a thread pool --
+    and PostgresIcebergCatalog deliberately holds ONE shared psycopg2
+    connection per instance for its whole lifetime (see CONNECTION LEAK
+    FIX in pg_iceberg_catalog.py). psycopg2 connections aren't safe for
+    concurrent use by multiple threads at once, so sharing one catalog
+    instance across the parallel futures would have been a real race
+    condition, not just a style choice. Safe to close the connection
+    right after load_table() returns: the Table object holds already-
+    parsed metadata (FromInputFile.table_metadata reads it eagerly),
+    so nothing after this needs the connection to stay open."""
+    with _iceberg_catalog() as catalog:
+        try:
+            return catalog.load_table(table_id)
+        except NoSuchTableError:
+            return None
+
+
 def get_zone_stats(dataset_name: str | None) -> dict:
     """Live Bronze/Silver/Gold stats for ONE dataset. Bronze comes from
     a plain S3 listing scoped to that dataset's prefix; Silver/Gold
     come from real Iceberg table lookups for that dataset's specific
-    tables (not a scan of every table in the namespace). The catalog is
-    opened ONCE per call and reused for every table_exists()/load_table()
-    lookup below (up to 3 tables) via the `with` block -- see
-    CONNECTION LEAK FIX in the module docstring."""
+    tables (not a scan of every table in the namespace). Each table
+    lookup opens its own short-lived catalog/connection (see
+    _load_table_or_none()'s docstring for why -- this is deliberate,
+    not a reversion of CONNECTION LEAK FIX, which still governs the
+    DAG's own long-lived catalog use elsewhere).
+
+    PARALLEL FETCH (2026-08-20, second pass): bronze's S3 listing and
+    each Iceberg table's metadata fetch are independent network calls
+    -- previously done sequentially, so their cross-region latency
+    (Oregon app <-> Singapore storage, see module docstring) stacked
+    up. Now run concurrently via a small thread pool (these are
+    blocking boto3/psycopg2 calls, not async, so threads -- not
+    asyncio -- are what actually overlaps the I/O wait). Combined with
+    the single-round-trip fix above, this turns up-to-4 sequential
+    round trips into 1 round trip's worth of wall time."""
     if not is_configured():
         return {"configured": False, "zones": {}}
     if not dataset_name:
@@ -235,35 +281,40 @@ def get_zone_stats(dataset_name: str | None) -> dict:
 
     zones: dict = {}
 
-    # -- Bronze: S3 listing scoped to this dataset's prefix --
-    try:
+    def _fetch_bronze():
         s3 = _s3_client()
         resp = s3.list_objects_v2(Bucket=APP_DATA_BUCKET, Prefix=f"bronze/{dataset_name}/")
         objects = resp.get("Contents", [])
         total_bytes = sum(o["Size"] for o in objects)
         latest = max((o["LastModified"] for o in objects), default=None)
-        zones["bronze"] = {
+        return {
             "tables": len(objects),
             "size_bytes": total_bytes,
             "last_run_at": latest.isoformat() if latest else None,
             "freshness": _freshness_label(latest.isoformat() if latest else None),
         }
-    except Exception as e:  # noqa: BLE001 -- surface as a degraded zone, not a 500 for the whole page
-        zones["bronze"] = {"error": str(e)}
 
-    # -- Silver / Gold: this dataset's specific Iceberg tables --
+    conn = _pg_conn()
     try:
-        with _iceberg_catalog() as catalog:
-            conn = _pg_conn()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            bronze_future = pool.submit(_fetch_bronze)
+            silver_future = pool.submit(_load_table_or_none, f"silver.{dataset_name}")
+            gold_ndi_future = pool.submit(_load_table_or_none, f"gold.{dataset_name}_ndi")
+            gold_ifrs9_future = pool.submit(_load_table_or_none, f"gold.{dataset_name}_ifrs9")
+
+            try:
+                zones["bronze"] = bronze_future.result()
+            except Exception as e:  # noqa: BLE001 -- degrade this zone only, not the whole page
+                zones["bronze"] = {"error": str(e)}
+
             try:
                 with conn.cursor() as cur:
-                    silver_table_id = f"silver.{dataset_name}"
-                    if catalog.table_exists(silver_table_id):
-                        rows = _table_row_count(catalog.load_table(silver_table_id))
+                    silver_table = silver_future.result()
+                    if silver_table is not None:
                         run_info = _last_task_run(cur, "silver_to_iceberg", dataset_name) or {}
                         zones["silver"] = {
                             "tables": 1,
-                            "rows": rows,
+                            "rows": _table_row_count(silver_table),
                             "last_run_at": run_info.get("last_run_at"),
                             "last_state": run_info.get("last_state"),
                             "freshness": _freshness_label(run_info.get("last_run_at")),
@@ -271,26 +322,20 @@ def get_zone_stats(dataset_name: str | None) -> dict:
                     else:
                         zones["silver"] = {"tables": 0, "rows": 0, "last_run_at": None, "freshness": "never run"}
 
-                    gold_rows_total = 0
-                    gold_table_count = 0
-                    for suffix in ("_ndi", "_ifrs9"):
-                        tid = f"gold.{dataset_name}{suffix}"
-                        if catalog.table_exists(tid):
-                            gold_table_count += 1
-                            gold_rows_total += _table_row_count(catalog.load_table(tid))
+                    gold_tables = [t for t in (gold_ndi_future.result(), gold_ifrs9_future.result()) if t is not None]
                     run_info = _last_task_run(cur, "gold_compute", dataset_name) or {}
                     zones["gold"] = {
-                        "tables": gold_table_count,
-                        "rows": gold_rows_total,
+                        "tables": len(gold_tables),
+                        "rows": sum(_table_row_count(t) for t in gold_tables),
                         "last_run_at": run_info.get("last_run_at"),
                         "last_state": run_info.get("last_state"),
                         "freshness": _freshness_label(run_info.get("last_run_at")),
                     }
-            finally:
-                conn.close()
-    except Exception as e:  # noqa: BLE001
-        zones.setdefault("silver", {"error": str(e)})
-        zones.setdefault("gold", {"error": str(e)})
+            except Exception as e:  # noqa: BLE001
+                zones.setdefault("silver", {"error": str(e)})
+                zones.setdefault("gold", {"error": str(e)})
+    finally:
+        conn.close()
 
     return {"configured": True, "zones": zones}
 
