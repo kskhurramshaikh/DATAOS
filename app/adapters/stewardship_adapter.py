@@ -399,3 +399,225 @@ def set_policy(payload: dict) -> dict:
         conn.commit()
 
     return get_policy(dataset_safe_name)
+
+
+# ---------------------------------------------------------------------
+# Data Stewardship Task Assignment (2026-08-20) -- closes the last
+# gap named against this page: "task assignment" (see thread 08's
+# scoping note, confirmed at build time: "Data Stewardship is a
+# genuinely fresh build (policy wizard, task assignment, review
+# ownership)"). Distinct from BOTH things already on this page:
+# - Role assignment above answers WHO holds each of the 5 standing
+#   governance roles for a dataset (long-lived, one person per role).
+# - The Policy Wizard answers WHAT the accountability rules are
+#   (retention, cadence, quality bar) -- policy, not action items.
+# - Tasks here answer WHAT NEEDS DOING, RIGHT NOW, BY WHOM, BY WHEN --
+#   short-lived, many-per-dataset, explicitly not tied to a role slot
+#   (the assignee is a free-text name/email, same as role assignment,
+#   not required to be whoever currently holds a role -- a task can be
+#   handed to anyone).
+#
+# Deliberately NOT built, same scope line the module docstring above
+# already draws for role assignment: no approval workflows, no
+# notifications, no due-date reminders or escalation logic. A task is
+# a plain record with a status a human moves themselves (open ->
+# in_progress -> done, or -> cancelled) -- there is no automation
+# behind that transition and nothing fires when it changes. This
+# mirrors "never fabricate a workflow that isn't real" the same way
+# Field-Level Lineage and Data Stewardship's role state do.
+TASK_STATUSES = ["open", "in_progress", "done", "cancelled"]
+
+TASK_STATUS_LABELS = {
+    "open": "Open",
+    "in_progress": "In Progress",
+    "done": "Done",
+    "cancelled": "Cancelled",
+}
+
+
+def _validate_task_status(status: str) -> None:
+    if status not in TASK_STATUSES:
+        raise ValueError(f"Invalid status '{status}' -- must be one of {', '.join(TASK_STATUSES)}.")
+
+
+def _ensure_task_schema():
+    pk = "SERIAL PRIMARY KEY" if db_module._is_postgres() else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    with get_conn() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS stewardship_tasks (
+                id {pk},
+                dataset_safe_name TEXT NOT NULL,
+                title TEXT NOT NULL,
+                assignee_name TEXT NOT NULL,
+                assignee_email TEXT,
+                due_date TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                notes TEXT,
+                created_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+
+def list_tasks(dataset_safe_name: str) -> dict:
+    """Every task ever created for one dataset, newest first --
+    open/in-progress tasks surfaced ahead of done/cancelled ones so
+    the page leads with what still needs attention, matching the same
+    "what's outstanding first" ordering the Duplicate Queue and Audit
+    Log pages already use. Validates the dataset exists first, same
+    existence-check pattern get_assignments/get_policy above already
+    follow -- a bogus dataset_name gets a real 404, not a fake empty
+    list."""
+    if not dataset_safe_name:
+        raise ValueError("dataset_name is required.")
+    with get_conn() as conn:
+        dataset_row = conn.execute(
+            "SELECT id FROM datasets WHERE safe_name = ?", (dataset_safe_name,)
+        ).fetchone()
+        if dataset_row is None:
+            raise ValueError(f"No dataset found matching '{dataset_safe_name}'.")
+
+    _ensure_task_schema()
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT id, title, assignee_name, assignee_email, due_date, status, notes,
+                      created_by, created_at, updated_at
+               FROM stewardship_tasks WHERE dataset_safe_name = ?
+               ORDER BY (status IN ('done', 'cancelled')) ASC, id DESC""",
+            (dataset_safe_name,),
+        ).fetchall()
+
+    tasks = [
+        {
+            "id": r["id"],
+            "title": r["title"],
+            "assignee_name": r["assignee_name"],
+            "assignee_email": r["assignee_email"],
+            "due_date": r["due_date"],
+            "status": r["status"],
+            "status_label": TASK_STATUS_LABELS.get(r["status"], r["status"]),
+            "notes": r["notes"],
+            "created_by": r["created_by"],
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+        }
+        for r in rows
+    ]
+    open_count = sum(1 for t in tasks if t["status"] in ("open", "in_progress"))
+
+    return {
+        "dataset_name": dataset_safe_name,
+        "tasks": tasks,
+        "tasks_total": len(tasks),
+        "tasks_open": open_count,
+    }
+
+
+def create_task(payload: dict) -> dict:
+    """Creates a new task for one dataset. title and assignee_name are
+    the only required fields -- due_date and notes are optional, same
+    "don't force structure that isn't there yet" posture as the Policy
+    Wizard's optional fields."""
+    dataset_safe_name = payload.get("dataset_name")
+    title = (payload.get("title") or "").strip()
+    assignee_name = (payload.get("assignee_name") or "").strip()
+    assignee_email = (payload.get("assignee_email") or "").strip() or None
+    due_date = (payload.get("due_date") or "").strip() or None
+    notes = (payload.get("notes") or "").strip() or None
+    created_by = payload.get("created_by")
+
+    if not dataset_safe_name:
+        raise ValueError("dataset_name is required.")
+    if not title:
+        raise ValueError("title is required.")
+    if not assignee_name:
+        raise ValueError("assignee_name is required.")
+    if not created_by:
+        raise ValueError("created_by is required.")
+
+    with get_conn() as conn:
+        dataset_row = conn.execute(
+            "SELECT id FROM datasets WHERE safe_name = ?", (dataset_safe_name,)
+        ).fetchone()
+        if dataset_row is None:
+            raise ValueError(f"No dataset found matching '{dataset_safe_name}'.")
+
+    _ensure_task_schema()
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO stewardship_tasks
+               (dataset_safe_name, title, assignee_name, assignee_email, due_date, status,
+                notes, created_by, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)""",
+            (dataset_safe_name, title, assignee_name, assignee_email, due_date, notes,
+             created_by, now, now),
+        )
+        conn.commit()
+
+    return list_tasks(dataset_safe_name)
+
+
+def update_task_status(payload: dict) -> dict:
+    """Moves one task to a new status -- the only mutation a task
+    supports after creation, deliberately (see module docstring: no
+    approval workflow, no editing title/assignee after the fact). A
+    human moves the status themselves; nothing here validates a
+    transition sequence (open -> done directly is fine, so is
+    reopening a cancelled task) since this tracks a real person's own
+    judgment call, not an enforced state machine."""
+    dataset_safe_name = payload.get("dataset_name")
+    task_id = payload.get("task_id")
+    status = payload.get("status")
+
+    if not dataset_safe_name:
+        raise ValueError("dataset_name is required.")
+    if task_id is None:
+        raise ValueError("task_id is required.")
+    _validate_task_status(status)
+
+    with get_conn() as conn:
+        existing = conn.execute(
+            "SELECT id FROM stewardship_tasks WHERE id = ? AND dataset_safe_name = ?",
+            (task_id, dataset_safe_name),
+        ).fetchone()
+        if existing is None:
+            raise ValueError(f"No task {task_id} found for dataset '{dataset_safe_name}'.")
+
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "UPDATE stewardship_tasks SET status = ?, updated_at = ? WHERE id = ?",
+            (status, now, task_id),
+        )
+        conn.commit()
+
+    return list_tasks(dataset_safe_name)
+
+
+def delete_task(payload: dict) -> dict:
+    """Deletes one task outright -- for a genuinely mistaken entry,
+    not for closing out finished work (that's update_task_status ->
+    'done', which keeps the record). Idempotent-ish: deleting an
+    already-gone task_id is a no-op rather than an error, same
+    posture as unassign_role above, since the end state either way is
+    "task not present"."""
+    dataset_safe_name = payload.get("dataset_name")
+    task_id = payload.get("task_id")
+
+    if not dataset_safe_name:
+        raise ValueError("dataset_name is required.")
+    if task_id is None:
+        raise ValueError("task_id is required.")
+
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM stewardship_tasks WHERE id = ? AND dataset_safe_name = ?",
+            (task_id, dataset_safe_name),
+        )
+        conn.commit()
+
+    return list_tasks(dataset_safe_name)
