@@ -105,6 +105,14 @@ export const api = {
     }),
   unassignStewardship: (datasetName, role) => postJSON("/mdm/stewardship/unassign", { dataset_name: datasetName, role }),
 
+  // Stewardship Policy Wizard (2026-08-20) -- closes the "no policy
+  // wizard anywhere on the page" gap. Separate concern from role
+  // assignment above: WHAT the accountability rules are (retention,
+  // review cadence, quality bar, escalation contact), not WHO holds
+  // each role.
+  getStewardshipPolicy: (datasetName) => getJSON(`/mdm/stewardship/policy?dataset_name=${encodeURIComponent(datasetName)}`),
+  setStewardshipPolicy: (datasetName, fields) => postJSON("/mdm/stewardship/policy", { dataset_name: datasetName, ...fields }),
+
   getSama: (datasetName) => getJSON(`/governance/sama${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
   getAuditLog: (datasetName) => getJSON(`/governance/audit-log${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
 
