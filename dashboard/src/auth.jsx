@@ -16,8 +16,43 @@
 // server-side regardless of what this file does, so a missing/wrong
 // token there just surfaces as a real 401/403 from the API, handled by
 // the calling page, not hidden by a client-side-only gate.
-
+//
+// Expiry check (2026-08-20) -- real bug fix. Keycloak's access tokens
+// here are short-lived (~5 minutes) and this app has no refresh-token
+// flow, so a token goes stale fast. Previously isAuthenticated was
+// just `!!token` -- presence, not validity -- so the Account page kept
+// showing "Signed in" for many minutes (even across a page reload)
+// after the token had actually expired, and the person only found out
+// when a write silently failed with the API's raw "Invalid or expired
+// token." error, deep inside whatever form they were filling out.
+// Confirmed live: filling the 3-step Stewardship Policy Wizard alone
+// took long enough to cross a fresh token's own expiry.
+//
+// Fix: decode the JWT's `exp` claim (seconds since epoch, standard
+// JWT field) and compare it to the current time on every read, not
+// just once at login. isExpired() is checked (a) on initial load from
+// localStorage, so a stale token left over from a previous session
+// never reports as signed-in, and (b) periodically while the tab stays
+// open (isTokenValid's setInterval below), so a session that goes
+// stale mid-use flips the UI to signed-out within a few seconds
+// instead of silently staying "Signed in" until the person happens to
+// submit something. A token that fails to decode at all (malformed,
+// truncated) is treated as expired/invalid, not as a crash -- same
+// fail-closed posture as the server-side OPA checks this gates.
 import { createContext, useContext, useEffect, useState } from "react";
+
+function isTokenExpired(token) {
+  if (!token) return true;
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    if (!payload.exp) return true;
+    // 5s clock-skew buffer so a token that's about to expire doesn't
+    // get treated as valid for a request that then lands just after.
+    return payload.exp * 1000 < Date.now() + 5000;
+  } catch {
+    return true;
+  }
+}
 
 const TOKEN_KEY = "dataos_dashboard_token";
 const AuthContext = createContext(null);
@@ -35,10 +70,22 @@ function decodeRoles(token) {
   }
 }
 
+// Reads localStorage and immediately discards anything already
+// expired, rather than trusting presence alone -- used both for the
+// initial useState() seed below and by the periodic re-check.
+function readValidToken() {
+  const existing = localStorage.getItem(TOKEN_KEY);
+  if (existing && isTokenExpired(existing)) {
+    localStorage.removeItem(TOKEN_KEY);
+    return null;
+  }
+  return existing;
+}
+
 export function AuthProvider({ children }) {
-  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY));
+  const [token, setToken] = useState(() => readValidToken());
   const [claims, setClaims] = useState(() => {
-    const existing = localStorage.getItem(TOKEN_KEY);
+    const existing = readValidToken();
     return existing ? decodeRoles(existing) : { roles: [], email: null, name: null };
   });
 
@@ -51,6 +98,19 @@ export function AuthProvider({ children }) {
       setClaims({ roles: [], email: null, name: null });
     }
   }, [token]);
+
+  // Periodic liveness check (2026-08-20) -- catches a token expiring
+  // WHILE the tab is open and idle on an authenticated page, not just
+  // at the next full page load. 15s interval is frequent enough that
+  // the "Signed in" state never drifts far from reality, cheap enough
+  // (a JWT decode, no network call) not to matter running in the
+  // background.
+  useEffect(() => {
+    const id = setInterval(() => {
+      setToken((current) => (current && isTokenExpired(current) ? null : current));
+    }, 15000);
+    return () => clearInterval(id);
+  }, []);
 
   async function login(email, password) {
     const res = await fetch("/auth/login", {
@@ -104,6 +164,17 @@ export function useAuth() {
 // localStorage rather than needing the React context threaded through
 // every api.js call site. Kept in sync with AuthProvider's own
 // TOKEN_KEY so both always agree on where the token lives.
+//
+// Also expiry-checked now (2026-08-20), same as readValidToken() above
+// -- api.js's authHeaders() calls this directly, so without this check
+// a stale token would still get attached to outgoing requests and
+// produce the exact raw-401 "Invalid or expired token." failure this
+// whole fix is closing.
 export function getStoredToken() {
-  return localStorage.getItem(TOKEN_KEY);
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (token && isTokenExpired(token)) {
+    localStorage.removeItem(TOKEN_KEY);
+    return null;
+  }
+  return token;
 }
