@@ -122,6 +122,16 @@ export const api = {
   // Classification & PDPL + Data Quality Rules (item 7).
   getClassification: (datasetName) => getJSON(`/governance/classification?dataset_name=${encodeURIComponent(datasetName)}`),
   getClassificationCoverage: () => getJSON("/governance/classification/coverage"),
+
+  // Policy Document Upload (2026-08-20) -- global (org-level), not
+  // dataset-scoped. See app/adapters/policy_documents_adapter.py's
+  // module docstring.
+  getPolicyDocuments: () => getJSON("/governance/classification/policy-documents"),
+  uploadPolicyDocument: (file, uploadedBy, note) =>
+    postForm("/governance/classification/policy-documents", file, { uploaded_by: uploadedBy, note: note || "" }),
+  deletePolicyDocument: (id) => deleteJSON(`/governance/classification/policy-documents/${id}`),
+  policyDocumentDownloadUrl: (id) => `${BASE}/governance/classification/policy-documents/${id}/download`,
+
   getQualityRules: (datasetName) => getJSON(`/governance/quality-rules?dataset_name=${encodeURIComponent(datasetName)}`),
 
   // NDI (item 5). No dataset parameter anywhere on purpose -- the
