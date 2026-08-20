@@ -18,8 +18,11 @@
 // the calling page, not hidden by a client-side-only gate.
 //
 // Expiry check (2026-08-20) -- real bug fix. Keycloak's access tokens
-// here are short-lived (~5 minutes) and this app has no refresh-token
-// flow, so a token goes stale fast. Previously isAuthenticated was
+// here are short-lived (10 minutes as of 2026-08-20, raised from the
+// realm's original 5-minute default via the Keycloak Admin REST API --
+// see the realm's accessTokenLifespan setting) and this app has no
+// refresh-token flow, so a token still goes stale within one longer
+// session even at the higher figure. Previously isAuthenticated was
 // just `!!token` -- presence, not validity -- so the Account page kept
 // showing "Signed in" for many minutes (even across a page reload)
 // after the token had actually expired, and the person only found out
