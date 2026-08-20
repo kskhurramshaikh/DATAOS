@@ -17,6 +17,32 @@ import { api } from "../api";
 // no-new-npm-dependency approach DatasetPicker took. 14 axes of a
 // 0-5 scale is trigonometry, not a reason to add a build dependency to
 // the Docker frontend stage.
+//
+// LAYOUT ADDITIONS (2026-08-20), sourced from reviewing a reference
+// platform's own NDI page layout -- Khurram's explicit instruction:
+// layout only, never touch the maths/metrics (those are Dr. Saber's
+// signed-off methodology). All three below are pure presentation over
+// data this page (or the History endpoint) already computes -- no new
+// backend, no new numbers:
+// - TrendMini: a small sparkline over real recorded snapshots (same
+//   ndi_history.py data the History tab uses), surfaced on the main
+//   page instead of requiring a navigation. Honors the exact same
+//   honesty rule ndi_history.py's module docstring states -- with the
+//   fixed BAJ baseline in place, snapshots read identically, and this
+//   says so in plain text rather than drawing a flat line the reader
+//   has to interpret as "no real movement."
+// - PriorityDomains: the same 14 domains already on this page,
+//   re-sorted lowest-compliance-first -- a reader shouldn't have to
+//   scan a 14-row table in code order to find what needs attention.
+// - OEComparison: splits the same domains array on the is_oe_domain
+//   flag this page already receives and averages each group -- no
+//   value here wasn't already being rendered elsewhere on this page.
+//
+// Deliberately NOT built: a target/benchmark overlay line on the radar
+// (the reference platform's own NDI page has one) -- holding that one
+// until Khurram confirms whether SDAIA NDI v1.1 has a real documented
+// enablement-target level to cite, since drawing an unverified number
+// would functionally be introducing a new metric, not a layout choice.
 
 const COMPLIANCE_COLORS = {
   high: { bar: "#2FA37E", text: "text-success", chip: "bg-success-soft text-success" },
@@ -139,6 +165,133 @@ function DomainRow({ domain }) {
   );
 }
 
+function TrendMini({ history }) {
+  const snaps = history?.snapshots ?? [];
+  const chrono = [...snaps].reverse(); // oldest -> newest, for a left-to-right read
+
+  if (chrono.length === 0) {
+    return (
+      <div className="bg-white border border-line rounded-card px-5 py-4">
+        <div className="text-[12px] font-bold text-ink-faint uppercase tracking-wide mb-1">Trend</div>
+        <div className="text-[12px] text-ink-faint">No assessments recorded yet.</div>
+      </div>
+    );
+  }
+
+  const W = 260;
+  const H = 90;
+  const pad = 8;
+  const scores = chrono.map((s) => s.display_score);
+  const min = Math.min(...scores);
+  const max = Math.max(...scores);
+  const span = max - min || 1; // avoid divide-by-zero when every point is identical
+  const x = (i) => pad + (chrono.length > 1 ? (i * (W - 2 * pad)) / (chrono.length - 1) : (W - 2 * pad) / 2);
+  const y = (v) => H - pad - ((v - min) / span) * (H - 2 * pad);
+  const linePoints = chrono.map((s, i) => `${x(i)},${y(s.display_score)}`).join(" ");
+
+  return (
+    <div className="bg-white border border-line rounded-card px-5 py-4">
+      <div className="flex items-center justify-between mb-1">
+        <div className="text-[12px] font-bold text-ink-faint uppercase tracking-wide">Trend</div>
+        <Link to="/ndi/history" className="text-[11px] font-semibold text-teal hover:underline">
+          Full history →
+        </Link>
+      </div>
+      {history.all_identical ? (
+        <div className="text-[11.5px] text-ink-soft mb-2">
+          {chrono.length} assessment{chrono.length === 1 ? "" : "s"} recorded, all reading identically — the
+          baseline hasn't changed since the first one.
+        </div>
+      ) : (
+        <div className="text-[11.5px] text-ink-soft mb-2">
+          {chrono.length} assessments recorded — display score {chrono[0].display_score} → {chrono[chrono.length - 1].display_score}.
+        </div>
+      )}
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full max-w-[260px]">
+        <line x1={pad} y1={H - pad} x2={W - pad} y2={H - pad} stroke="#F2F2F4" strokeWidth="1" />
+        {chrono.length > 1 && (
+          <polyline points={linePoints} fill="none" stroke="#0F7A6B" strokeWidth="1.8" strokeLinejoin="round" />
+        )}
+        {chrono.map((s, i) => (
+          <circle key={s.id} cx={x(i)} cy={y(s.display_score)} r="2.6" fill="#0F7A6B" />
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+function PriorityDomains({ domains }) {
+  const sorted = [...domains].sort((a, b) => a.compliance_pct - b.compliance_pct).slice(0, 6);
+  const maxPct = Math.max(...domains.map((d) => d.compliance_pct), 1);
+
+  return (
+    <div className="bg-white border border-line rounded-card px-5 py-4">
+      <div className="text-[12px] font-bold text-ink-faint uppercase tracking-wide mb-2">
+        Priority domains — lowest compliance first
+      </div>
+      <div className="flex flex-col gap-2">
+        {sorted.map((d) => {
+          const meta = complianceMeta(d.compliance_status);
+          return (
+            <div key={d.code} className="flex items-center gap-2.5">
+              <span className="text-[11px] font-bold text-ink font-mono w-9 shrink-0">{d.code}</span>
+              <div className="flex-1 h-[7px] rounded-full bg-[#F2F2F4] overflow-hidden">
+                <div
+                  className="h-full rounded-full"
+                  style={{ width: `${Math.max(0, Math.min(100, (d.compliance_pct / maxPct) * 100))}%`, backgroundColor: meta.bar }}
+                />
+              </div>
+              <span className={`text-[11.5px] font-mono font-semibold w-[38px] text-right ${meta.text}`}>
+                {d.compliance_pct}%
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function OEComparison({ domains }) {
+  const oe = domains.filter((d) => d.is_oe_domain);
+  const other = domains.filter((d) => !d.is_oe_domain);
+  const avg = (arr, key) => (arr.length ? arr.reduce((s, d) => s + d[key], 0) / arr.length : 0);
+
+  const rows = [
+    { label: "Avg. maturity (0–5)", oeVal: avg(oe, "maturity_score"), otherVal: avg(other, "maturity_score"), max: 5, fmt: (v) => v.toFixed(1) },
+    { label: "Avg. compliance", oeVal: avg(oe, "compliance_pct"), otherVal: avg(other, "compliance_pct"), max: 100, fmt: (v) => `${Math.round(v)}%` },
+  ];
+
+  return (
+    <div className="bg-white border border-line rounded-card px-5 py-4">
+      <div className="text-[12px] font-bold text-ink-faint uppercase tracking-wide mb-2">
+        Operational Excellence ({oe.length}) vs. other domains ({other.length})
+      </div>
+      <div className="flex flex-col gap-3">
+        {rows.map((r) => (
+          <div key={r.label}>
+            <div className="text-[11px] text-ink-faint mb-1">{r.label}</div>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-[10px] font-bold text-teal w-7 shrink-0">OE</span>
+              <div className="flex-1 h-[7px] rounded-full bg-[#F2F2F4] overflow-hidden">
+                <div className="h-full rounded-full bg-teal" style={{ width: `${Math.max(0, Math.min(100, (r.oeVal / r.max) * 100))}%` }} />
+              </div>
+              <span className="text-[11px] font-mono font-semibold w-[38px] text-right text-ink">{r.fmt(r.oeVal)}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold text-ink-faint w-7 shrink-0">Other</span>
+              <div className="flex-1 h-[7px] rounded-full bg-[#F2F2F4] overflow-hidden">
+                <div className="h-full rounded-full bg-[#B8952E]" style={{ width: `${Math.max(0, Math.min(100, (r.otherVal / r.max) * 100))}%` }} />
+              </div>
+              <span className="text-[11px] font-mono font-semibold w-[38px] text-right text-ink">{r.fmt(r.otherVal)}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function RecordSnapshot({ onRecorded }) {
   const [recordedBy, setRecordedBy] = useState("");
   const [note, setNote] = useState("");
@@ -209,6 +362,7 @@ function RecordSnapshot({ onRecorded }) {
 
 export default function NdiDashboard() {
   const [state, setState] = useState({ loading: true, data: null, error: null });
+  const [history, setHistory] = useState(null);
 
   // Fetched once, not polled on an interval like the Lakehouse/SAMA
   // pages. Those read live infrastructure that genuinely changes
@@ -223,6 +377,23 @@ export default function NdiDashboard() {
         if (!cancelled) setState({ loading: false, data: res, error: null });
       } catch (e) {
         if (!cancelled) setState({ loading: false, data: null, error: e.message });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Fetched once alongside the main assessment, same non-polling
+  // reasoning as above -- powers TrendMini below.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.getNdiHistory();
+        if (!cancelled) setHistory(res);
+      } catch (e) {
+        if (!cancelled) setHistory(null);
       }
     })();
     return () => {
@@ -286,6 +457,12 @@ export default function NdiDashboard() {
                 </tbody>
               </table>
             </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 mb-5">
+            <PriorityDomains domains={d.domains} />
+            <OEComparison domains={d.domains} />
+            <TrendMini history={history} />
           </div>
 
           <div className="mb-5">
