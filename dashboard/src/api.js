@@ -113,6 +113,18 @@ export const api = {
   getStewardshipPolicy: (datasetName) => getJSON(`/mdm/stewardship/policy?dataset_name=${encodeURIComponent(datasetName)}`),
   setStewardshipPolicy: (datasetName, fields) => postJSON("/mdm/stewardship/policy", { dataset_name: datasetName, ...fields }),
 
+  // Stewardship Task Assignment (2026-08-20) -- closes the last named
+  // gap on this page. Separate concern from both role assignment and
+  // the Policy Wizard above -- see stewardship_adapter.py's module
+  // docstring for the WHO/WHAT/WHAT-NEEDS-DOING distinction.
+  getStewardshipTasks: (datasetName) => getJSON(`/mdm/stewardship/tasks?dataset_name=${encodeURIComponent(datasetName)}`),
+  createStewardshipTask: (datasetName, fields) =>
+    postJSON("/mdm/stewardship/tasks", { dataset_name: datasetName, ...fields }),
+  updateStewardshipTaskStatus: (datasetName, taskId, status) =>
+    postJSON("/mdm/stewardship/tasks/status", { dataset_name: datasetName, task_id: taskId, status }),
+  deleteStewardshipTask: (datasetName, taskId) =>
+    postJSON("/mdm/stewardship/tasks/delete", { dataset_name: datasetName, task_id: taskId }),
+
   getSama: (datasetName) => getJSON(`/governance/sama${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
   getAuditLog: (datasetName) => getJSON(`/governance/audit-log${datasetName ? `?dataset_name=${encodeURIComponent(datasetName)}` : ""}`),
 
