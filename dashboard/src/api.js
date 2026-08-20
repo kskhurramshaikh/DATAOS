@@ -198,6 +198,19 @@ export const api = {
   updateGlossaryTerm: (id, fields) => postJSON("/catalog/glossary/update", { id, ...fields }),
   deleteGlossaryTerm: (id) => postJSON("/catalog/glossary/delete", { id }),
 
+  // Reference Data Management (2026-08-20) -- Item A from the
+  // baj-dashboard reference-platform review. Global, not
+  // dataset-scoped -- see app/adapters/reference_data_adapter.py's
+  // module docstring for the full seeding/design reasoning.
+  getReferenceDataLists: () => getJSON("/mdm/reference-data"),
+  getReferenceDataList: (id) => getJSON(`/mdm/reference-data/${id}`),
+  createReferenceDataList: (fields) => postJSON("/mdm/reference-data", fields),
+  updateReferenceDataList: (id, fields) => postJSON("/mdm/reference-data/update", { id, ...fields }),
+  deleteReferenceDataList: (id) => postJSON("/mdm/reference-data/delete", { id }),
+  addReferenceDataValue: (listId, code, label) => postJSON("/mdm/reference-data/values", { list_id: listId, code, label }),
+  updateReferenceDataValue: (id, label) => postJSON("/mdm/reference-data/values/update", { id, label }),
+  deleteReferenceDataValue: (id) => postJSON("/mdm/reference-data/values/delete", { id }),
+
   // User & role administration, wired 2026-08-19 -- real Keycloak
   // Admin REST API calls, admin-only (see app/adapters/
   // user_admin_adapter.py's module docstring). Closes the
