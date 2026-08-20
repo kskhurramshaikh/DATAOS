@@ -7,6 +7,7 @@ import DuplicateQueue from "./pages/DuplicateQueue";
 import FieldLevelLineage from "./pages/FieldLevelLineage";
 import DataStewardship from "./pages/DataStewardship";
 import SamaDashboard from "./pages/SamaDashboard";
+import SamaHistory from "./pages/SamaHistory";
 import AuditLog from "./pages/AuditLog";
 import Classification from "./pages/Classification";
 import DataQualityRules from "./pages/DataQualityRules";
@@ -34,6 +35,7 @@ const TAB_GROUPS = {
   ],
   governance: [
     { key: "sama", label: "SAMA Compliance", path: "/governance" },
+    { key: "sama-history", label: "SAMA History", path: "/governance/sama-history" },
     { key: "audit", label: "Audit Log", path: "/governance/audit-log" },
     { key: "classification", label: "Classification & PDPL", path: "/governance/classification" },
     { key: "quality", label: "Data Quality Rules", path: "/governance/quality-rules" },
@@ -119,6 +121,7 @@ function GovernanceSection() {
       <div className="flex-1 overflow-auto">
         <Routes>
           <Route path="/" element={<SamaDashboard />} />
+          <Route path="/sama-history" element={<SamaHistory />} />
           <Route path="/audit-log" element={<AuditLog />} />
           <Route path="/classification" element={<Classification />} />
           <Route path="/quality-rules" element={<DataQualityRules />} />
