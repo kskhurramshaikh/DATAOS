@@ -52,6 +52,7 @@ function TaskNode({ id, data }) {
       <div className="text-[10px] text-ink-faint mt-1">
         {s.label}
         {data.duration != null && ` · ${data.duration}s`}
+        {data.rowCount != null && ` · ${data.rowCount} rows`}
       </div>
     </div>
   );
@@ -67,8 +68,18 @@ const nodeTypes = { task: TaskNode };
 // above can call it directly. style: { zIndex: 10 } on each node
 // object (round 4's real fix -- see TaskNode's own comment) is what
 // actually wins the stacking order against React Flow's pane.
-function buildGraph(tasks, onSelect) {
+function buildGraph(tasks, onSelect, zones) {
   const order = ["verify_silver_ready", "silver_to_iceberg", "gold_compute"];
+  // Real row counts, not fabricated -- Airflow's own task_instance
+  // table has no row-count concept at all (pure orchestration
+  // metadata), so this maps each task to the real Lakehouse Zones
+  // count for the zone it actually operates on (see the zones fetch
+  // in the component below).
+  const rowCountByTask = {
+    verify_silver_ready: zones?.silver?.rows,
+    silver_to_iceberg: zones?.silver?.rows,
+    gold_compute: zones?.gold?.rows,
+  };
   const positioned = order
     .map((id, i) => {
       const t = tasks.find((x) => x.task_id === id);
@@ -81,6 +92,7 @@ function buildGraph(tasks, onSelect) {
           label: id,
           status: t?.state || "queued",
           duration: t?.duration_s,
+          rowCount: rowCountByTask[id],
           onSelect,
         },
       };
@@ -109,6 +121,14 @@ export default function PipelineMonitoring() {
   const [refreshTick, setRefreshTick] = useState(0);
   const [selectedTask, setSelectedTask] = useState(null);
   const [logState, setLogState] = useState({ loading: false, log: null, error: null });
+  // Real per-zone row counts (2026-08-20, closes "no record counts
+  // anywhere on this page" gap) -- reuses the same Lakehouse Zones
+  // endpoint the Zones tab itself calls, rather than inventing a
+  // separate counting mechanism. Airflow's own task_instance table
+  // (what get_pipeline_runs() reads) has no concept of row counts --
+  // it's pure orchestration metadata -- so the real count for each
+  // stage genuinely lives in the Zones data, not in the DAG run.
+  const [zones, setZones] = useState(null);
 
   function selectDataset(name) {
     setSelected(name);
@@ -179,6 +199,12 @@ export default function PipelineMonitoring() {
       } catch (e) {
         if (!cancelled) setState((s) => ({ ...s, loading: false, error: e.message }));
       }
+      try {
+        const zonesRes = await api.getZones(selected);
+        if (!cancelled) setZones(zonesRes.zones || null);
+      } catch {
+        if (!cancelled) setZones(null);
+      }
     }
     load();
     const interval = setInterval(load, 10000);
@@ -214,7 +240,7 @@ export default function PipelineMonitoring() {
     [onSelectTask]
   );
 
-  const { nodes, edges } = latestRun ? buildGraph(latestRun.tasks, onSelectTask) : { nodes: [], edges: [] };
+  const { nodes, edges } = latestRun ? buildGraph(latestRun.tasks, onSelectTask, zones) : { nodes: [], edges: [] };
 
   const allSucceeded = latestRun?.tasks?.length > 0 && latestRun.tasks.every((t) => t.state === "success");
 
@@ -300,6 +326,43 @@ export default function PipelineMonitoring() {
             <Background color="#EEEEF0" gap={16} />
             <Controls showInteractive={false} />
           </ReactFlow>
+        </div>
+      )}
+
+      {/* REAL FIX (2026-08-20, replaces 4 previous attempts at fixing
+          the diagram's own click handling): confirmed via direct live
+          diagnostic that clicking a task node's real screen position
+          never reaches the node at all -- document.elementFromPoint()
+          at the node's exact center returns .react-flow__pane, not
+          the node, despite correct z-index/pointer-events CSS. This is
+          a transform/stacking-context hit-testing quirk inside React
+          Flow's own viewport (which wraps nodes in a CSS matrix
+          transform), not something the app's code controls -- both
+          the node's own onClick and ReactFlow's onNodeClick rely on
+          the native click event actually landing on the node, and it
+          doesn't. Rather than attempt a 5th uncertain CSS tweak on a
+          bug that's already survived 4 rounds, this sidesteps it
+          entirely: plain HTML buttons, outside React Flow's
+          transformed layer, wired to the exact same onSelectTask
+          function the diagram's nodes call. The diagram stays for
+          visualization; task selection now genuinely works via a real
+          click, confirmed live. */}
+      {latestRun && (
+        <div className="flex items-center gap-2 mt-3 flex-wrap">
+          <span className="text-[11px] text-ink-faint mr-1">View log for:</span>
+          {latestRun.tasks.map((t) => (
+            <button
+              key={t.task_id}
+              onClick={() => onSelectTask(t.task_id)}
+              className={`text-[11.5px] font-mono font-semibold px-3 py-1.5 rounded-lg border ${
+                selectedTask === t.task_id
+                  ? "border-teal bg-teal-soft text-teal"
+                  : "border-line text-ink-soft hover:bg-[#F2F2F4]"
+              }`}
+            >
+              {t.task_id}
+            </button>
+          ))}
         </div>
       )}
 
