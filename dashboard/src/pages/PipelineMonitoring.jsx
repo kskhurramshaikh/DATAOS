@@ -226,6 +226,19 @@ export default function PipelineMonitoring() {
           <p className="text-[13px] text-ink-faint mt-1">
             {latestRun ? `run ${latestRun.run_id}` : selected ? "Waiting for a run…" : "Select a dataset to see its pipeline history"}
           </p>
+          {/* Schedule display (2026-08-20, closes the "no schedule display
+              anywhere" gap): reflects this DAG's REAL config -- see
+              spike/dags/banking_demo_lakehouse_spike.py's `schedule=None` and
+              its own module docstring, a deliberate design decision
+              (auto-triggering on upload would add load/delay most uploads
+              don't need), not a missing feature. Static text is correct here
+              rather than a fetched value -- the schedule isn't per-dataset or
+              runtime-configurable, it's the same fixed DAG setting for every
+              dataset. */}
+          <div className="inline-flex items-center gap-1.5 mt-2 text-[11px] font-semibold text-ink-faint bg-[#F4F4F5] px-2.5 py-1 rounded-full">
+            <span className="w-1.5 h-1.5 rounded-full inline-block bg-[#8E8E93]" />
+            Schedule: Manual trigger only — no automatic runs
+          </div>
         </div>
         <div className="flex items-start gap-3 flex-wrap">
           <DatasetPicker datasets={datasets} value={selected} onChange={selectDataset} />
