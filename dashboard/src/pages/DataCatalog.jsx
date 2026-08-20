@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { LineageGraph } from "../components/LineageGraph";
 
 // Data Catalog (Dev Queue item 6, first half). Reads the real job/run
 // registry from Marquez -- see app/marquez_client.py's module
@@ -19,15 +20,17 @@ import { api } from "../api";
 // GAPS CLOSED 2026-08-19, per Dr. Saber's direct review: this page
 // previously only showed the job/run table -- the Directive also
 // calls for a browsable dataset list and a schema view, both missing.
-// Added below as a new "Datasets" section. Deliberately does NOT
-// duplicate the lineage graph inline (that's a real, already-built
-// page at /catalog/lineage, adjacent tab) -- linked prominently
-// instead, since rendering a second copy of the same graph here would
-// be redundant work with no real benefit over one clear link. Business
-// glossary and PII tagging remain out of scope here -- both are tied
-// to the OpenMetadata tooling question, which is a separate discussion
-// (see this page's own "not a full data catalog" framing above,
-// unchanged since the original scoping message).
+// Added below as a new "Datasets" section.
+//
+// GAP CLOSED 2026-08-20: the lineage graph itself is now embedded
+// directly on this page too (compact, via the shared
+// components/LineageGraph.jsx), not just linked to the adjacent
+// /catalog/lineage tab -- that link is kept alongside it for opening
+// the full-size interactive version. Business glossary and PII
+// tagging remain out of scope here -- both are tied to the
+// OpenMetadata tooling question, which is a separate discussion (see
+// this page's own "not a full data catalog" framing above, unchanged
+// since the original scoping message).
 
 const STATE_STYLE = {
   COMPLETED: { bg: "#EAF6F1", text: "#0F7A6B", dot: "#2FA37E", label: "Completed" },
@@ -309,12 +312,7 @@ export default function DataCatalog() {
       </div>
 
       <div className="mb-5">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-[12px] font-bold text-ink-faint uppercase tracking-wide">Datasets</div>
-          <Link to="/catalog/lineage" className="text-[11.5px] font-semibold text-teal hover:underline">
-            View full lineage graph →
-          </Link>
-        </div>
+        <div className="text-[12px] font-bold text-ink-faint uppercase tracking-wide mb-2">Datasets</div>
 
         {datasetState.error && (
           <div className="mb-3 text-[12.5px] text-danger bg-danger-soft border border-danger/20 rounded-xl px-4 py-3">
@@ -354,6 +352,16 @@ export default function DataCatalog() {
             </table>
           </div>
         )}
+      </div>
+
+      <div className="mb-5">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-[12px] font-bold text-ink-faint uppercase tracking-wide">Lineage</div>
+          <Link to="/catalog/lineage" className="text-[11.5px] font-semibold text-teal hover:underline">
+            Open full graph →
+          </Link>
+        </div>
+        <LineageGraph height={260} showEmptyState={false} showFootnote={false} />
       </div>
 
       <div className="mb-2">
