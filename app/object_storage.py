@@ -266,6 +266,62 @@ def get_text(uri_or_path: str) -> str:
         return f.read()
 
 
+def put_bytes(key: str, content: bytes, content_type: str = "application/octet-stream", local_root: str | None = None) -> str:
+    """Binary counterpart to put_text() -- same presigned-PUT-then-
+    requests.put() mechanism (see put_text()'s own docstring for why:
+    the cross-region PUT 403 fix), just for real binary files (PDFs,
+    Word docs) instead of UTF-8 text. Added for policy document upload
+    (Classification & PDPL page) -- the first caller in this codebase
+    that needs to store an actual uploaded file's bytes, not a
+    generated CSV/Parquet-as-text artifact."""
+    if is_configured():
+        try:
+            s3 = _client()
+            _ensure_bucket(s3)
+            import requests
+
+            url = _presigned_put_url(key, content_type=content_type)
+            r = requests.put(url, data=content, headers={"Content-Type": content_type}, timeout=30)
+            r.raise_for_status()
+        except Exception as e:  # requests.RequestException, ClientError, BotoCoreError, etc.
+            raise ValueError(f"Object storage write failed for {key!r}: {e}") from e
+        return f"s3://{APP_BUCKET}/{key}"
+
+    if local_root is None:
+        raise ValueError(
+            "Object storage isn't configured (SEAWEEDFS_PUBLIC_URL / "
+            "SEAWEEDFS_INTERNAL_HOST not set) and no local_root fallback "
+            "was given -- can't write this file."
+        )
+    path = os.path.join(local_root, key)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(content)
+    return path
+
+
+def get_bytes(uri_or_path: str) -> bytes:
+    """Binary counterpart to get_text() -- reads back whatever
+    put_bytes() returned. Same FileNotFoundError-on-missing-object
+    contract as get_text()."""
+    if uri_or_path.startswith("s3://"):
+        s3 = _client()
+        bucket, _, key = uri_or_path.removeprefix("s3://").partition("/")
+        try:
+            obj = s3.get_object(Bucket=bucket, Key=key)
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("NoSuchKey", "404", "NoSuchBucket"):
+                raise FileNotFoundError(f"No object at {uri_or_path}") from e
+            raise ValueError(f"Object storage read failed for {uri_or_path}: {e}") from e
+        except BotoCoreError as e:
+            raise ValueError(f"Object storage read failed for {uri_or_path}: {e}") from e
+        return obj["Body"].read()
+
+    with open(uri_or_path, "rb") as f:
+        return f.read()
+
+
 def delete_prefix(prefix: str) -> dict:
     """Permanently deletes every object under `prefix` (e.g.
     "bronze/Banking_Demo/") in APP_BUCKET. Real deletion, not soft --
