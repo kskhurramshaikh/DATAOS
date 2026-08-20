@@ -434,7 +434,25 @@ def seed_standard_lists() -> dict:
     """Idempotent: only creates a standard list if its slug doesn't
     already exist, and never touches an existing one's values --
     someone may have since edited or added to it. Safe to call
-    repeatedly (e.g. once per app startup)."""
+    repeatedly (e.g. once per app startup).
+
+    REAL BUG FOUND AND FIXED (2026-08-20, live testing): this
+    originally issued one INSERT per value -- up to 249 individual
+    round trips for the country list alone, 298 total across all 3
+    seed lists. Against the real (cross-region) Postgres connection
+    that took ~39s and ultimately failed with an unhandled error --
+    confirmed live: GET /api/mdm/reference-data hung ~39s then
+    returned a bare 500. Reproduced instantly and successfully against
+    local SQLite, which is what pointed at the round-trip count
+    specifically rather than the seed data or query logic. Now a
+    single multi-row INSERT per list (3 round trips total instead of
+    298) -- same idempotency, same data, no behavior change other than
+    speed. The masking half of this bug -- the read endpoint that
+    triggers seeding had no try/except ValueError wrapper, unlike
+    every write route elsewhere in this codebase, so whatever the
+    underlying Postgres error actually was got swallowed into an
+    opaque 500 instead of surfacing a real message -- is fixed
+    separately in main.py."""
     _ensure_schema()
     created = []
     now = datetime.now(timezone.utc).isoformat()
@@ -454,12 +472,17 @@ def seed_standard_lists() -> dict:
             list_id = conn.execute(
                 "SELECT id FROM reference_lists WHERE slug = ?", (spec["slug"],)
             ).fetchone()["id"]
-            for code, label in spec["values"]:
-                conn.execute(
-                    """INSERT INTO reference_values (list_id, code, label, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (list_id, code, label, now, now),
-                )
+
+            values = spec["values"]
+            placeholders = ", ".join(["(?, ?, ?, ?, ?)"] * len(values))
+            params = []
+            for code, label in values:
+                params.extend([list_id, code, label, now, now])
+            conn.execute(
+                f"""INSERT INTO reference_values (list_id, code, label, created_at, updated_at)
+                    VALUES {placeholders}""",
+                tuple(params),
+            )
             created.append(spec["slug"])
         conn.commit()
     return {"seeded": created}
